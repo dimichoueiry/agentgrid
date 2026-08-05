@@ -1,0 +1,460 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>agentgrid — what it is and how to make it work</title>
+<style>
+/* Set in agentgrid's own design system: one neutral ramp, one desaturated
+   accent reserved for "a human is needed", blue only for the agent's voice.
+   The document inherits the product's tokens deliberately — the guide should
+   feel like the tool it explains. */
+:root{
+  --bg:#fbfbfa; --card:#ffffff; --card-2:#f4f4f2;
+  --text:#18181b; --text-2:#6b6b73; --text-3:#a3a3ab;
+  --line:#e7e7e4; --line-2:#d6d6d2;
+  --accent:#b4690e; --claude:#2f6ba8; --failed:#ef5f63;
+  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+  --mono:ui-monospace,SFMono-Regular,Menlo,monospace;
+}
+@media (prefers-color-scheme:dark){
+  :root{
+    --bg:#131315; --card:#1a1a1d; --card-2:#212126;
+    --text:#ececee; --text-2:#9797a0; --text-3:#63636b;
+    --line:#252529; --line-2:#33333a;
+    --accent:#d9a441; --claude:#5b9dd9;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#131315; --card:#1a1a1d; --card-2:#212126;
+  --text:#ececee; --text-2:#9797a0; --text-3:#63636b;
+  --line:#252529; --line-2:#33333a;
+  --accent:#d9a441; --claude:#5b9dd9;
+}
+:root[data-theme="light"]{
+  --bg:#fbfbfa; --card:#ffffff; --card-2:#f4f4f2;
+  --text:#18181b; --text-2:#6b6b73; --text-3:#a3a3ab;
+  --line:#e7e7e4; --line-2:#d6d6d2;
+  --accent:#b4690e; --claude:#2f6ba8;
+}
+html{background:var(--bg)}
+body{
+  margin:0;background:var(--bg);color:var(--text);
+  font:15px/1.65 var(--sans);-webkit-font-smoothing:antialiased;
+}
+.page{max-width:720px;margin:0 auto;padding:56px 24px 96px}
+header.masthead{padding:0 0 28px;border-bottom:1px solid var(--line)}
+.wordmark{font-size:26px;font-weight:600;letter-spacing:-.015em;margin:0}
+.wordmark .dot{color:var(--accent)}
+.pitch{margin:10px 0 0;font-size:16px;color:var(--text-2);max-width:58ch;text-wrap:balance}
+.asks{display:flex;flex-wrap:wrap;gap:8px;margin-top:18px}
+.asks span{
+  font-size:12.5px;color:var(--text-2);background:var(--card);
+  border:1px solid var(--line-2);border-radius:6px;padding:5px 11px;
+}
+.asks span b{color:var(--text);font-weight:550}
+section{padding:36px 0 4px;border-bottom:1px solid var(--line)}
+section:last-of-type{border-bottom:none}
+h2{font-size:19px;font-weight:600;letter-spacing:-.015em;margin:0 0 14px;text-wrap:balance}
+h3{font-size:14.5px;font-weight:600;letter-spacing:-.01em;margin:26px 0 8px}
+p{margin:0 0 14px;max-width:66ch}
+p.why{color:var(--text-2);font-size:13.5px;border-left:2px solid var(--line-2);
+  padding-left:14px;max-width:62ch}
+ul{margin:0 0 14px;padding-left:22px;max-width:64ch}
+li{margin:0 0 6px}
+code{font:12.5px/1.5 var(--mono);background:var(--card-2);
+  border:1px solid var(--line);border-radius:4px;padding:1px 5px;color:var(--text)}
+pre{
+  font:12.5px/1.7 var(--mono);background:var(--card);color:var(--text);
+  border:1px solid var(--line-2);border-radius:8px;padding:14px 16px;
+  overflow-x:auto;margin:0 0 16px;
+}
+pre code{background:none;border:none;padding:0}
+pre .c{color:var(--text-3)}
+pre .a{color:var(--accent)}
+a{color:var(--claude);text-decoration:none}
+a:hover{text-decoration:underline}
+table{border-collapse:collapse;width:100%;font-size:13.5px;margin:0 0 16px}
+.tablewrap{overflow-x:auto;margin:0 0 16px}
+.tablewrap table{margin:0}
+th{text-align:left;font-weight:600;font-size:12px;color:var(--text-2);
+  padding:8px 14px 8px 0;border-bottom:1px solid var(--line-2)}
+td{padding:8px 14px 8px 0;border-bottom:1px solid var(--line);vertical-align:top}
+td code,th code{white-space:nowrap}
+kbd{font:11.5px var(--mono);background:var(--card);border:1px solid var(--line-2);
+  border-bottom-width:2px;border-radius:4px;padding:1px 6px}
+
+/* --- the board, drawn in CSS ------------------------------------------- */
+.board-demo{
+  display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:1px;
+  background:var(--line);border:1px solid var(--line);border-radius:8px;
+  overflow:hidden;margin:22px 0;font-size:11px;
+}
+.bcol{background:var(--bg);padding:10px 10px 12px;min-width:0}
+.bhead{display:flex;gap:6px;align-items:baseline;margin:0 0 10px;
+  font-size:10px;letter-spacing:.4px;text-transform:uppercase;color:var(--text-2)}
+.bhead .n{color:var(--text-3);font-variant-numeric:tabular-nums}
+.bhead.hot{color:var(--accent)}
+.bhead.hot .n{color:var(--accent)}
+.bcard{position:relative;background:var(--card);border-radius:6px;
+  padding:8px 10px;margin:0 0 7px;box-shadow:0 1px 2px rgba(0,0,0,.04)}
+.bcard .t{font-size:11.5px;font-weight:550;letter-spacing:-.01em;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bcard .s{color:var(--text-2);font-size:10px;white-space:nowrap;overflow:hidden;
+  text-overflow:ellipsis;margin-top:2px}
+.bcard .age{position:absolute;top:8px;right:9px;font-size:9.5px;color:var(--text-3);
+  font-variant-numeric:tabular-nums}
+.bcard.needs::before,.bcard.fresh::before{content:"";position:absolute;
+  left:0;top:8px;bottom:8px;width:2px;border-radius:2px;background:var(--accent)}
+.bcard.fresh::before{background:var(--claude)}
+.bcard.needs .t,.bcard.needs .s,.bcard.fresh .t,.bcard.fresh .s{padding-left:6px}
+.bcard .copen{position:absolute;right:8px;top:24px;font-size:9.5px;color:var(--text-2);
+  background:var(--card);border:1px solid var(--line-2);border-radius:4px;padding:1px 6px}
+.bcard.dim{opacity:.62}
+.cap{font-size:12.5px;color:var(--text-3);margin:-12px 0 16px}
+
+/* --- the pad, drawn in CSS --------------------------------------------- */
+.pad-demo{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(0,1fr);gap:1px;
+  background:var(--line);border:1px solid var(--line);border-radius:8px;
+  overflow:hidden;margin:22px 0}
+.pad-demo .pad{background:var(--card);padding:12px 14px;font:11.5px/1.9 var(--mono);
+  color:var(--text);overflow-x:auto;white-space:pre}
+.pad-demo .rail{background:var(--bg);padding:12px 14px;font-size:11.5px;min-width:0}
+.rail .rh{font-size:10px;letter-spacing:.4px;text-transform:uppercase;
+  color:var(--text-2);margin:0 0 8px}
+.rail .todo{display:flex;gap:7px;align-items:baseline;margin:0 0 7px;min-width:0}
+.rail .box{width:11px;height:11px;border:1px solid var(--line-2);border-radius:3px;
+  flex:0 0 auto;position:relative;top:1px}
+.rail .box.done{background:var(--card-2)}
+.rail .todo .txt{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rail .todo.done .txt{color:var(--text-3);text-decoration:line-through}
+.chip{font-size:9.5px;border:1px solid var(--line-2);border-radius:4px;
+  padding:0 5px;color:var(--text-2);flex:0 0 auto}
+.chip.now{color:var(--accent);border-color:var(--accent)}
+.slug{color:var(--claude);font-family:var(--mono);font-size:10.5px}
+@media (max-width:560px){
+  .board-demo{grid-template-columns:1fr}
+  .pad-demo{grid-template-columns:1fr}
+}
+footer{padding-top:28px;font-size:13px;color:var(--text-3)}
+</style>
+</head>
+<body>
+<div class="page">
+<header class="masthead">
+  <h1 class="wordmark">agentgrid<span class="dot">.</span></h1>
+  <p class="pitch">A local, zero-dependency dashboard over every Claude Code and
+  Codex session on your machine — with a daily notepad whose checkboxes are the
+  todo list.</p>
+  <div class="asks">
+    <span>Which agent <b>needs me</b>?</span>
+    <span>Which is <b>still working</b>?</span>
+    <span>What is each one <b>actually doing</b>?</span>
+  </div>
+</header>
+
+<section>
+<h2>The problem it solves</h2>
+<p>Run a few coding agents at once and the operating system gives you almost
+nothing to tell them apart: a window title, maybe. A session blocked at a
+permission prompt looks exactly like one that finished twenty minutes ago and
+one that is mid-command. Auto-generated titles are derived from the first
+prompt, so three sessions started from the same ticket all read identically.
+And sessions living inside an editor's terminal have no visible list at all.</p>
+<p>agentgrid answers the three questions above at a glance, and does the two
+things that follow from answering them: <b>starts a new agent</b> in any repo,
+and <b>gets you into</b> the session that needs you.</p>
+
+<div class="board-demo">
+  <div class="bcol">
+    <div class="bhead hot">Needs you <span class="n">1</span></div>
+    <div class="bcard needs">
+      <div class="t">edge click option gating</div>
+      <div class="s">drag-edge-flags · bg</div>
+      <span class="age">1h</span>
+    </div>
+  </div>
+  <div class="bcol">
+    <div class="bhead">Working <span class="n">2</span></div>
+    <div class="bcard">
+      <div class="t">rank the review queue</div>
+      <div class="s">aqua-ui · codex</div>
+      <span class="age">4m</span>
+      <span class="copen">Open ↗</span>
+    </div>
+    <div class="bcard">
+      <div class="t">fix flaky auth tests</div>
+      <div class="s">backend · feat/retry</div>
+      <span class="age">12m</span>
+    </div>
+  </div>
+  <div class="bcol">
+    <div class="bhead">Replied <span class="n">2</span></div>
+    <div class="bcard fresh">
+      <div class="t">migrate settings schema</div>
+      <div class="s">dotfiles</div>
+      <span class="age">9m</span>
+    </div>
+    <div class="bcard dim">
+      <div class="t">summarise standup notes</div>
+      <div class="s">notes-tools</div>
+      <span class="age">3h</span>
+    </div>
+  </div>
+</div>
+<p class="cap">The board: a column per state. The amber stub means a human is
+needed; the blue stub means an unread reply; hovering a card reveals its own
+Open&nbsp;↗.</p>
+
+<p class="why">Position carries state, so colour does not have to. The palette
+is near-monochrome with one warm accent, used only where something is
+genuinely waiting on a human — which is why a screen of twenty agents stays
+calm instead of festive.</p>
+</section>
+
+<section>
+<h2>What it deliberately is not</h2>
+<ul>
+  <li><b>Not a daemon.</b> Both front ends stop when you close them. No
+  service, no launch agent, no port left listening.</li>
+  <li><b>Not a package.</b> Python standard library only. No
+  <code>pip install</code>, no virtualenv, no build step, no npm.</li>
+  <li><b>Not a terminal in the browser.</b> An interactive session's keyboard
+  belongs to the terminal that owns it. Reading is the ceiling, and reading is
+  always safe — transcripts are opened read-only.</li>
+  <li><b>Not remote.</b> The web server binds loopback only and every request
+  needs a per-run token.</li>
+</ul>
+<p>Every fact on a card comes from an interface the CLIs already expose —
+their JSON output and the session transcripts on disk. Nothing is scraped
+from a rendered screen.</p>
+</section>
+
+<section>
+<h2>Make it work</h2>
+<h3>You need</h3>
+<ul>
+  <li>macOS (or Linux, terminal grid only — the Terminal.app integration
+  degrades to a printed command elsewhere)</li>
+  <li>Python 3.10 or newer — already on every recent Mac</li>
+  <li>the <code>claude</code> CLI on <code>PATH</code></li>
+  <li>optionally the <code>codex</code> CLI, if you want Codex agents on the
+  board too</li>
+</ul>
+
+<h3>Install</h3>
+<p>Installation is a clone, a <code>chmod</code>, and a symlink. There is
+nothing to build and nothing to download beyond the repo itself.</p>
+<pre><code>git clone &lt;repo&gt; agentgrid
+cd agentgrid
+chmod +x bin/ag
+ln -s "$PWD/bin/ag" ~/.local/bin/ag   <span class="c"># any directory on your PATH</span></code></pre>
+<p>No symlink? <code>python3 -m agentgrid</code> from the repo root does the
+same thing.</p>
+
+<h3>Run</h3>
+<pre><code>ag --web    <span class="c"># the browser board — the everyday front end</span>
+ag          <span class="c"># the curses grid, for when you are already in a terminal</span></code></pre>
+<p>The web command prints one URL and opens it:</p>
+<pre><code>agentgrid web UI
+  <span class="a">http://127.0.0.1:8787/?t=Kq83…</span>
+  projects from: /Users/you, /Users/you/Documents/GitHub
+  loopback only, token-gated, stops when you Ctrl-C this terminal.</code></pre>
+<p>The <code>?t=</code> token is minted per run and is the only way in — a
+bare <code>http://127.0.0.1:8787/</code> gets a 403. Useful flags:</p>
+<div class="tablewrap"><table>
+  <tr><th>Flag</th><th>What it does</th></tr>
+  <tr><td><code>--root DIR</code></td><td>where to scan for repos (repeatable; replaces the defaults)</td></tr>
+  <tr><td><code>--port 9000</code></td><td>pick the port; falls back to a free one if taken</td></tr>
+  <tr><td><code>--no-open</code></td><td>print the URL without launching a browser</td></tr>
+  <tr><td><code>--filter</code>, <code>--cwd</code>, <code>--no-mouse</code>, <code>--refresh</code></td><td>grid-only options</td></tr>
+</table></div>
+</section>
+
+<section>
+<h2>Reading the board</h2>
+<p>Five columns, left to right in descending order of how likely you are to
+act: <b>Needs you</b>, <b>Working</b>, <b>Replied</b>, <b>Done</b>,
+<b>Idle</b>. The settled two are hidden by default with their counts kept on
+the toggles.</p>
+<p class="why">Replied is not Done on purpose. The CLI's <code>done</code>
+means <i>the turn ended</i> — an agent asking "shall I push?" reports done
+with the conversation wide open. So ended turns file under Replied, and Done
+is reserved for the one state only a human can set, by dragging a card there.</p>
+<ul>
+  <li><b>Cards are two lines</b> — name, then where and when. Everything else
+  is one click away in the side panel: rename, tags, transcript, subagents,
+  move-to buttons, and the notes that mention the session.</li>
+  <li><b>Getting in.</b> Hover a card and click <b>Open ↗</b> (or use
+  <b>Open in Terminal</b> in the panel). A background session is genuinely
+  joined via <code>claude attach</code> in a new Terminal.app tab; clicking
+  twice focuses the existing tab rather than opening a second attach. An
+  interactive session's real tab is brought to the front where possible —
+  never resumed, which would fork the conversation.</li>
+  <li><b>Unread</b> is a blue stub on Replied cards, cleared by opening the
+  card and returning by itself when the agent says something new. It is
+  stored as how far you had read, not as a flag — so nothing has to notice
+  new output for you.</li>
+  <li><b>Manual moves expire honestly.</b> Dragging a card records the
+  reality it was made against; when the session's real state moves on, the
+  override clears itself. Working is neither a source nor a destination —
+  stop the session instead.</li>
+  <li><b>New agent</b> (<kbd>n</kbd>) asks for Name, Project, Engine
+  (Claude or Codex), Model, Task — name first, because it is the thing you
+  will look for on the board afterwards. The agent appears within a couple of
+  seconds and outlives the browser.</li>
+</ul>
+</section>
+
+<section>
+<h2>The notepad</h2>
+<p>The board is where you sit while agents run, so it carries the day's
+notes. The pad is a plain textarea over plain markdown files — one directory
+per day, one file per page, the filename is the page title. Any line matching
+<code>- [ ] text</code> becomes a live todo in the rail on the right,
+tickable from there. Ticking rewrites exactly one character in the file.</p>
+
+<div class="pad-demo">
+  <div class="pad"># Kamil sync
+
+- [x] send the branch to Abhishek
+- [ ] chase Kamil tomorrow @edge-gating
+- [ ] update PROJ-993 by friday
+notes from the call: replay path
+never read the flag for drags…</div>
+  <div class="rail">
+    <div class="rh">To do</div>
+    <div class="todo"><span class="box"></span><span class="txt">chase Kamil
+    <span class="slug">@edge-gating</span></span><span class="chip now">tomorrow</span></div>
+    <div class="todo"><span class="box"></span><span class="txt">update PROJ-993</span>
+    <span class="chip">fri</span></div>
+    <div class="todo done"><span class="box done"></span><span class="txt">send the branch</span></div>
+  </div>
+</div>
+<p class="cap">The pad and its rail. Due dates are written in the sentence
+and shown as chips; <span class="slug">@mentions</span> link lines to
+sessions; ticket keys become links.</p>
+
+<ul>
+  <li><b>Writing shortcuts:</b> <code>-[]</code> then space expands to a
+  checkbox; <kbd>Enter</kbd> continues a list; <kbd>Tab</kbd> nests — on
+  checkbox lines only.</li>
+  <li><b>Due dates</b> parse from natural phrases — <code>tomorrow</code>,
+  <code>in 3 days</code>, <code>march 3rd</code>, <code>by friday</code>,
+  <code>#wed</code> — resolved against the day the note belongs to, never the
+  clock. A bare weekday deliberately does not count: "wednesday sync" is a
+  meeting name, not a deadline.</li>
+  <li><b>Unfinished items carry forward</b> under their own heading, so the
+  pad is a working list rather than a diary.</li>
+  <li><b>Pages</b> can be grouped, reordered, and set to repeat — a Friday
+  1-1 appears on Fridays and nowhere else, fresh each time.</li>
+  <li><b>Typing <code>@</code></b> offers the live sessions and inserts a
+  slug that links both ways: the rail links to the session, and the session's
+  panel lists every line that names it, with a quick-add box.</li>
+</ul>
+<p class="why">Notes and todos are one document because anything that has to
+be re-entered somewhere else does not get done. The files stay plain
+markdown on disk — greppable, hand-editable, committable — and the
+filesystem is the source of truth: a page added in Finder appears, one
+deleted there disappears.</p>
+</section>
+
+<section>
+<h2>Codex sessions</h2>
+<p>If the <code>codex</code> CLI is installed, its sessions join the board
+automatically — discovered from the rollout files Codex writes under
+<code>~/.codex/sessions/</code>, with titles from Codex's own session index.
+A session mid-task shows as Working; one whose last task completed files
+under Replied; sessions leave the board after a day without activity. Codex
+cards carry a <code>· codex</code> marker, and everything except joining
+works on them — there is no attach command to join with, and the card says
+so rather than guessing.</p>
+</section>
+
+<section>
+<h2>Needs you, and the optional hook</h2>
+<p><b>Needs you</b> works with zero setup, by two separate paths: a
+background agent reports <code>blocked</code> directly, and an interactive
+session stopped at a question or permission prompt reports
+<code>waiting</code> — both map straight onto the column. The bundled hook
+is an optional refinement: it also records <i>why</i> a session is waiting,
+and clears the wait the instant you reply rather than on the next poll.</p>
+<p>If you want that, add both entries to
+<code>~/.claude/settings.json</code>, pointing at the hook script in your
+clone:</p>
+<pre><code>{
+  "hooks": {
+    "Notification": [
+      { "hooks": [ { "type": "command",
+          "command": "python3 /path/to/agentgrid/hooks/agentgrid_notify.py" } ] }
+    ],
+    "UserPromptSubmit": [
+      { "hooks": [ { "type": "command",
+          "command": "python3 /path/to/agentgrid/hooks/agentgrid_notify.py" } ] }
+    ]
+  }
+}</code></pre>
+<p>The hook always exits 0 and never prints, so a failure in it can never
+block or disrupt the session it observes.</p>
+<p>One cosmetic step for tab naming: Terminal.app appends the running
+process to tab titles. Turn that off under <b>Terminal → Settings →
+Profiles → Window → Title</b>, or every attached tab reads "claude".</p>
+</section>
+
+<section>
+<h2>The terminal grid</h2>
+<p><code>ag</code> with no flags draws the same fleet as cards in your
+terminal — three views deep: grid → session detail → transcript, with
+<kbd>Enter</kbd> going deeper and <kbd>Esc</kbd> backing out. The keys that
+matter: <kbd>Tab</kbd> jumps to the next session needing you,
+<kbd>a</kbd> attaches, <kbd>x</kbd> stops (it asks first), <kbd>⇧R</kbd>
+renames, <kbd>f</kbd> cycles filters, <kbd>q</kbd> quits. Cards are ordered
+so anything waiting on a human sorts to the top left.</p>
+</section>
+
+<section>
+<h2>Security posture, plainly</h2>
+<p>The web server can start processes, so it is treated accordingly: it
+binds <code>127.0.0.1</code> only, mints a fresh token every run, refuses
+every request without it, and sends no-embedding and no-referrer headers so
+the token cannot leak. Agents can only be started in directories the project
+scan already knows. Do not expose the port off the machine.</p>
+</section>
+
+<section>
+<h2>If something looks wrong</h2>
+<div class="tablewrap"><table>
+  <tr><th>Symptom</th><th>Fix</th></tr>
+  <tr><td>"claude CLI not found on PATH"</td>
+      <td>Install Claude Code's CLI or fix <code>PATH</code>; the board says
+      this rather than crashing.</td></tr>
+  <tr><td>403 in the browser</td>
+      <td>You opened the bare URL. Use the full one agentgrid printed —
+      the <code>?t=</code> token is the way in, and it changes every run.</td></tr>
+  <tr><td>Open&nbsp;↗ says automation was blocked</td>
+      <td>Allow your terminal under <b>System Settings → Privacy &amp;
+      Security → Automation</b>, then retry.</td></tr>
+  <tr><td>A blocked session is not in "Needs you"</td>
+      <td>Restart <code>ag --web</code> — status mappings are read at start.
+      Both paths (background <code>blocked</code>, interactive
+      <code>waiting</code>) work without the hook.</td></tr>
+  <tr><td>A repo is missing from the project picker</td>
+      <td>The scan is one level under each root. Add
+      <code>--root ~/work/clients</code> for deeper layouts; the roots
+      scanned are printed at startup.</td></tr>
+  <tr><td>Codex sessions absent</td>
+      <td>Only sessions active in the last 24 hours appear; start one and it
+      shows up within seconds.</td></tr>
+  <tr><td>Port already in use</td>
+      <td>Nothing to do — a second instance falls back to a free port and
+      prints it.</td></tr>
+</table></div>
+</section>
+
+<footer>
+  In the repo: <code>README.md</code> is the full reference, and
+  <code>docs/USAGE.md</code> the task-by-task walkthrough.
+</footer>
+</div>
+</body>
+</html>

@@ -1,0 +1,2153 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>agentgrid</title>
+<style>
+/* Design notes — the five rules this stylesheet follows. Read before changing.
+   1. Position carries state, so colour does not. Each state is a column; the
+      palette is near monochrome with ONE warm accent (--accent), used only
+      where something is genuinely waiting on a human. The single exception is
+      speaker colour in transcripts (--you / --claude), which is information.
+   2. Type and space make the hierarchy — not borders, fills or shadows. Three
+      text greys, two line greys, weight and whitespace. Cards have no outline;
+      a 1px grid gap over --line draws every hairline.
+   3. Two lines per card: name / where / when. Everything else lives in the
+      panel, one click away.
+   4. Motion only where it means something: card travel between columns
+      (260ms) and the working dot's breathe. One easing curve everywhere —
+      cubic-bezier(.32,.72,0,1) — a second curve reads as a bug.
+   5. Follows the system: light and dark are both first class via
+      prefers-color-scheme; system fonts only, no web font, no CDN. */
+
+:root{
+  --bg:#fbfbfa; --card:#ffffff; --card-hover:#f4f4f2;
+  --text:#18181b; --text-2:#6b6b73; --text-3:#a3a3ab;
+  --line:#e7e7e4; --line-2:#d6d6d2;
+  --accent:#b4690e;                 /* one accent, desaturated on purpose */
+  --you:#b4690e; --claude:#2f6ba8;  /* speakers: the one place a 2nd hue earns it */
+  --shadow:0 1px 2px rgba(0,0,0,.04);
+  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+  --mono:ui-monospace,SFMono-Regular,Menlo,monospace;
+  --working:var(--claude);
+  --failed:#ef5f63;
+  --ease:cubic-bezier(.32,.72,0,1);
+}
+@media (prefers-color-scheme:dark){
+  :root{
+    --bg:#131315; --card:#1a1a1d; --card-hover:#212126;
+    --text:#ececee; --text-2:#9797a0; --text-3:#63636b;
+    --line:#252529; --line-2:#33333a;
+    --accent:#d9a441;
+    --you:#d9a441; --claude:#5b9dd9;
+    --shadow:none;
+  }
+}
+
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{
+  display:flex;flex-direction:column;overflow:hidden;
+  background:var(--bg);color:var(--text);
+  font:13.5px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+  -webkit-font-smoothing:antialiased;
+}
+button{font:inherit;color:inherit;background:none;border:none;padding:0;cursor:pointer}
+input,select,textarea{font:inherit;color:inherit;background:var(--card);border:1px solid var(--line-2);border-radius:5px}
+input:focus,select:focus,textarea:focus{outline:none;border-color:var(--text-3)}
+a{color:var(--claude);text-decoration:none}
+a:hover{text-decoration:underline}
+summary{cursor:pointer}
+.spacer{flex:1}
+
+/* the hidden attribute is out-specified by any class that sets display —
+   every such element needs this companion or [hidden] silently does nothing */
+.board[hidden],.notes[hidden],.col[hidden],.pmenu[hidden],.modal[hidden],
+.rail[hidden],.toast[hidden],.panel[hidden],.pages[hidden]{display:none!important}
+
+/* ---------- top bar ---------- */
+.bar{
+  flex:0 0 52px;display:flex;align-items:center;gap:10px;padding:0 14px;
+  border-bottom:1px solid var(--line);
+}
+.brand{font-size:13.5px;font-weight:600;letter-spacing:-.015em;margin-right:2px}
+.views{display:flex;border:1px solid var(--line-2);border-radius:6px;overflow:hidden}
+.views button{padding:4px 11px;font-size:12.5px;color:var(--text-2)}
+.views button+button{border-left:1px solid var(--line)}
+.views button[aria-pressed=true]{background:var(--card-hover);color:var(--text);font-weight:550}
+.ncount{color:var(--accent);font-weight:600;font-size:10px;font-variant-numeric:tabular-nums;margin-left:2px}
+select.ctl{font-size:12.5px;padding:3px 6px;max-width:170px;color:var(--text-2)}
+.toggles{display:flex;gap:5px}
+/* off reads as off: hidden is the quiet outline state, shown is filled */
+.toggles button{
+  font-size:12.5px;padding:3px 9px;border:1px solid var(--line-2);border-radius:5px;
+  color:var(--text-3);font-variant-numeric:tabular-nums;
+}
+.toggles button[aria-pressed=true]{background:var(--card);color:var(--text-2)}
+.btn{
+  font-size:12.5px;padding:4px 11px;border:1px solid var(--line-2);border-radius:5px;
+  background:var(--card);color:var(--text-2);transition:background .12s var(--ease);
+}
+.btn:hover{background:var(--card-hover);color:var(--text)}
+.btn.key{border-color:var(--accent);color:var(--accent)}
+.btn.sm{padding:2px 8px;font-size:11.5px}
+.btn.danger:hover{color:var(--failed);border-color:var(--failed)}
+#search{width:170px;font-size:12.5px;padding:4px 9px}
+.stamp{font-size:11px;color:var(--text-3);font-variant-numeric:tabular-nums;min-width:56px;text-align:right}
+.stamp.err{color:var(--failed)}
+
+/* ---------- board ---------- */
+/* the 1px gap over --line draws every hairline; the columns carry no borders */
+.board{
+  flex:1 1 auto;min-height:0;display:grid;gap:1px;background:var(--line);
+  grid-template-columns:repeat(5,minmax(0,1fr));
+}
+.col{display:flex;flex-direction:column;min-height:0;background:var(--bg)}
+.col-head{display:flex;align-items:center;gap:7px;padding:10px 14px 6px;flex:0 0 auto}
+.dot{width:6px;height:6px;border-radius:50%;background:var(--line-2);flex:0 0 auto}
+/* the working dot breathes, and nothing else animates */
+.col[data-key=working] .dot{background:var(--text-2);animation:breathe 1.8s ease-in-out infinite}
+@keyframes breathe{0%,100%{opacity:.35}50%{opacity:1}}
+.col-name{font-size:12.5px;font-weight:550;color:var(--text-2)}
+.col-count{font-size:11px;color:var(--text-3);font-variant-numeric:tabular-nums}
+.col[data-key=blocked] .col-head.has .col-count{color:var(--accent);font-weight:600}
+.col-body{flex:1 1 auto;min-height:40px;overflow-y:auto;padding:4px 10px 14px}
+/* drop targets are outlined, not filled, so the cards beneath stay readable */
+.col-body.over{outline:1.5px dashed var(--line-2);outline-offset:-6px;border-radius:8px}
+
+.card{
+  position:relative;background:var(--card);border-radius:6px;box-shadow:var(--shadow);
+  padding:9px 12px;margin:0 0 8px;cursor:pointer;
+}
+.card:hover{background:var(--card-hover)}
+.col[data-key=idle] .card,.col[data-key=complete] .card{opacity:.62}
+.col[data-key=idle] .card:hover,.col[data-key=complete] .card:hover{opacity:1}
+/* selection is an inset outline, so it does not shift layout */
+.card.sel{outline:1.5px solid var(--text-3);outline-offset:-1.5px}
+.card.dragging{opacity:.45}
+/* the accent stub: 2px, not a filled card — enough to find, not enough to shout */
+.card.needs::before,.card.fresh::before{
+  content:"";position:absolute;left:0;top:10px;bottom:10px;width:2px;
+  border-radius:2px;background:var(--accent);
+}
+.card.fresh::before{background:var(--claude)}
+.card.needs .name,.card.needs .sub,.card.needs .meta,.card.needs .tags,
+.card.fresh .sub,.card.fresh .meta,.card.fresh .tags{padding-left:7px}
+.card.fresh .name{padding-left:7px;font-weight:620}
+/* the card's own way in: revealed on hover, so the resting card stays two
+   quiet lines — include :focus-within for keyboard users */
+.copen{
+  position:absolute;right:9px;top:36px;opacity:0;transition:opacity .12s;
+  font:inherit;font-size:11px;color:var(--text-2);background:var(--card);
+  border:1px solid var(--line-2);border-radius:5px;padding:2px 7px;cursor:pointer;
+}
+.card:hover .copen,.card:focus-within .copen{opacity:1}
+.copen:hover{color:var(--text)}
+.crow{display:flex;align-items:baseline;gap:8px}
+.name{
+  flex:1;min-width:0;font-size:13px;font-weight:550;letter-spacing:-.01em;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+.age{flex:0 0 auto;font-size:11px;color:var(--text-3);font-variant-numeric:tabular-nums}
+.sub{
+  font-size:11.5px;color:var(--text-2);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+.moved{font-size:10px;color:var(--text-3)}
+.meta{font-size:10.5px;color:var(--text-3);font-variant-numeric:tabular-nums}
+.tags{display:flex;flex-wrap:wrap;gap:3px;margin-top:4px}
+/* tags stay neutral: colouring them would compete with the one accent */
+.tag{
+  font-size:10px;color:var(--text-2);border:1px solid var(--line-2);
+  border-radius:4px;padding:0 5px;line-height:1.6;
+}
+.tag.sug{border-style:dashed;color:var(--text-3)}
+.tag .tagx{margin-left:3px;color:var(--text-3)}
+.tag .tagx:hover{color:var(--failed)}
+.empty-col{font-size:11.5px;color:var(--text-3);padding:6px 4px}
+
+/* ---------- notes ---------- */
+.notes{flex:1 1 auto;min-height:0;display:grid;grid-template-columns:minmax(0,1fr) 330px}
+.notes.norail{grid-template-columns:minmax(0,1fr) 30px}
+body.split .board{flex:1 1 auto;min-height:0}
+body.split .notes{
+  flex:0 0 auto;height:min(42vh,460px);resize:vertical;
+  overflow:auto;border-top:1px solid var(--line-2);
+}
+.pad-wrap{display:flex;flex-direction:column;min-width:0;min-height:0}
+.pad-bar{display:flex;align-items:center;gap:7px;padding:8px 14px 6px;flex:0 0 auto}
+.nav{font-size:14px;color:var(--text-2);padding:1px 7px;border-radius:5px}
+.nav:hover{background:var(--card-hover)}
+.dstr{font-size:13.5px;font-weight:550;letter-spacing:-.01em;font-variant-numeric:tabular-nums}
+.saved{font-size:11px;color:var(--text-3);min-width:44px;text-align:right}
+.pages{
+  display:flex;flex-wrap:wrap;align-items:center;gap:4px;padding:2px 14px 8px;
+  border-bottom:1px solid var(--line);flex:0 0 auto;
+  max-height:30vh;overflow-y:auto;   /* a wide tab set scrolls, never pushes the pad off screen */
+}
+.ptab{
+  position:relative;font-size:12.5px;color:var(--text-2);padding:3px 8px;border-radius:5px;
+  max-width:220px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+.ptab:hover{background:var(--card-hover)}
+.ptab[aria-pressed=true]{background:var(--card);color:var(--text);font-weight:550;box-shadow:var(--shadow)}
+.tmenu{opacity:0;font-size:10px;margin-left:4px;color:var(--text-3)}
+.pages button:hover .tmenu,.pages button[aria-pressed=true] .tmenu{opacity:.65}
+.pgroup{
+  display:inline-flex;align-items:center;gap:3px;padding:2px 5px;border-radius:6px;
+  background:var(--card-hover);
+}
+.glabel{font-size:11px;color:var(--text-2);padding:1px 5px;border-radius:4px;cursor:pointer}
+.glabel:hover{color:var(--text)}
+.gcount{font-size:10px;color:var(--text-3);font-variant-numeric:tabular-nums}
+.padd{font-size:12.5px;color:var(--text-3);padding:2px 7px;border-radius:5px}
+.padd:hover{background:var(--card-hover);color:var(--text)}
+.ptab-edit{font-size:12.5px;padding:2px 6px;width:130px;border-color:var(--accent)}
+#pad{
+  flex:1 1 auto;min-height:0;width:100%;resize:none;border:none;border-radius:0;
+  background:var(--bg);color:var(--text);padding:14px 16px;
+  font:13.5px/1.7 ui-monospace,SFMono-Regular,Menlo,monospace;
+}
+#pad:focus{border:none;outline:none}
+
+.rail{display:flex;flex-direction:column;min-height:0;border-left:1px solid var(--line)}
+.rail.shut .rail-body,.rail.shut .spans,.rail.shut .rhead{display:none}
+.rail-bar{display:flex;align-items:center;gap:6px;padding:9px 10px 7px;flex:0 0 auto}
+.rhead{font-size:12.5px;font-weight:550;color:var(--text-2);padding:2px 6px;border-radius:5px;min-width:0;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rhead:hover{background:var(--card-hover)}
+.rhead .rn{color:var(--text-3);font-variant-numeric:tabular-nums;font-weight:400;margin-left:3px}
+.spans{display:flex;border:1px solid var(--line-2);border-radius:5px;overflow:hidden;margin-left:auto}
+.spans button{font-size:11px;padding:2px 7px;color:var(--text-3)}
+.spans button+button{border-left:1px solid var(--line)}
+.spans button[aria-pressed=true]{background:var(--card);color:var(--text-2)}
+.rail-body{flex:1 1 auto;overflow-y:auto;padding:2px 12px 14px}
+.rail-body h4{
+  font-size:11px;font-weight:550;color:var(--text-3);text-transform:none;
+  margin:12px 0 5px;font-variant-numeric:tabular-nums;
+}
+/* the whole row is the click target, and the hover wash is what says so —
+   a 13px checkbox alone is a needle to hit mid-meeting */
+.rit{
+  display:flex;align-items:baseline;gap:7px;padding:3px 6px;font-size:12.5px;
+  min-width:0;cursor:pointer;border-radius:6px;
+}
+.rit:hover{background:var(--card-hover)}
+/* the checkbox is drawn by hand: the native control is bright, heavy and
+   styled by the OS, and it shouts in a rail that is otherwise all hairlines */
+.rit input[type=checkbox]{
+  appearance:none;-webkit-appearance:none;margin:0;flex:0 0 auto;
+  width:13px;height:13px;transform:translateY(2px);position:relative;
+  border:1px solid var(--line-2);border-radius:4px;background:transparent;
+  cursor:pointer;
+}
+.rit input[type=checkbox]:checked{background:var(--card-2)}
+.rit input[type=checkbox]:checked::after{
+  content:"";position:absolute;left:3.5px;top:1px;width:3px;height:6px;
+  border:solid var(--text-3);border-width:0 1.5px 1.5px 0;transform:rotate(45deg);
+}
+.rtext{min-width:0;overflow-wrap:anywhere;color:var(--text)}
+.rit.done{opacity:.62}
+.rit.done:hover{opacity:1}
+.rit.done .rtext{color:var(--text-3);text-decoration:line-through}
+.rpage,.rday{font-size:10.5px;color:var(--text-3);flex:0 0 auto}
+.chip{
+  flex:0 0 auto;font-size:10px;border:1px solid var(--line-2);border-radius:4px;
+  padding:0 5px;color:var(--text-2);font-variant-numeric:tabular-nums;
+}
+/* only overdue and due-today are coloured; anything further out is a fact */
+.chip.now{color:var(--accent);border-color:var(--accent)}
+.chip.over{color:var(--failed);border-color:var(--failed)}
+.rail-empty{font-size:12px;color:var(--text-3);padding:8px 0}
+.rail-empty code{font-family:var(--mono);font-size:11px}
+#doneFold summary{font-size:11px;color:var(--text-3);list-style:none;margin:12px 0 5px}
+#doneFold summary::-webkit-details-marker{display:none}
+#doneFold summary::before{content:"\203A";display:inline-block;margin-right:5px;transition:transform .12s var(--ease)}
+#doneFold[open] summary::before{transform:rotate(90deg)}
+.capnote{font-size:10.5px;color:var(--text-3);margin:3px 0 0}
+
+/* ---------- scrim + panel ---------- */
+.scrim{
+  position:fixed;inset:0;background:rgba(0,0,0,.2);opacity:0;pointer-events:none;
+  transition:opacity .18s var(--ease);z-index:30;
+}
+.scrim.on{opacity:1;pointer-events:auto}
+.panel{
+  position:fixed;top:0;right:0;bottom:0;width:min(600px,94vw);z-index:40;
+  background:var(--bg);border-left:1px solid var(--line-2);
+  display:flex;flex-direction:column;
+  transform:translateX(100%);transition:transform .2s var(--ease);
+}
+.panel.on{transform:none}
+.phead{display:flex;align-items:center;gap:9px;padding:13px 16px 10px;border-bottom:1px solid var(--line);flex:0 0 auto}
+.ptitle{
+  flex:1;min-width:0;font-size:15px;font-weight:600;letter-spacing:-.015em;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+.x{font-size:16px;color:var(--text-3);padding:2px 8px;border-radius:5px}
+.x:hover{background:var(--card-hover);color:var(--text)}
+.pbody{flex:1;min-height:0;overflow-y:auto;padding:12px 16px 20px}
+.prow{margin:0 0 14px}
+.plabel{font-size:11.5px;color:var(--text-3);margin:0 0 4px}
+.prow .facts{font-size:11.5px;color:var(--text-2);line-height:1.7}
+.prow .facts .k{color:var(--text-3)}
+#pBody code,.pslug{font-family:var(--mono);font-size:10.5px;color:var(--text-2)}
+.pslug{color:var(--claude)}
+#renameIn{width:100%;padding:5px 9px;font-size:12.5px;border-color:var(--line-2)}
+#renameIn:focus{border-color:var(--accent)}
+.mvrow{display:flex;flex-wrap:wrap;gap:5px}
+.mvnote{font-size:11.5px;color:var(--text-3)}
+.tagrow{display:flex;flex-wrap:wrap;gap:4px;align-items:center}
+#tagIn{width:110px;font-size:11px;padding:2px 7px}
+.roster{max-height:180px;overflow-y:auto;border:1px solid var(--line);border-radius:6px}
+.roster summary{font-size:11.5px;color:var(--text-2);padding:6px 9px;list-style:none}
+.roster summary::-webkit-details-marker{display:none}
+.roster summary::before{content:"\203A";display:inline-block;margin-right:6px;transition:transform .12s var(--ease)}
+.roster[open] summary::before{transform:rotate(90deg)}
+.rrow{
+  display:flex;width:100%;align-items:baseline;gap:7px;text-align:left;
+  padding:5px 9px;font-size:11.5px;color:var(--text-2);min-width:0;
+}
+.rrow:hover{background:var(--card-hover)}
+.rrow.on{background:var(--card);color:var(--text)}
+.rrow .rdesc{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rrow .rmsg{flex:0 0 auto;font-size:10.5px;color:var(--text-3);font-variant-numeric:tabular-nums}
+.rmark{flex:0 0 auto;font-size:9px;color:var(--text-3)}
+.rmark.run{color:var(--working)}
+.rtype{flex:0 0 auto;font-size:10.5px;color:var(--text-3)}
+
+/* transcript: both speakers get the same shape; hue is the only difference */
+.tscroll{min-height:120px}
+.tailnote{font-size:10.5px;color:var(--text-3);margin:0 0 8px}
+.msg{background:var(--card);border-radius:7px;padding:10px 13px;margin:0 0 12px}
+.msg.user{border-left:2px solid var(--you)}
+.msg.assistant{border-left:2px solid var(--claude)}
+.msg .who{font-size:10px;font-weight:600;letter-spacing:.4px;margin:0 0 4px}
+.msg.user .who{color:var(--you)}
+.msg.assistant .who{color:var(--claude)}
+.msg .body{color:var(--text-2);overflow-wrap:anywhere}
+.msg.user .body{color:var(--text)}   /* short, worth reading exactly */
+.msg .body .t-h{display:block;margin:6px 0 2px;font-weight:600}
+.msg .body .t-li{display:list-item;margin-left:18px}
+pre.t-code{
+  font-family:var(--mono);font-size:11px;line-height:1.55;background:var(--bg);
+  border:1px solid var(--line);border-radius:6px;padding:8px 10px;overflow-x:auto;
+}
+/* tool traces stay unfilled on the page background — the layer under the dialogue */
+.trace{margin:0 0 12px;padding:0 2px}
+.tcall,.tres,.tthink,.tsum{font-family:var(--mono);font-size:10.5px;line-height:1.7;color:var(--text-3)}
+.tcall .tname{color:var(--text-2)}
+.tres{white-space:pre-wrap;overflow-wrap:anywhere}
+.tres.err{color:var(--failed)}
+details.tools>summary{list-style:none;font-family:var(--mono);font-size:10.5px;color:var(--text-3);padding:2px 0}
+details.tools>summary::-webkit-details-marker{display:none}
+details.tools>summary::before{content:"\203A";display:inline-block;margin-right:5px;transition:transform .12s var(--ease)}
+details.tools[open]>summary::before{transform:rotate(90deg)}
+details.tools .tfail{color:var(--failed)}
+.mline{display:flex;align-items:baseline;gap:7px;font-size:12px;padding:3px 6px;
+  min-width:0;border-radius:6px}
+.mline:has(input[data-mday]){cursor:pointer}
+.mline:has(input[data-mday]):hover{background:var(--card-hover)}
+/* same hand-drawn box as the rail — one checkbox, everywhere */
+.mline input[type=checkbox]{
+  appearance:none;-webkit-appearance:none;margin:0;flex:0 0 auto;
+  width:13px;height:13px;transform:translateY(2px);position:relative;
+  border:1px solid var(--line-2);border-radius:4px;background:transparent;
+  cursor:pointer;
+}
+.mline input[type=checkbox]:checked{background:var(--card-2)}
+.mline input[type=checkbox]:checked::after{
+  content:"";position:absolute;left:3.5px;top:1px;width:3px;height:6px;
+  border:solid var(--text-3);border-width:0 1.5px 1.5px 0;transform:rotate(45deg);
+}
+.mline .mday{flex:0 0 auto;font-size:10.5px;color:var(--text-3);font-variant-numeric:tabular-nums}
+.mline .mtext{min-width:0;overflow-wrap:anywhere;color:var(--text-2)}
+.mline.done{opacity:.62}
+.mline.done:hover{opacity:1}
+.qa{display:flex;gap:5px;margin-top:6px}
+.qa input{flex:1;min-width:0;font-size:12px;padding:4px 8px}
+
+/* ---------- modal sheets ---------- */
+.modal{
+  position:fixed;inset:0;z-index:50;display:flex;align-items:flex-start;justify-content:center;
+  padding:8vh 16px 16px;background:rgba(0,0,0,.25);overflow-y:auto;
+}
+.sheet{
+  background:var(--card);border:1px solid var(--line);border-radius:10px;
+  width:min(520px,94vw);padding:18px 20px;box-shadow:0 8px 30px rgba(0,0,0,.12);
+}
+.sheet.wide{width:min(780px,94vw)}
+.stitle{font-size:15px;font-weight:600;letter-spacing:-.015em;margin:0 0 12px}
+.sheet label{display:block;font-size:11.5px;color:var(--text-3);margin:0 0 10px}
+.sheet label input,.sheet label select,.sheet label textarea{
+  display:block;width:100%;margin-top:3px;font-size:12.5px;padding:6px 9px;color:var(--text);
+}
+.sheet textarea{resize:vertical;font-family:var(--mono);font-size:12px;line-height:1.6}
+.srow{display:flex;align-items:center;gap:7px;margin-top:4px}
+.hint{font-size:11px;color:var(--text-3)}
+.hint.err{color:var(--failed)}
+
+/* page grid + history */
+.gwrap{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:9px}
+.gcard{
+  text-align:left;background:var(--bg);border:1px solid var(--line);border-radius:6px;
+  padding:9px 11px;min-width:0;
+}
+.gcard:hover{background:var(--card-hover)}
+.gname{display:flex;align-items:baseline;gap:6px;font-size:13px;font-weight:550;letter-spacing:-.01em;min-width:0}
+.gname .n{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.gopen{font-size:10px;color:var(--accent);font-variant-numeric:tabular-nums}
+.gcard pre{
+  font-family:var(--mono);font-size:10.5px;line-height:1.5;color:var(--text-3);
+  margin:5px 0 0;white-space:pre-wrap;overflow:hidden;max-height:56px;
+}
+.hday{margin:0 0 16px;opacity:.62}
+.hday.today,.hday:hover{opacity:1}
+.hhead{display:flex;align-items:baseline;gap:8px;font-size:12.5px;font-weight:550;margin:0 0 4px}
+.hedit{font-size:11px;color:var(--text-3);opacity:0;transition:opacity .12s var(--ease)}
+.hday:hover .hedit,.hedit:focus{opacity:1}
+.hedit:hover{color:var(--text)}
+.hday pre{
+  font-family:var(--mono);font-size:11px;line-height:1.65;color:var(--text-2);
+  margin:0;white-space:pre-wrap;overflow-wrap:anywhere;
+}
+.hday.today pre{color:var(--text)}
+.gback{font-size:11.5px;color:var(--text-3);margin-bottom:10px}
+.gback:hover{color:var(--text)}
+
+/* manage panel rows: name, then the facts that decide what to do with it;
+   controls held back until hover — the same rule the session cards follow */
+.mrow{padding:9px 2px;border-bottom:1px solid var(--line)}
+.mtop{display:flex;align-items:baseline;gap:9px;min-width:0}
+.mname{flex:0 1 auto;min-width:0;font-size:13px;font-weight:550;letter-spacing:-.01em;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.mfacts{flex:1;min-width:0;font-size:11.5px;color:var(--text-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.macts{display:flex;gap:4px;opacity:0;transition:opacity .12s var(--ease)}
+.mrow:hover .macts,.mrow.open .macts,.mrow:focus-within .macts{opacity:1}
+.macts button{font-size:11px;color:var(--text-2);padding:2px 7px;border-radius:4px}
+.macts button:hover{background:var(--card-hover);color:var(--text)}
+.macts button.danger:hover{color:var(--failed)}
+.medit{display:flex;align-items:center;gap:6px;margin-top:7px;flex-wrap:wrap}
+.medit input{font-size:12px;padding:3px 8px}
+
+/* ---------- popover menus ---------- */
+.pmenu{
+  position:fixed;z-index:60;width:216px;padding:4px;
+  background:var(--card);border:1px solid var(--line-2);border-radius:8px;
+  box-shadow:0 6px 24px rgba(0,0,0,.14);
+}
+.pmenu button{
+  display:flex;width:100%;align-items:center;gap:7px;text-align:left;
+  font-size:12.5px;color:var(--text-2);padding:5px 9px;border-radius:5px;min-width:0;
+}
+.pmenu button:hover{background:var(--card-hover);color:var(--text)}
+.pmenu button .tick{width:12px;flex:0 0 auto;color:var(--text-3)}
+.pmenu hr{border:none;border-top:1px solid var(--line);margin:4px 2px}
+.pmenu .sec{font-size:10.5px;color:var(--text-3);padding:5px 9px 2px}
+.pmenu input{width:calc(100% - 8px);margin:2px 4px;font-size:12px;padding:3px 8px}
+/* destructive rows are the only coloured menu item, and they are last */
+.pmenu button.danger:hover{color:var(--failed,#ef5f63)}
+.wdays{display:flex;gap:2px;padding:2px 6px 4px}
+.wdays button{
+  flex:1;justify-content:center;font-size:10.5px;color:var(--text-3);
+  padding:3px 0;border:1px solid var(--line-2);border-radius:4px;
+}
+.wdays button[aria-pressed=true]{color:var(--accent);border-color:var(--accent)}
+.atmenu{width:240px}
+.atmenu button{font-family:var(--mono);font-size:11.5px}
+.atmenu button.on{background:var(--card-hover);color:var(--text)}
+.atmenu .atname{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  font-family:var(--sans);font-size:11px;color:var(--text-3)}
+
+/* ---------- toast ---------- */
+.toast{
+  position:fixed;left:50%;bottom:26px;transform:translateX(-50%);z-index:70;
+  background:var(--card);border:1px solid var(--line-2);border-radius:8px;
+  padding:8px 14px;font-size:12.5px;color:var(--text);box-shadow:0 6px 24px rgba(0,0,0,.14);
+  max-width:70vw;
+}
+</style>
+</head>
+<body>
+
+<header class="bar">
+  <div class="brand">agentgrid</div>
+  <div class="views" id="views">
+    <button data-view="board" aria-pressed="true">Board</button>
+    <button data-view="split" aria-pressed="false">Split</button>
+    <button data-view="notes" aria-pressed="false">Notes<span class="ncount" id="openCount"></span></button>
+  </div>
+  <select class="ctl" id="projectSel" title="Project"></select>
+  <select class="ctl" id="tagSel" title="Tag"></select>
+  <div class="toggles" id="toggles"></div>
+  <div class="spacer"></div>
+  <button class="btn key" id="newBtn" title="Start a new agent  (n)">New agent</button>
+  <input id="search" type="search" placeholder="Search  /" autocomplete="off">
+  <div class="stamp" id="stamp" title="Last refresh"></div>
+</header>
+
+<main class="board" id="board"></main>
+
+<section class="notes" id="notes" hidden>
+  <div class="pad-wrap">
+    <div class="pad-bar">
+      <button class="nav" id="dayPrev" title="Previous day">&#8249;</button>
+      <span class="dstr" id="dayLabel"></span>
+      <button class="nav" id="dayNext" title="Next day">&#8250;</button>
+      <button class="btn sm" id="dayToday">Today</button>
+      <span class="spacer"></span>
+      <span class="saved" id="savedTag"></span>
+    </div>
+    <div class="pages" id="pages"></div>
+    <textarea id="pad" spellcheck="false"
+      placeholder="Notes for the day. -[] then space starts a todo; @ mentions a session."></textarea>
+  </div>
+  <aside class="rail" id="rail">
+    <div class="rail-bar">
+      <button class="rhead" id="railScopeBtn" title="Toggle between every page and this page"></button>
+      <div class="spans" id="spans">
+        <button data-span="day" aria-pressed="true">Day</button>
+        <button data-span="week" aria-pressed="false">Week</button>
+        <button data-span="month" aria-pressed="false">Month</button>
+      </div>
+      <button class="nav" id="railCollapse" title="Collapse the rail">&#8250;</button>
+    </div>
+    <div class="rail-body" id="railBody"></div>
+  </aside>
+</section>
+
+<div class="scrim" id="scrim"></div>
+<aside class="panel" id="panel">
+  <div class="phead">
+    <div class="ptitle" id="pTitle"></div>
+    <button class="x" id="pClose" title="Close">&#215;</button>
+  </div>
+  <div class="pbody" id="pBody"></div>
+</aside>
+
+<div class="modal" id="modal" hidden>
+  <div class="sheet">
+    <div class="stitle">New agent</div>
+    <label>Name <span class="hint">optional — what you will look for on the board</span>
+      <input id="naName" maxlength="60" autocomplete="off"></label>
+    <label>Project
+      <select id="naProject"></select></label>
+    <label>Engine
+      <select id="naEngine">
+        <option value="claude">Claude</option>
+        <option value="codex">Codex</option>
+      </select></label>
+    <label>Model
+      <select id="naModel">
+        <option value="">Default</option>
+        <option value="sonnet">Sonnet</option>
+        <option value="opus">Opus</option>
+        <option value="haiku">Haiku</option>
+      </select></label>
+    <label>Task
+      <textarea id="naTask" rows="5" placeholder="What should it do?"></textarea></label>
+    <div class="srow">
+      <span class="hint err" id="naErr"></span>
+      <span class="spacer"></span>
+      <span class="hint">&#8984;&#9166; starts</span>
+      <button class="btn" id="naCancel">Cancel</button>
+      <button class="btn key" id="naStart">Start</button>
+    </div>
+  </div>
+</div>
+
+<div class="pmenu" id="pmenu" hidden></div>
+<div class="pmenu atmenu" id="atMenu" hidden></div>
+
+<div class="scrim" id="scrim2"></div>
+<aside class="panel" id="managePanel">
+  <div class="phead">
+    <div class="ptitle">Pages</div>
+    <button class="x" id="mClose" title="Close">&#215;</button>
+  </div>
+  <div class="pbody" id="mBody"></div>
+</aside>
+
+<div class="modal" id="gridModal" hidden>
+  <div class="sheet wide" id="gmSheet"></div>
+</div>
+
+<div class="toast" id="toast" hidden></div>
+<script>
+"use strict";
+
+/* ------------------------------------------------------------------ helpers */
+
+const TOKEN = new URLSearchParams(location.search).get("t") || "";
+const api = (p, o) => fetch(p + (p.includes("?") ? "&" : "?") + "t=" +
+  encodeURIComponent(TOKEN), o).then(r => r.json());
+const post = (p, body) => api(p, {
+  method: "POST",
+  headers: {"Content-Type": "application/json"},
+  body: JSON.stringify(body),
+  keepalive: true,          // beforeunload flush must survive the tab closing
+});
+const $ = (id) => document.getElementById(id);
+const esc = (t) => String(t ?? "").replace(/[&<>"']/g, c =>
+  ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+
+const todayIso = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+};
+// T12:00:00 — immune to DST edges
+const isoShift = (iso, days) => {
+  const d = new Date(iso + "T12:00:00"); d.setDate(d.getDate() + days);
+  return d.toISOString().slice(0, 10);
+};
+// never an ISO string: the point of writing "tomorrow" was not to think about
+// the calendar
+function dueLabel(iso) {
+  const t = todayIso();
+  if (iso === t) return "today";
+  if (iso === isoShift(t, 1)) return "tomorrow";
+  const d = new Date(iso + "T12:00:00");
+  const diff = Math.round((d - new Date(t + "T12:00:00")) / 86400000);
+  if (diff > 1 && diff < 7) return d.toLocaleDateString(undefined, {weekday: "long"}).toLowerCase();
+  return d.getDate() + " " + d.toLocaleDateString(undefined, {month: "short"});
+}
+function dueClass(iso) {
+  const t = todayIso();
+  return iso < t ? "over" : iso === t ? "now" : "";
+}
+function dayShort(iso) {
+  const d = new Date(iso + "T12:00:00");
+  return d.toLocaleDateString(undefined, {weekday: "short", day: "numeric", month: "short"});
+}
+function ageStr(sec) {
+  sec = Math.max(0, Math.round(sec || 0));
+  if (sec < 60) return "now";
+  if (sec < 3600) return Math.floor(sec / 60) + "m ago";
+  if (sec < 86400) return Math.floor(sec / 3600) + "h ago";
+  return Math.floor(sec / 86400) + "d ago";
+}
+function isTyping() {
+  const el = document.activeElement;
+  return !!el && (/^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName) || el.isContentEditable);
+}
+
+/* markdown-lite. Order matters: fences are pulled out FIRST into private-use
+   sentinels so nothing inside a code block gets inline formatting, the text is
+   escaped, THEN inline rules run over the escaped text, and the fences are
+   restored last. Deliberately not a full parser. */
+function md(raw) {
+  const fences = [];
+  let text = String(raw ?? "").replace(/```[\w-]*\n?([\s\S]*?)```/g,
+    (_, code) => `${fences.push(code.replace(/\n$/, "")) - 1}`);
+  text = esc(text)
+    .replace(/`([^`\n]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/^(#{1,6})\s+(.*)$/gm, (_, h, t) => `<b class="t-h">${t}</b>`)
+    // the lookahead keeps checkbox lines from being eaten as list items
+    .replace(/^\s*[-*]\s+(?!\[[ xX]\])(.*)$/gm, "<span class='t-li'>$1</span>")
+    .replace(/\b(https?:\/\/[^\s<)]+)/g, '<a href="$1" target="_blank" rel="noreferrer">$1</a>')
+    .replace(/@([a-z0-9][a-z0-9._-]*)/gi, '<a href="#" class="mention" data-slug="$1">@$1</a>');
+  return text.replace(/(\d+)/g,
+    (_, i) => `<pre class="t-code">${esc(fences[Number(i)])}</pre>`);
+}
+
+// ticket keys become links in the rail and history, never in the editor
+function linkTickets(escaped) {
+  if (!jiraBase) return escaped;
+  return escaped.replace(/\b([A-Z][A-Z0-9]+-\d+)\b/g,
+    `<a class="ticket" target="_blank" rel="noreferrer" href="${esc(jiraBase)}$1">$1</a>`);
+}
+function linkMentions(escaped) {
+  return escaped.replace(/@([a-z0-9][a-z0-9._-]*)/gi,
+    '<a href="#" class="mention" data-slug="$1">@$1</a>');
+}
+
+function toast(msg) {
+  const t = $("toast");
+  t.textContent = msg; t.hidden = false;
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => { t.hidden = true; }, 2800);
+}
+
+/* ------------------------------------------------------------------- state */
+
+// board
+let sessions = [], polledAt = 0, fleetError = "";
+let query = "", openId = null, openAgent = null, project = "", tag = "";
+const nodes = new Map();          // sessionId -> card element, kept across renders
+let hiddenCols;
+try { hiddenCols = JSON.parse(localStorage.getItem("agentgrid.hidden") || '["idle","complete"]'); }
+catch (e) { hiddenCols = ["idle", "complete"]; }
+let rosterOpen = false, metaSig = "", rosterSig = "", transSig = "", transFirst = true;
+let projectsCache = null;
+
+// notes
+let view = localStorage.getItem("agentgrid.view") || "board";
+let day = todayIso(), span = "day", page = "";
+let padDirty = false, saveTimer = null, jiraBase = "";
+let railOpen = localStorage.getItem("agentgrid.rail") !== "0";
+let railScope = localStorage.getItem("agentgrid.railScope") || "all";
+let doneOpen = localStorage.getItem("agentgrid.doneOpen") === "1";
+let pageGroups = {}, collapsedGroups = [], pinnedPages = [], currentPages = [];
+let notesData = null, menuFor = null, dragPage = null, dragGroup = null;
+let expandedRow = null, managePages = [];
+let atFrom = -1, atSel = 0, atHits = [];
+
+// columns are data, not markup; they are built once and only cards move
+const COLUMNS = [
+  {key: "blocked",  name: "Needs you", match: s => s.status === "blocked" || s.status === "failed"},
+  {key: "working",  name: "Working",   match: s => s.status === "working"},
+  {key: "done",     name: "Replied",   match: s => s.status === "done" || s.status === "stopped"},
+  {key: "complete", name: "Done",      match: s => s.status === "complete", hideable: true},
+  {key: "idle",     name: "Idle",      match: s => s.status === "idle",     hideable: true},
+];
+const COL_LABEL = {blocked: "Needs you", done: "Replied", idle: "Idle", complete: "Done"};
+
+/* ------------------------------------------------------------------- board */
+
+function buildColumns() {
+  const board = $("board");
+  COLUMNS.forEach(c => {
+    const col = document.createElement("section");
+    col.className = "col"; col.dataset.key = c.key;
+    col.innerHTML =
+      `<div class="col-head"><span class="dot"></span>` +
+      `<span class="col-name">${c.name}</span>` +
+      `<span class="col-count"></span></div>` +
+      `<div class="col-body" data-body></div>`;
+    board.appendChild(col);
+  });
+}
+
+function applyVisibility() {
+  const shown = COLUMNS.filter(c => !c.hideable || !hiddenCols.includes(c.key));
+  $("board").style.gridTemplateColumns = `repeat(${shown.length}, minmax(0,1fr))`;
+  document.querySelectorAll(".col").forEach(col => {
+    const c = COLUMNS.find(k => k.key === col.dataset.key);
+    col.hidden = !!(c.hideable && hiddenCols.includes(c.key));
+  });
+}
+
+function filtered() {
+  const q = query.trim().toLowerCase();
+  return sessions.filter(s => {
+    if (project && s.cwd !== project) return false;
+    if (tag === "∅") { if ((s.tags || []).length) return false; }
+    else if (tag && !(s.tags || []).includes(tag)) return false;
+    if (q) {
+      const hay = [s.title, s.project, s.branch, s.prompt, ...(s.tags || [])]
+        .map(x => String(x || "").toLowerCase()).join(" ");
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  });
+}
+
+function cardFor(s) {
+  let el = nodes.get(s.sessionId);
+  if (!el) {
+    el = document.createElement("article");
+    el.dataset.id = s.sessionId;
+    nodes.set(s.sessionId, el);
+  }
+  const subs = s.subagents || [];
+  const running = subs.filter(a => a.status === "working").length;
+  const settled = s.status === "done" || s.status === "stopped";
+  // rebuilding innerHTML every poll destroys hover and drags — a signature of
+  // everything displayed guards it
+  const sig = JSON.stringify([s.title, s.status, s.project, s.branch, s.idleSeconds,
+                              s.attachable, s.openable, s.engine, s.overridden, s.tags,
+                              subs.length, running, s.unread]);
+  if (el.dataset.sig !== sig) {
+    el.dataset.sig = sig;
+    el.innerHTML =
+      `<div class="crow"><span class="name">${esc(s.title)}</span>` +
+      `<span class="age">${ageStr(s.idleSeconds)}</span></div>` +
+      `<div class="sub">${esc(s.project)}${s.engine === "codex" ? " · codex" : ""}` +
+      `${s.branch ? " · " + esc(s.branch) : ""}` +
+      `${s.overridden ? ' <span class="moved">moved</span>' : ""}</div>` +
+      (subs.length ? `<div class="meta">${subs.length} agent${subs.length > 1 ? "s" : ""}` +
+        `${running ? `, ${running} running` : ""}</div>` : "") +
+      ((s.tags || []).length ? `<div class="tags">${s.tags.map(t =>
+        `<span class="tag">${esc(t)}</span>`).join("")}</div>` : "") +
+      // straight into the terminal from the card — the panel detour is for
+      // reading, not for getting in
+      (s.openable ? `<button class="copen" data-open="${esc(s.sessionId)}">Open ↗</button>` : "");
+  }
+  // className is set unconditionally — cheap, and it carries selection state
+  el.className = "card" +
+    ((s.status === "blocked" || s.status === "failed") ? " needs" : "") +
+    (settled && s.unread ? " fresh" : "") +
+    (openId === s.sessionId ? " sel" : "");
+  el.draggable = s.status !== "working";   // a genuinely working card is not draggable
+  return el;
+}
+
+function render() {
+  // FLIP 1: measure. A card in a hidden column measures 0x0 — skip it, or it
+  // flies in from the corner when the column is shown.
+  const before = new Map();
+  nodes.forEach((el, id) => {
+    if (!el.isConnected) return;
+    const r = el.getBoundingClientRect();
+    if (r.width) before.set(id, r);
+  });
+  // FLIP 2: mutate — appendChild MOVES an existing node between columns
+  const list = filtered();
+  COLUMNS.forEach(c => {
+    const col = document.querySelector(`.col[data-key=${c.key}]`);
+    const body = col.querySelector("[data-body]");
+    const mine = list.filter(c.match);
+    col.querySelector(".col-count").textContent = mine.length || "";
+    col.querySelector(".col-head").classList.toggle("has", mine.length > 0);
+    mine.forEach(s => body.appendChild(cardFor(s)));
+  });
+  const ids = new Set(list.map(s => s.sessionId));
+  nodes.forEach((el, id) => { if (!ids.has(id)) { el.remove(); nodes.delete(id); } });
+  // FLIP 3: play the difference backwards
+  nodes.forEach((el, id) => {
+    const first = before.get(id); if (!first) return;
+    const last = el.getBoundingClientRect(); if (!last.width) return;
+    const dx = first.left - last.left, dy = first.top - last.top;
+    if (!dx && !dy) return;
+    el.animate([{transform: `translate(${dx}px,${dy}px)`}, {transform: "none"}],
+               {duration: 260, easing: "cubic-bezier(.32,.72,0,1)"});
+  });
+  renderToggles();
+}
+
+function renderToggles() {
+  const list = filtered();
+  const sig = JSON.stringify(COLUMNS.filter(c => c.hideable).map(c =>
+    [c.key, list.filter(c.match).length, hiddenCols.includes(c.key)]));
+  const host = $("toggles");
+  if (host.dataset.sig === sig) return;
+  host.dataset.sig = sig;
+  // nothing is hidden silently: the toggle keeps the count while the column hides
+  host.innerHTML = COLUMNS.filter(c => c.hideable).map(c => {
+    const n = list.filter(c.match).length;
+    const on = !hiddenCols.includes(c.key);
+    return `<button data-col="${c.key}" aria-pressed="${on}">${c.name} ${n}</button>`;
+  }).join("");
+}
+
+function renderSelects() {
+  // project dropdown is built from what the fleet is actually in, with counts
+  const counts = new Map();
+  sessions.forEach(s => counts.set(s.cwd, (counts.get(s.cwd) || 0) + 1));
+  const opts = [...counts.entries()]
+    .map(([cwd, n]) => ({cwd, name: cwd.split("/").pop() || cwd, n}))
+    .sort((a, b) => a.name.localeCompare(b.name));
+  if (project && !counts.has(project)) {
+    project = "";   // the filtered repo left the fleet: fall back, not an empty board
+  }
+  const pSel = $("projectSel");
+  const pSig = JSON.stringify(opts);
+  if (pSel.dataset.sig !== pSig) {   // rebuilding a <select> every poll steals focus
+    pSel.dataset.sig = pSig;
+    pSel.innerHTML = `<option value="">All projects</option>` + opts.map(o =>
+      `<option value="${esc(o.cwd)}">${esc(o.name)} (${o.n})</option>`).join("");
+    pSel.value = project;
+  }
+  // tag dropdown offers only tags something actually has, plus Untagged
+  const worn = [];
+  sessions.forEach(s => (s.tags || []).forEach(t => { if (!worn.includes(t)) worn.push(t); }));
+  worn.sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+  const tSel = $("tagSel");
+  const tSig = JSON.stringify(worn);
+  if (tSel.dataset.sig !== tSig) {
+    tSel.dataset.sig = tSig;
+    if (tag && tag !== "∅" && !worn.includes(tag)) tag = "";
+    tSel.innerHTML = `<option value="">All tags</option>` +
+      worn.map(t => `<option value="${esc(t)}">${esc(t)}</option>`).join("") +
+      `<option value="∅">Untagged</option>`;
+    tSel.value = tag;
+  }
+}
+
+/* --------------------------------------------------------------- overrides */
+
+function moveSession(id, to) {
+  const s = sessions.find(x => x.sessionId === id);
+  if (!s) return;
+  if (s.status === "working" || to === "working") {
+    toast("Running — stop it before re-filing."); return;
+  }
+  // apply locally first: the server recomputes on its own 2s cadence, which is
+  // long enough for a dropped card sitting still to read as a failed drag
+  const clearing = !to || to === "auto" || to === s.realStatus;
+  s.status = clearing ? s.realStatus : to;
+  s.overridden = !clearing;
+  render(); if (openId === id) renderPanel();
+  post("/api/override", {sessionId: id, to: clearing ? "" : to}).then(r => {
+    if (r && r.error) { toast(r.error); poll(); }
+  });
+}
+
+/* ------------------------------------------------------------------ panel */
+
+function openSession(id) {
+  openId = id; openAgent = null; rosterOpen = false;
+  metaSig = rosterSig = transSig = ""; transFirst = true;
+  // Notes sit right under Tags, not at the bottom: they are the things you
+  // decided about this session, which outrank the transcript you already read.
+  $("pBody").innerHTML =
+    `<div id="pMeta"></div><div class="prow" id="pNotes"></div><div id="pMore"></div>` +
+    `<div id="pRoster" class="prow"></div>` +
+    `<div class="prow"><div class="plabel" id="tTail"></div><div class="tscroll" id="tScroll"></div></div>`;
+  $("panel").classList.add("on"); $("scrim").classList.add("on");
+  const s = sessions.find(x => x.sessionId === id);
+  if (s) {
+    // the read record is a position; the server stores how far you have seen
+    post("/api/read", {sessionId: id});
+    s.unread = false;
+  }
+  renderPanel(); refreshTranscript(); loadMentions(); render();
+}
+
+function closePanel() {
+  openId = null; openAgent = null;
+  $("panel").classList.remove("on"); $("scrim").classList.remove("on");
+  render();
+}
+
+const TAG_VOCAB = ["PR review", "Bug fix", "Feature", "Spike", "Task", "Chore"];
+function suggestTag(s) {
+  const hay = `${s.title || ""} ${s.prompt || ""}`.toLowerCase();
+  const rules = [
+    [/\b(pr|pull request|review)\b/, "PR review"],
+    [/\b(bug|fix|broken|crash)\b/, "Bug fix"],
+    [/\b(feature|implement|add|build)\b/, "Feature"],
+    [/\b(spike|investigate|explore|research)\b/, "Spike"],
+    [/\bchore|cleanup|tidy\b/, "Chore"],
+  ];
+  for (const [re, name] of rules) {
+    if (re.test(hay) && !(s.tags || []).some(t => t.toLowerCase() === name.toLowerCase()))
+      return name;
+  }
+  return null;
+}
+
+function renderPanel() {
+  const s = sessions.find(x => x.sessionId === openId);
+  if (!s) return;
+  $("pTitle").textContent = s.title || s.sessionId.slice(0, 8);
+  const subs = s.subagents || [];
+  const settled = s.status === "done" || s.status === "stopped";
+  const sug = suggestTag(s);
+  const sig = JSON.stringify([s.title, s.status, s.realStatus, s.customName, s.tags,
+    s.overridden, s.unread, s.attachable, s.openable, s.engine, s.prompt, s.model,
+    s.branch, s.toolCounts, sug]);
+  // never rebuild under a focused input: on a working session the tool counts
+  // tick every poll, and the rebuild would eat a rename mid-word
+  if (metaSig !== sig && !$("pMeta").contains(document.activeElement)
+      && !$("pMore").contains(document.activeElement)) {
+    metaSig = sig;
+    const tools = Object.entries(s.toolCounts || {}).sort((a, b) => b[1] - a[1]).slice(0, 6)
+      .map(([n, c]) => `${esc(n)} ${c}`).join(" · ");
+    const working = s.status === "working";
+    const moves = working
+      ? `<div class="mvnote">Running — stop it before re-filing.</div>`
+      : ["blocked", "done", "idle", "complete"].map(k =>
+          `<button class="btn sm mv" data-to="${k}" ${s.status === k ? 'disabled' : ''}>${COL_LABEL[k]}</button>`
+        ).join("") +
+        `<button class="btn sm mv" data-to="auto" ${s.overridden ? "" : "disabled"}>Auto</button>`;
+    // Both kinds get a live Open button, but they do different things: a
+    // background session is joined (claude attach), an interactive one has its
+    // real Terminal.app tab focused — never resumed, which would fork the
+    // conversation. The server explains itself with a 409 for hosts it
+    // cannot script (Cursor), and that refusal surfaces as a toast. Codex
+    // sessions report no pid, so their button says why it can do nothing.
+    const openBtn = !s.openable
+      ? `<button class="btn" disabled title="This session runs in its own app or terminal; there is nothing to focus from here.">Open in Terminal</button>`
+      : s.attachable
+        ? `<button class="btn key" id="openBtn" title="Join this session in a Terminal.app tab">Open in Terminal</button>`
+        : `<button class="btn key" id="openBtn" title="Bring its terminal tab to the front (Terminal.app only — joining would fork the conversation)">Open in Terminal</button>`;
+    const unreadBtn = settled
+      ? `<button class="btn sm" id="unreadBtn">Mark unread</button>` : "";
+    $("pMeta").innerHTML =
+      `<div class="prow"><div class="plabel">Name</div>` +
+      `<input id="renameIn" value="${esc(s.customName || "")}" placeholder="${esc(s.title || "")}" maxlength="60"></div>` +
+      `<div class="prow"><div class="mvrow">${openBtn}${unreadBtn}</div></div>` +
+      (working ? `<div class="prow"><div class="mvnote">Running — stop it before re-filing.</div></div>` : "") +
+      `<div class="prow"><div class="plabel">Tags</div><div class="tagrow" id="tagRow">` +
+        (s.tags || []).map(t =>
+          `<span class="tag">${esc(t)}<button class="tagx" data-tag="${esc(t)}" title="Remove">×</button></span>`).join("") +
+        ((s.tags || []).length < 6 ? (
+          (sug ? `<button class="tag sug" data-add="${esc(sug)}" title="Suggested from the title — never applied on its own">${esc(sug)}</button>` : "") +
+          TAG_VOCAB.filter(t => t !== sug &&
+            !(s.tags || []).some(x => x.toLowerCase() === t.toLowerCase())).map(t =>
+            `<button class="tag sug" data-add="${esc(t)}">${esc(t)}</button>`).join("") +
+          `<input id="tagIn" placeholder="add…" maxlength="24">`) : "") +
+      `</div></div>`;
+    $("pMore").innerHTML =
+      (working ? "" : `<div class="prow"><div class="plabel">Move to</div><div class="mvrow">${moves}</div></div>`) +
+      `<div class="prow"><div class="facts">` +
+        (s.prompt ? `<div>› ${esc(s.prompt)}</div>` : "") +
+        (tools ? `<div><span class="k">tools</span> ${tools}</div>` : "") +
+        `<div><span class="k">status</span> ${esc(s.status)}${s.overridden ? ` (moved — really ${esc(s.realStatus)})` : ""}` +
+        ` · <span class="k">kind</span> ${esc(s.kind)}` +
+        (s.engine && s.engine !== "claude" ? ` · <span class="k">engine</span> ${esc(s.engine)}` : "") +
+        `${s.model ? ` · <span class="k">model</span> ${esc(s.model)}` : ""}</div>` +
+        `<div><span class="k">cwd</span> <code>${esc(s.cwd)}</code></div>` +
+        `<div><span class="k">session</span> <code>${esc(s.sessionId)}</code>` +
+        (s.slug ? ` · <span class="k">mention</span> <span class="pslug">@${esc(s.slug)}</span>` : "") + `</div>` +
+      `</div></div>`;
+  }
+  renderRoster(s, subs);
+}
+
+function renderRoster(s, subs) {
+  const sig = JSON.stringify([subs, openAgent, rosterOpen]);
+  if (rosterSig === sig) return;
+  rosterSig = sig;
+  if (!subs.length) { $("pRoster").innerHTML = ""; return; }
+  const running = subs.filter(a => a.status === "working").length;
+  const row = (a) => {
+    const on = a ? openAgent === a.id : !openAgent;
+    return `<button class="rrow${on ? " on" : ""}" data-agent="${a ? esc(a.id) : ""}">` +
+      `<span class="rmark ${a && a.status === "working" ? "run" : "done"}">${a ? (a.status === "working" ? "●" : "○") : "●"}</span>` +
+      (a ? `<span class="rtype">${esc(a.type)}</span>` : "") +
+      `<span class="rdesc">${a ? esc(a.description) : "Conversation"}</span>` +
+      (a ? `<span class="rmsg">${a.messages}msg</span>` : "") + `</button>`;
+  };
+  const rows = [row(null)].concat(subs.map(row)).join("");
+  if (subs.length <= 3) {
+    $("pRoster").innerHTML = `<div class="roster">${rows}</div>`;
+  } else {
+    // a fold must never become hiding: the summary keeps naming the selection
+    const cur = openAgent
+      ? (subs.find(a => a.id === openAgent) || {}).description || openAgent
+      : "Conversation";
+    $("pRoster").innerHTML =
+      `<details class="roster tools" id="rosterFold"${rosterOpen ? " open" : ""}>` +
+      `<summary>${esc(cur)} · ${subs.length} agents${running ? ` · ${running} running` : ""}</summary>` +
+      `${rows}</details>`;
+    const fold = $("rosterFold");
+    fold.addEventListener("toggle", () => { rosterOpen = fold.open; });
+  }
+}
+
+async function refreshTranscript() {
+  if (!openId) return;
+  const id = openId, agent = openAgent;
+  let data;
+  try {
+    data = await api(`/api/transcript?id=${encodeURIComponent(id)}` +
+      (agent ? `&agent=${encodeURIComponent(agent)}` : ""));
+  } catch (e) { return; }
+  // you can switch rows while a request is in flight — re-check both
+  if (id !== openId || agent !== openAgent) return;
+  const blocks = data.blocks || [];
+  const sig = blocks.length + ":" + JSON.stringify(blocks[blocks.length - 1] || 0);
+  if (sig === transSig) return;
+  transSig = sig;
+  const host = $("tScroll");
+  const nearBottom = host.scrollHeight - host.scrollTop - host.clientHeight < 60;
+  $("tTail").textContent = blocks.length >= 600
+    ? "Transcript — showing the tail (last 600 blocks)" : "Transcript";
+  host.innerHTML = blocksHtml(blocks) ||
+    `<div class="mvnote">Nothing here yet.</div>`;
+  if (transFirst || nearBottom) host.scrollTop = host.scrollHeight;
+  transFirst = false;
+}
+
+function blocksHtml(blocks) {
+  const TRACE = new Set(["tool", "result", "thinking"]);
+  let html = "";
+  for (let i = 0; i < blocks.length; i++) {
+    const b = blocks[i];
+    if (TRACE.has(b.kind)) {
+      // the trace unit is tool + result + thinking together: a result always
+      // sits between two tool_use blocks, so tool-only runs are length one
+      const run = [];
+      while (i < blocks.length && TRACE.has(blocks[i].kind)) run.push(blocks[i++]);
+      i--;
+      html += traceHtml(run);
+    } else if (b.kind === "user" || b.kind === "assistant") {
+      html += `<div class="msg ${b.kind}"><div class="who">${b.kind === "user" ? "YOU" : "CLAUDE"}</div>` +
+        `<div class="body">${md(b.text)}</div></div>`;
+    }
+  }
+  return html;
+}
+
+function traceHtml(run) {
+  const calls = run.filter(b => b.kind === "tool");
+  const fails = run.filter(b => b.kind === "result" && b.error).length;
+  const inner = run.map(b => {
+    if (b.kind === "tool")
+      return `<div class="tcall"><span class="tname">${esc(b.name)}</span> ${esc(b.gist)}</div>`;
+    if (b.kind === "result")
+      return `<div class="tres${b.error ? " err" : ""}">${esc(b.text)}</div>`;
+    return `<div class="tthink">· thinking</div>`;
+  }).join("");
+  // one or two calls are cheaper to read than a control that hides them
+  if (calls.length < 3) return `<div class="trace">${inner}</div>`;
+  const names = [];
+  calls.forEach(c => { if (!names.includes(c.name)) names.push(c.name); });
+  const shown = names.slice(0, 4).join(", ") + (names.length > 4 ? "…" : "");
+  // a failure must be visible while the group is shut
+  const fail = fails ? ` · <span class="tfail">${fails} failed</span>` : "";
+  return `<details class="tools trace"><summary>${calls.length} calls · ${esc(shown)}${fail}</summary>${inner}</details>`;
+}
+
+async function loadMentions() {
+  const s = sessions.find(x => x.sessionId === openId);
+  if (!s || !s.slug) { if ($("pNotes")) $("pNotes").innerHTML = ""; return; }
+  let data;
+  try { data = await api(`/api/mentions?slug=${encodeURIComponent(s.slug)}`); }
+  catch (e) { return; }
+  if (openId !== s.sessionId || !$("pNotes")) return;
+  jiraBase = data.jiraBase || jiraBase;
+  const lines = data.lines || [];
+  $("pNotes").innerHTML =
+    `<div class="plabel">Notes</div>` +
+    lines.map(l =>
+      `<div class="mline${l.done ? " done" : ""}">` +
+      (l.isTodo ? `<input type="checkbox"${l.done ? " checked" : ""} data-mday="${l.day}" data-mpage="${esc(l.page)}" data-mline="${l.line}">` : "") +
+      `<span class="mday">${esc(l.day.slice(5))}</span>` +
+      `<span class="mtext">${linkMentions(linkTickets(esc(l.text)))}</span></div>`).join("") +
+    `<div class="qa"><input id="qaIn" placeholder="Add a line to today's pad…">` +
+    `<button class="btn sm" id="qaTodo">Add todo</button>` +
+    `<button class="btn sm" id="qaNote">Add note</button></div>`;
+}
+
+async function quickAdd(todo) {
+  const s = sessions.find(x => x.sessionId === openId);
+  const box = $("qaIn");
+  if (!s || !box || !box.value.trim()) return;
+  await post("/api/notes/quickadd", {date: todayIso(), slug: s.slug, text: box.value.trim(), todo});
+  box.value = "";
+  loadMentions();
+  if (day === todayIso()) loadNotes(true);
+}
+
+/* ------------------------------------------------------------------- notes */
+
+async function loadNotes(keepText) {
+  let data;
+  try {
+    data = await api(`/api/notes?date=${day}&span=${span}&page=${encodeURIComponent(page)}`);
+  } catch (e) { return; }
+  notesData = data;
+  jiraBase = data.jiraBase || jiraBase;
+  currentPages = data.pages || [];
+  pageGroups = data.groups || {};
+  collapsedGroups = data.collapsed || [];
+  pinnedPages = data.pinned || [];
+  if (data.page) page = data.page;   // the server falls back if the page is gone
+  // a poll landing mid-sentence must never clobber what is being typed
+  if (!keepText && !padDirty) $("pad").value = data.text || "";
+  renderDayBar(); renderPages(); renderRail();
+}
+
+function renderDayBar() {
+  $("dayLabel").textContent = dayShort(day) + (day === todayIso() ? " · Today" : "");
+  $("dayToday").disabled = day === todayIso();
+}
+
+/* pad save discipline: debounce 600ms, flush on blur / navigation / unload;
+   the page you are leaving must land first */
+function scheduleSave() {
+  padDirty = true;
+  $("savedTag").textContent = "…";
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(flushSave, 600);
+}
+async function flushSave() {
+  clearTimeout(saveTimer);
+  if (!padDirty) return;
+  padDirty = false;
+  try {
+    await post("/api/notes/save", {date: day, page, text: $("pad").value});
+  } catch (e) { padDirty = true; return; }
+  $("savedTag").textContent = "Saved";
+  setTimeout(() => { if (!padDirty) $("savedTag").textContent = ""; }, 1600);
+  loadNotes(true);   // checkbox lines just typed appear in the rail
+}
+
+async function gotoDay(d) {
+  await flushSave();
+  day = d;
+  loadNotes(false);
+}
+async function gotoPage(name) {
+  if (name === page) return;
+  await flushSave();
+  page = name;
+  loadNotes(false);
+}
+
+/* ------------------------------------------------------------------- pages */
+
+// one pass over the page order, emitting either a single tab or a whole group
+// at the position its first member occupies — page, group, page, page, group
+// is a valid arrangement
+function renderPages() {
+  const host = $("pages");
+  const emitted = new Set();
+  let html = "";
+  const tab = (name) =>
+    `<button class="ptab" data-page="${esc(name)}" draggable="true" aria-pressed="${name === page}">` +
+    `${esc(name)}<span class="tmenu" data-menu="${esc(name)}">˅</span></button>`;
+  currentPages.forEach(name => {
+    if (emitted.has(name)) return;
+    const g = pageGroups[name];
+    if (g) {
+      const members = currentPages.filter(p => pageGroups[p] === g);
+      members.forEach(m => emitted.add(m));
+      const shut = collapsedGroups.includes(g);
+      html += `<span class="pgroup${shut ? " shut" : ""}" data-pg="${esc(g)}">` +
+        `<button class="glabel" draggable="true" data-glabel="${esc(g)}" title="Click to fold, drag to move the group">` +
+        `${esc(g)}${shut ? ` <span class="gcount">${members.length}</span>` : ""}</button>`;
+      members.forEach(m => {
+        // folding hides the list, never your place in it
+        if (shut && m !== page) return;
+        html += tab(m);
+      });
+      html += `</span>`;
+    } else {
+      emitted.add(name);
+      html += tab(name);
+    }
+  });
+  html += `<button class="padd" id="pageAdd" title="New page">+</button>` +
+    `<button class="padd" id="pageGrid" title="Every page today">⊞</button>` +
+    `<button class="padd" id="pageManage" title="Manage pages across all days">⚙</button>`;
+  host.innerHTML = html;
+}
+
+function startTabRename(target) {
+  // page names contain spaces and punctuation — CSS.escape or the selector breaks
+  const btn = $("pages").querySelector(`.ptab[data-page="${CSS.escape(target)}"]`);
+  if (!btn) return;
+  const input = document.createElement("input");
+  input.className = "ptab-edit"; input.value = target; input.maxLength = 48;
+  btn.replaceWith(input); input.focus(); input.select();
+  let settled = false;   // Enter commits, then blur fires — without this it runs twice
+  const commit = async () => {
+    if (settled) return; settled = true;
+    const name = input.value.trim();
+    if (name && name !== target) {
+      await flushSave();   // the page being renamed must land under its old name first
+      const r = await post("/api/notes/rename", {date: day, page: target, name});
+      if (r && r.error) toast(r.error);
+      else if (page === target) page = name;
+    }
+    loadNotes(true);
+  };
+  input.addEventListener("keydown", e => {
+    if (e.key === "Enter") { e.preventDefault(); commit(); }
+    else if (e.key === "Escape") { settled = true; loadNotes(true); }
+  });
+  input.addEventListener("blur", commit);
+}
+
+function startPageAdd() {
+  const btn = $("pageAdd");
+  if (!btn) return;
+  const input = document.createElement("input");
+  input.className = "ptab-edit"; input.placeholder = "Page name"; input.maxLength = 48;
+  btn.replaceWith(input); input.focus();
+  let settled = false;
+  const commit = async () => {
+    if (settled) return; settled = true;
+    const name = input.value.trim();
+    if (name) {
+      await flushSave();
+      // seeded with content: an empty page would be deleted by the next save
+      await post("/api/notes/save", {date: day, page: name, text: `# ${name}\n\n`});
+      page = name;
+      loadNotes(false);
+    } else loadNotes(true);
+  };
+  input.addEventListener("keydown", e => {
+    if (e.key === "Enter") { e.preventDefault(); commit(); }
+    else if (e.key === "Escape") { settled = true; loadNotes(true); }
+  });
+  input.addEventListener("blur", commit);
+}
+
+/* ---------------------------------------------------------------- page menu */
+
+// below if it fits, above if that fits, only then pinned to the viewport
+function placeMenu(m, r) {
+  m.style.maxHeight = "";      // clear FIRST — last time's clamp would otherwise
+  m.style.overflowY = "";      // read back as this menu's natural height
+  m.hidden = false;
+  m.style.left = `${Math.max(8, Math.min(r.left, window.innerWidth - 216))}px`;
+  const height = m.offsetHeight, gap = 8;
+  if (height <= window.innerHeight - r.bottom - gap) m.style.top = `${r.bottom + 4}px`;
+  else if (height <= r.top - gap) m.style.top = `${r.top - height - 4}px`;
+  else {
+    m.style.top = `${gap}px`;
+    m.style.maxHeight = `${window.innerHeight - gap * 2}px`;
+    m.style.overflowY = "auto";
+  }
+}
+
+const WD = ["M", "T", "W", "T", "F", "S", "S"];   // 0 = Monday
+
+function openPageMenu(name, anchorRect) {
+  menuFor = name;
+  const m = $("pmenu");
+  const groups = [];
+  Object.values(pageGroups).forEach(g => { if (g && !groups.includes(g)) groups.push(g); });
+  const myGroup = pageGroups[name] || "";
+  const pin = pinnedPages.find(p => p.name === name);
+  const days = pin ? (pin.days || []) : null;
+  m.innerHTML =
+    `<button data-act="rename">Rename</button>` +
+    `<div class="sec">Group</div>` +
+    groups.map(g =>
+      `<button data-act="group" data-g="${esc(g)}"><span class="tick">${g === myGroup ? "✓" : ""}</span>${esc(g)}</button>`).join("") +
+    (myGroup ? `<button data-act="group" data-g=""><span class="tick"></span>No group</button>` : "") +
+    `<input id="newGroupIn" placeholder="New group…" maxlength="24">` +
+    `<div class="sec">Repeats</div>` +
+    `<button data-act="pin-every"><span class="tick">${pin && !days.length ? "✓" : ""}</span>Every day</button>` +
+    `<div class="wdays">${WD.map((w, i) =>
+      `<button data-wd="${i}" aria-pressed="${pin && days.includes(i) ? "true" : "false"}">${w}</button>`).join("")}</div>` +
+    (pin ? `<button data-act="pin-off"><span class="tick"></span>Stop repeating</button>` : "") +
+    `<hr>` +
+    `<button class="danger" data-act="delete">Delete from this day</button>`;
+  placeMenu(m, anchorRect);
+}
+function closeMenus() {
+  $("pmenu").hidden = true; menuFor = null;
+  hideAt();
+}
+
+async function menuAction(act, el) {
+  const name = menuFor;
+  if (!name) return;
+  if (act === "rename") { closeMenus(); startTabRename(name); return; }
+  if (act === "group") {
+    await post("/api/notes/group", {date: day, page: name, group: el.dataset.g || ""});
+    closeMenus(); loadNotes(true); return;
+  }
+  if (act === "pin-every") {
+    await post("/api/notes/pin", {page: name, pinned: true, group: pageGroups[name] || "", days: []});
+    loadNotes(true); refreshMenu(); return;
+  }
+  if (act === "pin-off") {
+    await post("/api/notes/pin", {page: name, pinned: false, group: "", days: []});
+    loadNotes(true); refreshMenu(); return;
+  }
+  if (act === "delete") {
+    closeMenus();
+    if (!confirm(`Delete "${name}" from ${dayShort(day)}?`)) return;
+    await flushSave();
+    const r = await post("/api/notes/delete", {date: day, page: name});
+    if (r && r.error) toast(r.error);
+    if (page === name) page = "";
+    padDirty = false;
+    loadNotes(false);
+  }
+}
+async function toggleWeekday(i) {
+  const name = menuFor;
+  const pin = pinnedPages.find(p => p.name === name);
+  let days = pin ? [...(pin.days || [])] : [];
+  if (days.includes(i)) days = days.filter(d => d !== i);
+  else days.push(i);
+  await post("/api/notes/pin", {page: name, pinned: true, group: pageGroups[name] || "", days});
+  await loadNotes(true);
+  refreshMenu();
+}
+function refreshMenu() {
+  // re-render the open menu in place so ticks track the state just changed,
+  // without letting placement logic move it under the pointer
+  if (!menuFor) return;
+  const m = $("pmenu");
+  const keep = {top: m.style.top, left: m.style.left, maxHeight: m.style.maxHeight,
+                overflowY: m.style.overflowY};
+  openPageMenu(menuFor, m.getBoundingClientRect());
+  Object.assign(m.style, keep);
+}
+
+/* -------------------------------------------------------------------- rail */
+
+function railItems() {
+  const inScope = it => railScope === "all" || it.page === page;
+  const todos = (notesData && notesData.todos || []).filter(inScope);
+  // a scoped rail must filter carried items on the same rule, or the count
+  // disagrees with the list
+  const carried = (notesData && notesData.carried || []).filter(inScope);
+  return {todos, carried};
+}
+
+function renderRail() {
+  const {todos, carried} = railItems();
+  const open = todos.filter(x => !x.done), done = todos.filter(x => x.done);
+  const openCount = open.length + carried.length;
+  $("railScopeBtn").innerHTML =
+    (railScope === "all" ? "All pages" : esc(page || "This page")) +
+    `<span class="rn">${openCount}</span>`;
+  // the Notes tab carries the count of everything still open
+  $("openCount").textContent = openCount || "";
+  const multi = currentPages.length > 1;
+  const item = (it, showDay) =>
+    `<div class="rit${it.done ? " done" : ""}" style="margin-left:${(it.depth || 0) * 14}px">` +
+    `<input type="checkbox"${it.done ? " checked" : ""} data-tday="${it.day}" data-tpage="${esc(it.page)}" data-tline="${it.line}">` +
+    `<span class="rtext">${linkMentions(linkTickets(esc(it.text)))}</span>` +
+    (it.due ? `<span class="chip ${dueClass(it.due)}" title="${esc(it.due)}">${esc(dueLabel(it.due))}</span>` : "") +
+    (showDay ? `<span class="rday">${esc(it.day.slice(5))}</span>` :
+      (multi && railScope === "all" ? `<span class="rpage">${esc(it.page)}</span>` : "")) +
+    `</div>`;
+  let html = "";
+  if (!open.length && !carried.length && !done.length) {
+    html = `<div class="rail-empty">Write <code>- [ ] something</code> in the pad and it lands here.</div>`;
+  } else {
+    html += `<h4>To do · ${open.length}</h4>` + open.map(it => item(it, false)).join("");
+    if (carried.length) {
+      // carried items are why this is a working list, but they are not today's
+      // work and must not be mixed into it
+      html += `<h4>Carried over · ${carried.length}</h4>` + carried.map(it => item(it, true)).join("");
+      if (carried.length >= 50) html += `<div class="capnote">Showing the most recent 50.</div>`;
+    }
+    if (done.length) {
+      html += `<details id="doneFold"${doneOpen ? " open" : ""}>` +
+        `<summary>Done · ${done.length}</summary>` +
+        done.map(it => item(it, false)).join("") + `</details>`;
+    }
+  }
+  $("railBody").innerHTML = html;
+  const fold = $("doneFold");
+  if (fold) fold.addEventListener("toggle", () => {
+    // persist, or the 2-second poll springs it back open
+    doneOpen = fold.open;
+    localStorage.setItem("agentgrid.doneOpen", doneOpen ? "1" : "0");
+  });
+}
+
+function applyRail() {
+  $("rail").classList.toggle("shut", !railOpen);
+  $("notes").classList.toggle("norail", !railOpen);
+  $("railCollapse").innerHTML = railOpen ? "&#8250;" : "&#8249;";
+}
+
+/* -------------------------------------------------------- checkbox shortcuts */
+
+const TODO_LINE = /^(\s*)([-*])\s+\[([ xX])\]\s?(.*)$/;
+
+function lineBounds(el) {
+  const v = el.value, pos = el.selectionStart;
+  const start = v.lastIndexOf("\n", pos - 1) + 1;
+  let end = v.indexOf("\n", pos); if (end === -1) end = v.length;
+  return [start, end];
+}
+// setRangeText keeps the browser's undo stack alive
+function replaceLine(el, start, end, text, caretFromStart) {
+  el.setRangeText(text, start, end, "end");
+  const caret = start + caretFromStart;
+  el.setSelectionRange(caret, caret);
+  scheduleSave();
+}
+
+function padKeydown(e) {
+  const el = $("pad");
+  // the @ menu intercepts keys while open
+  if (!$("atMenu").hidden) {
+    if (e.key === "Escape") { e.preventDefault(); hideAt(); return; }
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      atSel = (atSel + (e.key === "ArrowDown" ? 1 : atHits.length - 1)) % atHits.length;
+      paintAt(); return;
+    }
+    if (e.key === "Enter" || e.key === "Tab") {
+      e.preventDefault(); insertAt(atSel); return;
+    }
+  }
+  const [start, end] = lineBounds(el);
+  const text = el.value.slice(start, end);
+  if (e.key === "Enter" && !e.metaKey && !e.ctrlKey && el.selectionStart === el.selectionEnd) {
+    const m = TODO_LINE.exec(text);
+    if (m) {
+      e.preventDefault();
+      // an empty item ends the list; otherwise continue it
+      if (!m[4].trim()) replaceLine(el, start, end, m[1], m[1].length);
+      else {
+        el.setRangeText(`\n${m[1]}${m[2]} [ ] `, el.selectionStart, el.selectionEnd, "end");
+        scheduleSave();
+      }
+      return;
+    }
+  }
+  if (e.key === "Tab") {
+    // only on checkbox lines — anywhere else Tab must keep moving focus or the
+    // pad becomes a keyboard trap
+    if (TODO_LINE.test(text)) {
+      e.preventDefault();
+      const caret = el.selectionStart - start;
+      if (e.shiftKey) {
+        const drop = /^(\t| {1,2})/.exec(text);
+        if (drop) replaceLine(el, start, end, text.slice(drop[0].length),
+                              Math.max(0, caret - drop[0].length));
+      } else {
+        replaceLine(el, start, end, "  " + text, caret + 2);
+      }
+      return;
+    }
+  }
+  if (e.key === " ") {
+    const upto = el.value.slice(start, el.selectionStart);
+    const m = /^(\s*)([-*])\[([ xX]?)\]$/.exec(upto);
+    if (m) {
+      e.preventDefault();
+      const expanded = `${m[1]}${m[2]} [${m[3] || " "}] `;
+      // the caret offset is not a fixed delta: -[] is three chars, -[x] four
+      replaceLine(el, start, start + upto.length, expanded, expanded.length);
+    }
+  }
+}
+
+/* --------------------------------------------------------------- @ mentions */
+
+// anchored to the pad, not the caret: a textarea gives no caret coordinates
+function checkAtMenu() {
+  const el = $("pad");
+  const m = /@([a-z0-9._-]*)$/i.exec(el.value.slice(0, el.selectionStart));
+  if (!m) { hideAt(); return; }
+  atFrom = el.selectionStart - m[0].length;
+  const q = m[1].toLowerCase();
+  atHits = sessions.filter(x => x.slug && (!q || x.slug.includes(q))).slice(0, 8);
+  if (!atHits.length) { hideAt(); return; }
+  atSel = 0;
+  const menu = $("atMenu");
+  menu.innerHTML = atHits.map((s, i) =>
+    `<button data-at="${i}"${i === atSel ? ' class="on"' : ""}>@${esc(s.slug)}` +
+    `<span class="atname">${esc(s.title)}</span></button>`).join("");
+  const r = el.getBoundingClientRect();
+  menu.hidden = false;
+  menu.style.left = `${Math.max(8, r.left + 12)}px`;
+  menu.style.top = `${r.top + 8}px`;
+}
+function paintAt() {
+  $("atMenu").querySelectorAll("button").forEach((b, i) =>
+    b.classList.toggle("on", i === atSel));
+}
+function insertAt(i) {
+  const s = atHits[i];
+  const el = $("pad");
+  if (!s) { hideAt(); return; }
+  const end = el.selectionStart;   // capture before anything moves the caret
+  el.setRangeText(`@${s.slug} `, atFrom, end, "end");
+  hideAt();
+  scheduleSave();
+  el.focus();
+}
+function hideAt() { $("atMenu").hidden = true; atHits = []; atFrom = -1; }
+
+/* ----------------------------------------------------------- page grid modal */
+
+async function openPageGrid() {
+  await flushSave();
+  const sheet = $("gmSheet");
+  $("gridModal").hidden = false;
+  sheet.innerHTML = `<div class="stitle">Pages · ${dayShort(day)}</div><div class="gwrap" id="gWrap"></div>`;
+  const texts = await Promise.all(currentPages.map(p =>
+    api(`/api/notes?date=${day}&span=day&page=${encodeURIComponent(p)}`)
+      .then(d => d.text || "").catch(() => "")));
+  if ($("gridModal").hidden) return;
+  const opens = new Map();
+  (notesData && notesData.todos || []).forEach(t => {
+    if (!t.done) opens.set(t.page, (opens.get(t.page) || 0) + 1);
+  });
+  $("gWrap").innerHTML = currentPages.map((p, i) => {
+    const first = texts[i].split("\n").filter(l => l.trim()).slice(0, 4).join("\n");
+    const n = opens.get(p) || 0;
+    return `<button class="gcard" data-hist="${esc(p)}">` +
+      `<span class="gname"><span class="n">${esc(p)}</span>` +
+      (n ? `<span class="gopen">${n} open</span>` : "") + `</span>` +
+      `<pre>${esc(first)}</pre></button>`;
+  }).join("");
+}
+
+// a page is a file per day; history is the only view where it reads as one thing
+async function openHistory(name) {
+  const sheet = $("gmSheet");
+  $("gridModal").hidden = false;
+  sheet.innerHTML = `<div class="stitle">${esc(name)}</div><div class="mvnote">Loading…</div>`;
+  let data;
+  try { data = await api(`/api/history?page=${encodeURIComponent(name)}`); }
+  catch (e) { return; }
+  if ($("gridModal").hidden) return;
+  jiraBase = data.jiraBase || jiraBase;
+  const t = todayIso();
+  sheet.innerHTML =
+    `<button class="gback" data-back="1">‹ All pages</button>` +
+    `<div class="stitle">${esc(name)}</div>` +
+    (data.entries || []).map(en =>
+      `<div class="hday${en.day === t ? " today" : ""}">` +
+      `<div class="hhead">${esc(dayShort(en.day))}` +
+      `<span class="spacer"></span><button class="hedit" data-goto="${en.day}" data-gotop="${esc(name)}">Edit ›</button></div>` +
+      `<pre>${linkMentions(linkTickets(esc(en.text)))}</pre></div>`).join("") ||
+    `<div class="mvnote">Nothing written yet.</div>`;
+}
+
+/* ------------------------------------------------------------- manage panel */
+
+async function openManage() {
+  await flushSave();
+  expandedRow = null;
+  $("managePanel").classList.add("on"); $("scrim2").classList.add("on");
+  await refreshManage();
+}
+async function refreshManage() {
+  let data;
+  try { data = await api("/api/pages"); } catch (e) { return; }
+  managePages = data.pages || [];
+  renderManage();
+}
+function renderManage() {
+  const wdShort = d => ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][d];
+  $("mBody").innerHTML = managePages.map(p => {
+    const facts = [
+      `${p.days} day${p.days === 1 ? "" : "s"}`,
+      p.first ? `${p.first.slice(5)} – ${(p.last || p.first).slice(5)}` : "",
+      p.group ? p.group : "",
+      p.pinned ? (p.weekdays && p.weekdays.length
+        ? `repeats ${p.weekdays.map(wdShort).join(" ")}` : "repeats daily") : "",
+    ].filter(Boolean).join(" · ");
+    const open = expandedRow && expandedRow.name === p.name ? expandedRow.kind : null;
+    let editor = "";
+    if (open === "group") {
+      editor = `<div class="medit"><input id="mGroupIn" value="${esc(p.group || "")}" placeholder="Group name" maxlength="24">` +
+        `<button class="btn sm" data-mgroupok="${esc(p.name)}">Set</button>` +
+        `<button class="btn sm" data-mcancel="1">Cancel</button></div>`;
+    } else if (open === "repeat") {
+      const days = p.weekdays || [];
+      editor = `<div class="medit"><div class="wdays" style="flex:1">${WD.map((w, i) =>
+        `<button data-mwd="${i}" data-mpage="${esc(p.name)}" aria-pressed="${p.pinned && days.includes(i) ? "true" : "false"}">${w}</button>`).join("")}</div>` +
+        `<button class="btn sm" data-mevery="${esc(p.name)}">${p.pinned && !days.length ? "✓ daily" : "Daily"}</button>` +
+        (p.pinned ? `<button class="btn sm" data-moff="${esc(p.name)}">Off</button>` : "") + `</div>`;
+    } else if (open === "rename") {
+      editor = `<div class="medit"><input id="mRenameIn" value="${esc(p.name)}" maxlength="48">` +
+        `<button class="btn sm" data-mrenameok="${esc(p.name)}">Rename everywhere</button>` +
+        `<button class="btn sm" data-mcancel="1">Cancel</button></div>`;
+    }
+    return `<div class="mrow${open ? " open" : ""}" data-mrow="${esc(p.name)}">` +
+      `<div class="mtop"><span class="mname">${esc(p.name)}</span>` +
+      `<span class="mfacts">${esc(facts)}</span>` +
+      `<span class="macts">` +
+      `<button data-mact="rename" data-mname="${esc(p.name)}">Rename</button>` +
+      `<button data-mact="group" data-mname="${esc(p.name)}">Group</button>` +
+      `<button data-mact="repeat" data-mname="${esc(p.name)}">Repeats</button>` +
+      `<button class="danger" data-mact="delete" data-mname="${esc(p.name)}">Delete</button>` +
+      `</span></div>${editor}</div>`;
+  }).join("") || `<div class="mvnote">No pages yet — the pad makes one the first time you type.</div>`;
+}
+function closeManage() {
+  $("managePanel").classList.remove("on"); $("scrim2").classList.remove("on");
+  loadNotes(true);
+}
+
+/* ---------------------------------------------------------------- new agent */
+
+async function openNewAgent() {
+  $("modal").hidden = false;
+  $("naErr").textContent = "";
+  $("naTask").value = ""; $("naName").value = "";
+  try {
+    const data = await api("/api/projects");
+    projectsCache = data.projects || [];
+  } catch (e) { projectsCache = projectsCache || []; }
+  const sel = $("naProject");
+  sel.innerHTML = projectsCache.map(p =>
+    `<option value="${esc(p.path)}">${esc(p.label || p.name)}</option>`).join("");
+  // if a project filter is set, that is almost certainly where this one belongs
+  if (project && projectsCache.some(p => p.path === project)) sel.value = project;
+  syncEngineModels();
+  $("naName").focus();
+}
+// each engine has its own model vocabulary; Default always means "let the
+// CLI's own config decide", which is the only never-wrong choice
+const ENGINE_MODELS = {
+  claude: [["", "Default"], ["sonnet", "Sonnet"], ["opus", "Opus"], ["haiku", "Haiku"]],
+  codex: [["", "Default"], ["gpt-5.5", "GPT-5.5"], ["gpt-5.5-codex", "GPT-5.5 Codex"]],
+};
+function syncEngineModels() {
+  const models = ENGINE_MODELS[$("naEngine").value] || ENGINE_MODELS.claude;
+  $("naModel").innerHTML = models.map(([v, l]) => `<option value="${v}">${l}</option>`).join("");
+}
+function closeNewAgent() { $("modal").hidden = true; }
+async function startAgent() {
+  const prompt = $("naTask").value.trim();
+  if (!prompt) { $("naErr").textContent = "Give the agent something to do."; return; }
+  $("naStart").disabled = true;
+  let r;
+  try {
+    r = await post("/api/spawn", {
+      cwd: $("naProject").value, prompt, engine: $("naEngine").value,
+      model: $("naModel").value, name: $("naName").value.trim(),
+    });
+  } finally { $("naStart").disabled = false; }
+  if (r && r.error) { $("naErr").textContent = r.error; return; }
+  closeNewAgent();
+  toast((r && r.message) || "Started.");
+  poll();
+}
+
+/* -------------------------------------------------------------------- views */
+
+function setView(v) {
+  if (view === "notes" || view === "split") flushSave();
+  view = v;
+  localStorage.setItem("agentgrid.view", v);
+  document.body.classList.toggle("split", v === "split");
+  $("board").hidden = v === "notes";
+  $("notes").hidden = v === "board";
+  $("views").querySelectorAll("button").forEach(b =>
+    b.setAttribute("aria-pressed", String(b.dataset.view === v)));
+  if (v !== "board") loadNotes(true);
+}
+
+/* --------------------------------------------------------------------- poll */
+
+async function poll() {
+  try {
+    const data = await api("/api/sessions");
+    sessions = data.sessions || [];
+    polledAt = data.polledAt || 0;
+    fleetError = data.error || "";
+  } catch (e) {
+    fleetError = "server unreachable";
+  }
+  const stamp = $("stamp");
+  stamp.classList.toggle("err", !!fleetError);
+  // a stalled poll must be visible: the stamp is when data last refreshed
+  stamp.textContent = fleetError ||
+    (polledAt ? new Date(polledAt * 1000).toLocaleTimeString() : "");
+  stamp.title = fleetError || "Last refresh";
+  renderSelects(); render();
+  if (openId) { renderPanel(); refreshTranscript(); }
+}
+
+/* ------------------------------------------------------------------- events */
+
+function bindEvents() {
+  // bar
+  $("views").addEventListener("click", e => {
+    const b = e.target.closest("button[data-view]");
+    if (b) setView(b.dataset.view);
+  });
+  $("projectSel").addEventListener("change", () => { project = $("projectSel").value; render(); });
+  $("tagSel").addEventListener("change", () => { tag = $("tagSel").value; render(); });
+  $("toggles").addEventListener("click", e => {
+    const b = e.target.closest("button[data-col]"); if (!b) return;
+    const k = b.dataset.col;
+    hiddenCols = hiddenCols.includes(k) ? hiddenCols.filter(x => x !== k) : [...hiddenCols, k];
+    localStorage.setItem("agentgrid.hidden", JSON.stringify(hiddenCols));
+    $("toggles").dataset.sig = ""; applyVisibility(); render();
+  });
+  $("newBtn").addEventListener("click", openNewAgent);
+  $("search").addEventListener("input", () => { query = $("search").value; render(); });
+  $("search").addEventListener("keydown", e => { if (e.key === "Escape") $("search").blur(); });
+
+  // board: click selects/opens, drag re-files
+  $("board").addEventListener("click", e => {
+    const open = e.target.closest("[data-open]");
+    if (open) {
+      // straight in from the card; the refusal, if any, arrives as a toast
+      e.stopPropagation();
+      post("/api/open", {sessionId: open.dataset.open}).then(r => {
+        toast((r && (r.error || r.message)) || "Opened.");
+      });
+      return;
+    }
+    const card = e.target.closest(".card");
+    if (card) openSession(card.dataset.id);
+  });
+  $("board").addEventListener("dragstart", e => {
+    const card = e.target.closest(".card"); if (!card) return;
+    e.dataTransfer.setData("text/plain", card.dataset.id);
+    e.dataTransfer.effectAllowed = "move";
+    card.classList.add("dragging");
+  });
+  $("board").addEventListener("dragend", e => {
+    const card = e.target.closest(".card");
+    if (card) card.classList.remove("dragging");
+    document.querySelectorAll(".col-body.over").forEach(el => el.classList.remove("over"));
+  });
+  document.querySelectorAll(".col").forEach(col => {
+    const key = col.dataset.key, body = col.querySelector("[data-body]");
+    body.addEventListener("dragover", e => {
+      // Working is not a destination: saying a process runs does not start one
+      if (key === "working") return;
+      e.preventDefault(); body.classList.add("over");
+    });
+    body.addEventListener("dragleave", () => body.classList.remove("over"));
+    body.addEventListener("drop", e => {
+      e.preventDefault(); body.classList.remove("over");
+      if (key === "working") return;
+      const id = e.dataTransfer.getData("text/plain");
+      if (id) moveSession(id, key);
+    });
+  });
+
+  // panel
+  $("pClose").addEventListener("click", closePanel);
+  $("scrim").addEventListener("click", closePanel);
+  $("panel").addEventListener("click", e => {
+    const mv = e.target.closest("button.mv");
+    if (mv) { moveSession(openId, mv.dataset.to); return; }
+    if (e.target.closest("#openBtn")) {
+      post("/api/open", {sessionId: openId}).then(r => {
+        toast((r && (r.error || r.message)) || "Opened.");
+      });
+      return;
+    }
+    if (e.target.closest("#unreadBtn")) {
+      // forgetting the read position is the honest way to say "not seen"
+      post("/api/read", {sessionId: openId, unread: true});
+      const s = sessions.find(x => x.sessionId === openId);
+      if (s) s.unread = true;
+      metaSig = ""; renderPanel(); render();
+      return;
+    }
+    const rr = e.target.closest(".rrow");
+    if (rr) {
+      openAgent = rr.dataset.agent || null;
+      rosterSig = transSig = ""; transFirst = true;
+      renderPanel(); refreshTranscript();
+      return;
+    }
+    const tx = e.target.closest(".tagx");
+    if (tx) { saveTags((sessions.find(x => x.sessionId === openId).tags || []).filter(t => t !== tx.dataset.tag)); return; }
+    const ta = e.target.closest("[data-add]");
+    if (ta) {
+      const s = sessions.find(x => x.sessionId === openId);
+      saveTags([...(s.tags || []), ta.dataset.add]);
+      return;
+    }
+    if (e.target.closest("#qaTodo")) { quickAdd(true); return; }
+    if (e.target.closest("#qaNote")) { quickAdd(false); return; }
+  });
+  $("panel").addEventListener("keydown", e => {
+    if (e.target.id === "renameIn" && e.key === "Enter") {
+      post("/api/rename", {sessionId: openId, name: e.target.value.trim()}).then(() => poll());
+      e.target.blur();
+    }
+    if (e.target.id === "tagIn" && e.key === "Enter") {
+      const v = e.target.value.trim();
+      if (v) {
+        const s = sessions.find(x => x.sessionId === openId);
+        saveTags([...(s.tags || []), v]);
+      }
+    }
+    if (e.target.id === "qaIn" && e.key === "Enter") quickAdd(true);
+  });
+  function toggleMentionItem(cb) {
+    post("/api/notes/toggle", {date: cb.dataset.mday, page: cb.dataset.mpage,
+                               line: Number(cb.dataset.mline)})
+      .then(() => { loadMentions(); if (day === cb.dataset.mday) loadNotes(true); });
+  }
+  $("panel").addEventListener("change", e => {
+    const cb = e.target.closest("input[data-mday]");
+    if (cb) toggleMentionItem(cb);
+  });
+  // the whole line toggles here too, links excepted
+  $("panel").addEventListener("click", e => {
+    if (e.target.closest("a") || e.target.closest("input")) return;
+    const row = e.target.closest(".mline"); if (!row) return;
+    const cb = row.querySelector("input[data-mday]"); if (!cb) return;
+    cb.checked = !cb.checked;
+    toggleMentionItem(cb);
+  });
+
+  // notes: day nav
+  $("dayPrev").addEventListener("click", () => gotoDay(isoShift(day, -1)));
+  $("dayNext").addEventListener("click", () => gotoDay(isoShift(day, 1)));
+  $("dayToday").addEventListener("click", () => gotoDay(todayIso()));
+
+  // pad
+  const pad = $("pad");
+  pad.addEventListener("input", () => { scheduleSave(); checkAtMenu(); });
+  pad.addEventListener("keydown", padKeydown);
+  pad.addEventListener("blur", () => { hideAt(); flushSave(); });
+  pad.addEventListener("click", checkAtMenu);
+  window.addEventListener("beforeunload", () => { flushSave(); });
+
+  // @ menu: mousedown, because click fires after the textarea loses focus
+  $("atMenu").addEventListener("mousedown", e => {
+    e.preventDefault();
+    const b = e.target.closest("button[data-at]");
+    if (b) insertAt(Number(b.dataset.at));
+  });
+
+  // page tabs
+  $("pages").addEventListener("click", e => {
+    const menuBtn = e.target.closest(".tmenu");
+    if (menuBtn) {
+      e.stopPropagation();
+      openPageMenu(menuBtn.dataset.menu, menuBtn.closest(".ptab").getBoundingClientRect());
+      return;
+    }
+    const tab = e.target.closest(".ptab");
+    if (tab) { gotoPage(tab.dataset.page); return; }
+    const gl = e.target.closest(".glabel");
+    if (gl) {
+      const g = gl.dataset.glabel;
+      const shut = collapsedGroups.includes(g);
+      post("/api/notes/collapse", {date: day, group: g, collapsed: !shut})
+        .then(() => loadNotes(true));
+      return;
+    }
+    if (e.target.closest("#pageAdd")) { startPageAdd(); return; }
+    if (e.target.closest("#pageGrid")) { openPageGrid(); return; }
+    if (e.target.closest("#pageManage")) { openManage(); return; }
+  });
+  $("pages").addEventListener("contextmenu", e => {
+    const tab = e.target.closest(".ptab");
+    if (tab) { e.preventDefault(); openPageMenu(tab.dataset.page, tab.getBoundingClientRect()); }
+  });
+  $("pages").addEventListener("dragstart", e => {
+    const tab = e.target.closest(".ptab");
+    const gl = e.target.closest(".glabel");
+    if (tab) { dragPage = tab.dataset.page; dragGroup = null; }
+    else if (gl) { dragGroup = gl.dataset.glabel; dragPage = null; }
+  });
+  $("pages").addEventListener("dragover", e => {
+    if (dragPage || dragGroup) e.preventDefault();
+  });
+  $("pages").addEventListener("drop", e => {
+    e.preventDefault();
+    const tab = e.target.closest(".ptab");
+    const gl = e.target.closest(".glabel");
+    const before = tab ? tab.dataset.page :
+      gl ? currentPages.find(p => pageGroups[p] === gl.dataset.glabel) : null;
+    if (dragPage && before && before !== dragPage) {
+      const order = currentPages.filter(p => p !== dragPage);
+      order.splice(order.indexOf(before), 0, dragPage);
+      post("/api/notes/order", {date: day, order}).then(() => loadNotes(true));
+    } else if (dragGroup && before) {
+      post("/api/notes/movegroup", {date: day, group: dragGroup, before})
+        .then(() => loadNotes(true));
+    }
+    dragPage = dragGroup = null;
+  });
+
+  // page menu
+  $("pmenu").addEventListener("click", e => {
+    const wd = e.target.closest("button[data-wd]");
+    if (wd) { toggleWeekday(Number(wd.dataset.wd)); return; }
+    const b = e.target.closest("button[data-act]");
+    if (b) menuAction(b.dataset.act, b);
+  });
+  $("pmenu").addEventListener("keydown", e => {
+    if (e.target.id === "newGroupIn" && e.key === "Enter") {
+      const g = e.target.value.trim();
+      if (g) post("/api/notes/group", {date: day, page: menuFor, group: g})
+        .then(() => { closeMenus(); loadNotes(true); });
+    }
+  });
+
+  // rail
+  $("railScopeBtn").addEventListener("click", async () => {
+    await flushSave();
+    railScope = railScope === "all" ? "page" : "all";
+    localStorage.setItem("agentgrid.railScope", railScope);
+    renderRail();
+  });
+  $("spans").addEventListener("click", e => {
+    const b = e.target.closest("button[data-span]"); if (!b) return;
+    span = b.dataset.span;
+    $("spans").querySelectorAll("button").forEach(x =>
+      x.setAttribute("aria-pressed", String(x === b)));
+    loadNotes(true);
+  });
+  $("railCollapse").addEventListener("click", () => {
+    railOpen = !railOpen;
+    localStorage.setItem("agentgrid.rail", railOpen ? "1" : "0");
+    applyRail();
+  });
+  async function toggleRailItem(cb) {
+    await flushSave();   // the pad's text must land before the file is rewritten
+    const r = await post("/api/notes/toggle",
+      {date: cb.dataset.tday, page: cb.dataset.tpage, line: Number(cb.dataset.tline)});
+    if (r && r.error) toast(r.error);
+    // the file changed underneath us: re-read both sides
+    padDirty = false;
+    loadNotes(false);
+  }
+  $("railBody").addEventListener("change", e => {
+    const cb = e.target.closest("input[data-tday]");
+    if (cb) toggleRailItem(cb);
+  });
+  // the whole row toggles, not just the 13px box — but a link inside the row
+  // still navigates, and a click on the box itself already fired "change"
+  $("railBody").addEventListener("click", e => {
+    if (e.target.closest("a") || e.target.closest("input")) return;
+    const row = e.target.closest(".rit"); if (!row) return;
+    const cb = row.querySelector("input[data-tday]"); if (!cb) return;
+    cb.checked = !cb.checked;   // instant feedback; the reload confirms it
+    toggleRailItem(cb);
+  });
+
+  // mention links anywhere: switch to the board and open that session
+  document.addEventListener("click", e => {
+    const a = e.target.closest("a.mention");
+    if (!a) return;
+    e.preventDefault();
+    const s = sessions.find(x => x.slug === a.dataset.slug);
+    if (!s) { toast(`No live session @${a.dataset.slug}`); return; }
+    if (view === "notes") setView("split");
+    $("gridModal").hidden = true;
+    openSession(s.sessionId);
+  });
+
+  // manage panel
+  $("mClose").addEventListener("click", closeManage);
+  $("scrim2").addEventListener("click", closeManage);
+  $("mBody").addEventListener("click", async e => {
+    const act = e.target.closest("button[data-mact]");
+    if (act) {
+      const name = act.dataset.mname;
+      if (act.dataset.mact === "delete") {
+        const p = managePages.find(x => x.name === name);
+        const n = p ? p.days : 0;
+        // the destructive confirmation carries the day count
+        if (!confirm(`Delete "${name}" everywhere — ${n} day${n === 1 ? "" : "s"} of notes?`)) return;
+        const r = await post("/api/notes/deleteall", {page: name});
+        toast(`Removed ${r && r.removed != null ? r.removed : ""} day${(r && r.removed === 1) ? "" : "s"} of "${name}".`);
+        if (page === name) page = "";
+        refreshManage();
+        return;
+      }
+      expandedRow = (expandedRow && expandedRow.name === name &&
+                     expandedRow.kind === act.dataset.mact)
+        ? null : {name, kind: act.dataset.mact};
+      renderManage();
+      const inp = $("mRenameIn") || $("mGroupIn");
+      if (inp) { inp.focus(); inp.select(); }
+      return;
+    }
+    if (e.target.closest("[data-mcancel]")) { expandedRow = null; renderManage(); return; }
+    const rok = e.target.closest("[data-mrenameok]");
+    if (rok) {
+      const name = rok.dataset.mrenameok, to = $("mRenameIn").value.trim();
+      if (to && to !== name) {
+        const r = await post("/api/notes/renameall", {page: name, name: to});
+        if (r && r.error) { toast(r.error); return; }
+        if (page === name) page = to;
+      }
+      expandedRow = null; refreshManage(); return;
+    }
+    const gok = e.target.closest("[data-mgroupok]");
+    if (gok) {
+      await post("/api/notes/group", {date: day, page: gok.dataset.mgroupok,
+                                      group: $("mGroupIn").value.trim()});
+      expandedRow = null; refreshManage(); return;
+    }
+    const mwd = e.target.closest("button[data-mwd]");
+    if (mwd) {
+      const name = mwd.dataset.mpage;
+      const p = managePages.find(x => x.name === name);
+      let days = p && p.pinned ? [...(p.weekdays || [])] : [];
+      const i = Number(mwd.dataset.mwd);
+      days = days.includes(i) ? days.filter(d => d !== i) : [...days, i];
+      await post("/api/notes/pin", {page: name, pinned: true, group: p && p.group || "", days});
+      refreshManage(); return;
+    }
+    const mev = e.target.closest("[data-mevery]");
+    if (mev) {
+      const p = managePages.find(x => x.name === mev.dataset.mevery);
+      await post("/api/notes/pin", {page: mev.dataset.mevery, pinned: true,
+                                    group: p && p.group || "", days: []});
+      refreshManage(); return;
+    }
+    const moff = e.target.closest("[data-moff]");
+    if (moff) {
+      await post("/api/notes/pin", {page: moff.dataset.moff, pinned: false, group: "", days: []});
+      refreshManage(); return;
+    }
+  });
+  $("mBody").addEventListener("keydown", e => {
+    if (e.key === "Enter" && e.target.id === "mRenameIn")
+      e.target.parentElement.querySelector("[data-mrenameok]").click();
+    if (e.key === "Enter" && e.target.id === "mGroupIn")
+      e.target.parentElement.querySelector("[data-mgroupok]").click();
+  });
+
+  // grid / history modal
+  $("gridModal").addEventListener("click", async e => {
+    if (e.target === $("gridModal")) { $("gridModal").hidden = true; return; }
+    const back = e.target.closest("[data-back]");
+    if (back) { openPageGrid(); return; }
+    const goto = e.target.closest("[data-goto]");
+    if (goto) {
+      $("gridModal").hidden = true;
+      await flushSave();
+      day = goto.dataset.goto; page = goto.dataset.gotop;
+      if (view === "board") setView("notes");
+      loadNotes(false);
+      return;
+    }
+    const hist = e.target.closest("[data-hist]");
+    if (hist) { openHistory(hist.dataset.hist); return; }
+  });
+
+  // new agent sheet
+  $("naCancel").addEventListener("click", closeNewAgent);
+  $("modal").addEventListener("click", e => { if (e.target === $("modal")) closeNewAgent(); });
+  $("naStart").addEventListener("click", startAgent);
+  $("naEngine").addEventListener("change", syncEngineModels);
+  $("naName").addEventListener("keydown", e => {
+    // the task is required; submitting from the name box would start an agent
+    // with nothing to do
+    if (e.key === "Enter") { e.preventDefault(); $("naTask").focus(); }
+  });
+  $("naTask").addEventListener("keydown", e => {
+    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); startAgent(); }
+  });
+
+  // dismiss popovers on outside click
+  document.addEventListener("mousedown", e => {
+    if (!$("pmenu").hidden && !e.target.closest("#pmenu")) closeMenus();
+  });
+
+  // keyboard: Escape closes the topmost thing; single keys never fire while typing
+  document.addEventListener("keydown", e => {
+    if (e.key === "Escape") {
+      if (!$("pmenu").hidden || !$("atMenu").hidden) { closeMenus(); return; }
+      if (!$("gridModal").hidden) { $("gridModal").hidden = true; return; }
+      if (!$("modal").hidden) { closeNewAgent(); return; }
+      if ($("managePanel").classList.contains("on")) { closeManage(); return; }
+      if ($("panel").classList.contains("on")) { closePanel(); return; }
+      return;
+    }
+    if (isTyping()) return;
+    if (e.key === "n") { e.preventDefault(); openNewAgent(); }
+    else if (e.key === "/") { e.preventDefault(); $("search").focus(); $("search").select(); }
+  });
+}
+
+function saveTags(tags) {
+  post("/api/tags", {sessionId: openId, tags}).then(r => {
+    const s = sessions.find(x => x.sessionId === openId);
+    if (s && r && r.tags) s.tags = r.tags;
+    metaSig = ""; renderPanel(); render(); renderSelects();
+  });
+}
+
+/* --------------------------------------------------------------------- init */
+
+buildColumns();
+bindEvents();
+applyVisibility();
+applyRail();
+setView(view);
+$("spans").querySelectorAll("button").forEach(b =>
+  b.setAttribute("aria-pressed", String(b.dataset.span === span)));
+
+poll(); setInterval(poll, 2000);                                       // fleet
+setInterval(() => { if (!document.hidden) render(); }, 1000);          // ages tick
+setInterval(() => { if (view !== "notes" && !document.hidden) loadNotes(true); },
+            30000);                                                    // open count
+loadNotes(false);   // first fill: padDirty is false, so this cannot clobber anything
+</script>
+</body>
+</html>

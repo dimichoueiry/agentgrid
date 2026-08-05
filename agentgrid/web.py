@@ -1,0 +1,937 @@
+"""The browser front end's server: a background poller and a small HTTP API.
+
+The capability ceiling is stated up front because the limit is structural
+rather than a missing feature: an interactive session's keyboard belongs to
+the pty inside the emulator that owns it, and no other process can write to
+it. Everything this server does to a session is therefore either read-only
+(transcripts, status) or goes through an interface Claude Code already
+exposes (`claude --bg`, `claude attach`, `claude stop`). The board can watch
+anything and can only drive what the CLI lets it drive.
+
+Design decisions worth keeping:
+
+- One background poller (`Fleet`), not per-request polling. A full refresh
+  costs roughly half a second, mostly the `claude agents` subprocess. Polling
+  on a daemon thread means a browser refresh never waits on the CLI, and ten
+  open tabs cost the same as one.
+- Standard library only. `http.server.ThreadingHTTPServer` rather than
+  Flask/FastAPI, because on the target network `pip install` does not work
+  at all -- see C1 in the PRD.
+- Loopback only and token-gated. This endpoint starts processes, so a bare
+  localhost port would let any page in the browser drive it. The token is
+  minted per run and carried in the printed URL.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import secrets
+import subprocess
+import sys
+import threading
+import time
+import urllib.parse
+import webbrowser
+from datetime import date, datetime
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+
+from agentgrid import discovery, notes, terminal, transcript
+
+STATIC = Path(__file__).resolve().parent / "static"
+POLL_SECONDS = 2.0
+DEFAULT_PROJECT_ROOTS = [Path.home(), Path.home() / "Documents" / "GitHub"]
+PROJECTS_TTL = 30.0
+
+# The CLI colours its output, so anything read back from it must be stripped
+# of escape sequences before a regex can find the job id in it.
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+JOB_ID_RE = re.compile(r"\b([0-9a-f]{8})\b")
+
+
+def _slug(title: str | None) -> str:
+    """Slug handle for a session, matching what the @mention menu inserts.
+
+    A title with spaces has no end marker in plain text, so the handle written
+    after an `@` has to be a slug. Same rules as notes.slugify so the two ends
+    of a mention agree on the spelling.
+    """
+    text = re.sub(r"[^a-z0-9]+", "-", str(title or "").lower()).strip("-")
+    return text[:48] or "session"
+
+
+def _valid_day(value: str | None) -> bool:
+    """True when `value` is a real ISO date.
+
+    The day string becomes a directory name under ~/.agentgrid/notes, so this
+    doubles as the path guard -- no separators, dots or traversal survive
+    strptime. notes.py guards again on its side; the API refuses early so a
+    bad day is a 400 rather than a silent no-op.
+    """
+    try:
+        datetime.strptime(str(value or ""), "%Y-%m-%d")
+        return True
+    except (TypeError, ValueError):
+        return False
+
+
+class Fleet:
+    """Polls the fleet on a daemon thread and holds the latest snapshot.
+
+    The lock guards `_sessions`, `_error`, `_polled_at` and `_pending_names`.
+    On a poll error the last good snapshot is kept and only the error message
+    is replaced -- a transient CLI hiccup must not blank the board.
+    """
+
+    def __init__(self) -> None:
+        self._cache = discovery.TranscriptCache()
+        self._lock = threading.Lock()
+        self._sessions: list = []
+        self._error: str | None = None
+        self._polled_at: float = 0.0
+        self._pending_names: dict[str, str] = {}
+        # Codex prints no job id to wait on, so a name is held against the
+        # (cwd, spawn time) instead and applied to the first codex session
+        # that appears there afterwards.
+        self._pending_codex: list[dict] = []
+        self._halt = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._halt.set()
+
+    def _run(self) -> None:
+        while not self._halt.is_set():
+            self._poll_once()
+            self._halt.wait(POLL_SECONDS)
+
+    def _poll_once(self) -> None:
+        sessions, error = discovery.collect(self._cache)
+        with self._lock:
+            if error:
+                # Keep the last good snapshot; only the error message changes.
+                self._error = error
+            else:
+                self._apply_pending_names(sessions)
+                self._sessions = sessions
+                self._error = None
+            self._polled_at = time.time()
+
+    def name_when_seen(self, job_id: str, name: str) -> None:
+        """Hold a name against a job id until the session exists.
+
+        Names are keyed by session id, and the session id does not exist until
+        the daemon has created it. So the name waits on the job id, which
+        `claude --bg` prints, and is written on first sighting.
+        """
+        with self._lock:
+            self._pending_names[job_id] = name
+
+    def name_codex_when_seen(self, cwd: str, name: str) -> None:
+        """Hold a name for the next codex session to appear in a directory."""
+        with self._lock:
+            self._pending_codex.append({"cwd": cwd, "name": name, "at": time.time()})
+
+    def _apply_pending_names(self, sessions: list) -> None:
+        # Called with the lock held, after a successful collect.
+        for session in sessions:
+            wanted = self._pending_names.get(session.job_id or "")
+            if wanted:
+                discovery.save_custom_name(session.session_id, wanted)
+                session.custom_name = wanted
+                self._pending_names.pop(session.job_id, None)
+        if not self._pending_codex:
+            return
+        for pending in list(self._pending_codex):
+            if time.time() - pending["at"] > 300:
+                # The session never appeared; a five-minute-old pending name
+                # matching some future session would mislabel it.
+                self._pending_codex.remove(pending)
+                continue
+            for session in sessions:
+                if (
+                    getattr(session, "engine", "claude") == "codex"
+                    and session.cwd == pending["cwd"]
+                    and not session.custom_name
+                    and session.started_at / 1000 >= pending["at"] - 5
+                ):
+                    discovery.save_custom_name(session.session_id, pending["name"])
+                    session.custom_name = pending["name"]
+                    self._pending_codex.remove(pending)
+                    break
+
+    def snapshot(self) -> dict:
+        with self._lock:
+            sessions = list(self._sessions)
+            error = self._error
+            polled_at = self._polled_at
+        # Re-sort at projection time: idle_seconds moves on between polls and
+        # an override applied since the last poll may have re-banded a card.
+        sessions.sort(key=lambda s: s.sort_key)
+        return {
+            "polledAt": polled_at,
+            "error": error,
+            "sessions": [self._as_json(session) for session in sessions],
+        }
+
+    def raw(self) -> list:
+        """The Session objects themselves, for callers that read `cwd`."""
+        with self._lock:
+            return list(self._sessions)
+
+    @staticmethod
+    def _as_json(session) -> dict:
+        return {
+            "sessionId": session.session_id,
+            "jobId": session.job_id,
+            "kind": session.kind,
+            "status": session.status,
+            "realStatus": session.real_status,
+            "overridden": session.overridden,
+            "unread": session.unread,
+            # What to write after an @ to reference this session.
+            "slug": _slug(session.display_title),
+            "tags": session.tags,
+            "project": session.project,
+            "cwd": session.cwd,
+            "title": session.display_title,
+            "customName": session.custom_name,
+            "branch": session.git_branch,
+            "prompt": session.last_prompt,
+            "model": session.model,
+            "idleSeconds": round(session.idle_seconds()),
+            "toolCounts": session.tool_counts,
+            "engine": getattr(session, "engine", "claude"),
+            "attachable": session.kind == "background",
+            # Whether Open can do anything at all: join a background session,
+            # or bring an interactive session's tab to the front. Codex
+            # sessions report no pid, so they are honestly un-openable.
+            "openable": session.kind == "background" or bool(session.pid),
+            "subagents": [
+                {
+                    "id": agent.agent_id,
+                    "type": agent.agent_type,
+                    "description": agent.description,
+                    "status": agent.status,
+                    "messages": agent.messages,
+                }
+                for agent in session.subagents
+            ],
+        }
+
+
+# --- project discovery -------------------------------------------------------
+
+_configured_roots: list[Path] = []
+_project_cache: dict = {"at": 0.0, "scanned": set()}
+
+
+def configure_roots(roots: list[str] | None) -> list[Path]:
+    """Decide where to scan for repos. Precedence: --root, then
+    AGENTGRID_ROOTS, then the defaults.
+
+    An explicit choice replaces the defaults rather than adding to them --
+    having named where your code lives, being shown everything in your home
+    directory too is not useful. Nothing is lost by that: directories the live
+    fleet is working in are always included whatever the roots. Roots that do
+    not exist are dropped rather than raising.
+    """
+    global _configured_roots
+    chosen = [Path(r).expanduser() for r in (roots or [])]
+    if not chosen:
+        env = os.environ.get("AGENTGRID_ROOTS", "")
+        chosen = [Path(p).expanduser() for p in env.split(os.pathsep) if p]
+    if not chosen:
+        chosen = list(DEFAULT_PROJECT_ROOTS)
+    _configured_roots = [root for root in chosen if root.is_dir()]
+    _project_cache["at"] = 0.0  # a new set of roots invalidates the cache
+    return _configured_roots
+
+
+def discover_projects(sessions: list) -> list[dict]:
+    """Every directory containing `.git`, one level under each root, unioned
+    with every directory the live fleet is already working in.
+
+    The scan is one level deep on purpose -- recursing a home directory is
+    slow and drags in every cache and node_modules on the disk. The glob is
+    cached for PROJECTS_TTL seconds; the live cwds are unioned fresh on every
+    call so a session started in an unscanned directory appears immediately.
+    """
+    now = time.time()
+    if now - _project_cache["at"] >= PROJECTS_TTL:
+        scanned: set[Path] = set()
+        for root in _configured_roots:
+            try:
+                for git_dir in root.glob("*/.git"):
+                    scanned.add(git_dir.parent)
+            except OSError:
+                continue
+        _project_cache["scanned"] = scanned
+        _project_cache["at"] = now
+    paths: set[Path] = set(_project_cache["scanned"])
+    for session in sessions:
+        if session.cwd:
+            candidate = Path(session.cwd)
+            if candidate.is_dir():
+                paths.add(candidate)
+    ordered = sorted(paths, key=lambda p: (p.name.lower(), str(p).lower()))
+    by_name: dict[str, int] = {}
+    for path in ordered:
+        by_name[path.name] = by_name.get(path.name, 0) + 1
+    projects = []
+    for path in ordered:
+        # Two checkouts sharing a folder name are disambiguated by the parent:
+        # identical entries in a picker that starts real work is ambiguity
+        # worth spending a few characters on.
+        label = path.name if by_name[path.name] == 1 else f"{path.name}  ·  {path.parent}"
+        projects.append({"path": str(path), "name": path.name, "label": label})
+    return projects
+
+
+# --- starting and joining sessions ------------------------------------------
+
+
+def spawn_agent(cwd: str, prompt: str, model: str | None,
+                allowed: list[dict], engine: str = "claude") -> tuple[bool, str, str | None]:
+    """Start an agent -- `claude --bg` or `codex exec` -- in a known project.
+
+    The prompt is unconstrained -- an agent that could only run vetted prompts
+    would be useless -- but the directory must be one of the discovered
+    projects. That is the security boundary keeping this endpoint from being
+    a general "execute anything anywhere" hole, and it holds for both engines.
+    """
+    if not prompt.strip():
+        return False, "Give the agent something to do.", None
+    if cwd not in {project["path"] for project in allowed}:
+        return False, "That directory is not one of the known projects.", None
+
+    if engine == "codex":
+        # codex exec runs the whole task and only then exits, so it cannot be
+        # waited on the way `claude --bg` can -- it is detached outright and
+        # the rollout file it writes is how the board finds it. There is no
+        # job id to hand back; naming waits on (cwd, time) instead.
+        argv = (["codex", "exec", "--cd", cwd, "-s", "workspace-write",
+                 "--skip-git-repo-check"]
+                + (["-m", model] if model else []) + [prompt])
+        try:
+            subprocess.Popen(
+                argv,
+                cwd=cwd,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        except FileNotFoundError:
+            return False, "codex CLI not found on PATH.", None
+        except OSError as error:
+            return False, f"could not start codex: {error}", None
+        return True, f"Started codex in {Path(cwd).name}.", None
+
+    argv = ["claude", "--bg"] + (["--model", model] if model else []) + [prompt]
+    try:
+        # Output is captured rather than discarded because it is the only
+        # handle back to the session just created: `claude --bg` prints the
+        # new job id. start_new_session detaches it from this process group.
+        done = subprocess.run(
+            argv,
+            cwd=cwd,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            start_new_session=True,
+        )
+    except FileNotFoundError:
+        return False, "claude CLI not found on PATH.", None
+    except subprocess.TimeoutExpired:
+        return False, "claude --bg did not return within 60 seconds.", None
+    if done.returncode != 0:
+        detail = ANSI_RE.sub("", (done.stderr or done.stdout or "")).strip().splitlines()
+        return False, f"claude exited {done.returncode}: {detail[-1][:140] if detail else ''}", None
+    plain = ANSI_RE.sub("", done.stdout or "")
+    first = plain.splitlines()[0] if plain.splitlines() else ""
+    found = JOB_ID_RE.search(first)
+    return True, f"Started in {Path(cwd).name}.", (found.group(1) if found else None)
+
+
+def _osa_str(value: str) -> str:
+    """Escape for an AppleScript double-quoted literal.
+
+    Backslash first, then quote -- reversing the order re-escapes the
+    backslashes introduced by the quote pass.
+    """
+    return str(value).replace("\\", "\\\\").replace('"', '\\"')
+
+
+# Terminal.app's scripting dictionary has no command that creates a tab:
+# `do script` with no `in` target always spawns a window, and the `tab` class
+# it exposes is not creatable via `make`. The only route is to drive the menu
+# shortcut through System Events and then aim `do script` at the front window,
+# which by then is showing the tab that just opened. The custom-title block is
+# try-wrapped because naming is cosmetic and must not take the attach down
+# with it.
+OPEN_TAB_SCRIPT = '''
+tell application "Terminal"
+  activate
+  if (count of windows) is 0 then
+    set theTab to do script "__COMMAND__"
+  else
+    try
+      tell application "System Events" to keystroke "t" using command down
+      delay 0.3
+      set theTab to do script "__COMMAND__" in front window
+    on error
+      set theTab to do script "__COMMAND__"
+    end try
+  end if
+  try
+    set custom title of theTab to "__TITLE__"
+    set title displays custom title of theTab to true
+    set title displays device name of theTab to false
+    set title displays shell path of theTab to false
+    set title displays window size of theTab to false
+    set title displays file name of theTab to false
+  on error
+  end try
+end tell
+'''
+
+
+def open_in_terminal(session) -> tuple[bool, str]:
+    """Get into a session: focus the existing attach, or open a new tab.
+
+    The refusal order is deliberate: non-background first (resuming an
+    interactive session would fork the conversation, which is worse than
+    being told no), then a missing job id, then a printed command on
+    non-macOS where Terminal.app scripting does not exist.
+    """
+    if session.kind != "background":
+        return False, ("This is an interactive session. Joining it from here would fork "
+                       "the conversation with --resume rather than attach to it -- use "
+                       "the terminal it is already running in.")
+    if not session.job_id:
+        return False, "This session has no job id, so there is nothing to attach to."
+    command = f'cd "{session.cwd}" && claude attach {session.job_id}'
+    if sys.platform != "darwin":
+        return False, f"Terminal.app is macOS-only. Run this yourself: {command}"
+    existing = terminal.attached_tty(session.job_id)
+    if existing:
+        ok, _message = terminal.focus_tty(existing)
+        if ok:
+            return True, "Focused the tab already attached to this session."
+        # The tab closed between listing and focusing: fall through and open
+        # a fresh one rather than reporting failure.
+    script = (OPEN_TAB_SCRIPT
+              .replace("__COMMAND__", _osa_str(command))
+              .replace("__TITLE__", _osa_str(session.display_title)))
+    try:
+        done = subprocess.run(["osascript", "-e", script],
+                              capture_output=True, text=True, timeout=20)
+    except FileNotFoundError:
+        return False, "osascript not found -- is this really macOS?"
+    except subprocess.TimeoutExpired:
+        return False, "Terminal.app did not respond within 20 seconds."
+    if done.returncode != 0:
+        stderr = (done.stderr or "").strip()
+        if "-1743" in stderr or "not authorized" in stderr.lower():
+            # macOS automation errors are opaque; point at the one switch
+            # that fixes this instead of echoing the raw error.
+            return False, ("macOS blocked the automation. Allow your terminal under "
+                           "System Settings → Privacy & Security → Automation, then retry.")
+        return False, f"Could not open Terminal: {stderr[:140]}"
+    return True, f"Opened a Terminal tab attached to {session.job_id}."
+
+
+# --- the HTTP handler --------------------------------------------------------
+
+
+class Handler(BaseHTTPRequestHandler):
+    """Token-gated JSON API plus the single static page.
+
+    `fleet` and `token` are bound onto a per-server subclass by serve(), so
+    two instances in one process cannot share state by accident.
+    """
+
+    fleet: Fleet
+    token: str
+    server_version = "agentgrid"
+
+    def log_message(self, format: str, *args) -> None:  # noqa: A002
+        # Per-request logging would scroll the launching terminal.
+        pass
+
+    # -- plumbing ------------------------------------------------------------
+
+    def _authorized(self, query: dict) -> bool:
+        supplied = (query.get("t") or [""])[0] or self.headers.get("X-Agentgrid-Token", "")
+        return bool(supplied) and secrets.compare_digest(supplied, self.token)
+
+    def _send(self, code: int, body: bytes, content_type: str) -> None:
+        try:
+            self.send_response(code)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            # No embedding, and no referrer leakage of the token in the URL.
+            self.send_header("X-Frame-Options", "DENY")
+            self.send_header("Referrer-Policy", "no-referrer")
+            self.end_headers()
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            # The browser gave up on the request; nothing useful to do.
+            pass
+
+    def _send_json(self, code: int, payload) -> None:
+        self._send(code, json.dumps(payload).encode("utf-8"),
+                   "application/json; charset=utf-8")
+
+    def _session_by_id(self, session_id: str):
+        for session in self.fleet.raw():
+            if session.session_id == session_id:
+                return session
+        return None
+
+    @staticmethod
+    def _one(query: dict, key: str) -> str:
+        return (query.get(key) or [""])[0]
+
+    # -- GET -----------------------------------------------------------------
+
+    def do_GET(self) -> None:  # noqa: N802 (BaseHTTPRequestHandler's spelling)
+        parsed = urllib.parse.urlsplit(self.path)
+        query = urllib.parse.parse_qs(parsed.query)
+        if not self._authorized(query):
+            if parsed.path == "/":
+                # A human pasted the bare URL; answer in plain text they can read.
+                self._send(403, b"Bad or missing token. Use the URL agentgrid printed.\n",
+                           "text/plain; charset=utf-8")
+            else:
+                self._send_json(403, {"error": "Bad or missing token."})
+            return
+        route = parsed.path
+        if route == "/":
+            self._send(200, (STATIC / "app.html").read_bytes(), "text/html; charset=utf-8")
+        elif route == "/api/sessions":
+            self._send_json(200, self.fleet.snapshot())
+        elif route == "/api/notes":
+            self._get_notes(query)
+        elif route == "/api/history":
+            page = self._one(query, "page")
+            self._send_json(200, {"page": page,
+                                  "entries": notes.page_history(page),
+                                  "jiraBase": notes.jira_base()})
+        elif route == "/api/mentions":
+            slug = self._one(query, "slug")
+            self._send_json(200, {"slug": slug,
+                                  "lines": notes.mentions_of(slug),
+                                  "jiraBase": notes.jira_base()})
+        elif route == "/api/pages":
+            self._send_json(200, {"pages": notes.all_pages()})
+        elif route == "/api/projects":
+            self._send_json(200, {"projects": discover_projects(self.fleet.raw())})
+        elif route == "/api/transcript":
+            self._get_transcript(query)
+        else:
+            self._send_json(404, {"error": "No such route."})
+
+    def _get_notes(self, query: dict) -> None:
+        day = self._one(query, "date") or date.today().isoformat()
+        if not _valid_day(day):
+            self._send_json(400, {"error": "Bad date."})
+            return
+        span = self._one(query, "span")
+        if span not in ("day", "week", "month"):
+            span = "day"
+        # Materialise recurring pages first, so a pinned page exists before
+        # the page list and the fallback below are computed.
+        notes.ensure_pinned(day)
+        pages = notes.pages(day)
+        page = self._one(query, "page")
+        if not page or page not in pages:
+            # The requested page no longer exists: fall back to the day's
+            # first page rather than showing a blank editor for a page that
+            # is gone.
+            page = pages[0] if pages else notes.DEFAULT_PAGE
+        payload = notes.collect(day, span)
+        payload.update({
+            "date": day,
+            "page": page,
+            "pages": pages,
+            "groups": notes.page_groups(day),
+            "collapsed": notes.collapsed_groups(day),
+            "pinned": notes.pinned(),
+            "text": notes.read_day(day, page),
+            "days": notes.days_with_notes(),
+        })
+        self._send_json(200, payload)
+
+    def _get_transcript(self, query: dict) -> None:
+        session = self._session_by_id(self._one(query, "id"))
+        if session is None or session.transcript is None:
+            self._send_json(200, {"blocks": []})
+            return
+        path = session.transcript
+        agent_id = self._one(query, "agent")
+        if agent_id:
+            # Resolve the agent against the session's own roster rather than
+            # building a path from the request -- the id would otherwise be a
+            # path component under the caller's control.
+            path = None
+            for agent in session.subagents:
+                if agent.agent_id == agent_id:
+                    path = agent.path
+                    break
+            if path is None:
+                self._send_json(200, {"blocks": []})
+                return
+        blocks = transcript.render_blocks(path)
+        # The tail is the part you opened it to read.
+        self._send_json(200, {"blocks": blocks[-600:]})
+
+    # -- POST ----------------------------------------------------------------
+
+    def do_POST(self) -> None:  # noqa: N802
+        parsed = urllib.parse.urlsplit(self.path)
+        query = urllib.parse.parse_qs(parsed.query)
+        if not self._authorized(query):
+            self._send_json(403, {"error": "Bad or missing token."})
+            return
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+            body = json.loads(self.rfile.read(length) or b"{}")
+        except (ValueError, OSError):
+            self._send_json(400, {"error": "Bad JSON body."})
+            return
+        if not isinstance(body, dict):
+            self._send_json(400, {"error": "Bad JSON body."})
+            return
+        route = parsed.path
+        # Notes routes resolve before any sessionId lookup -- they are not
+        # about a session. Every route below has its own explicit branch: the
+        # original grouped day-scoped routes into a tuple whose handler chain
+        # ended in a bare set_group default, and /api/notes/quickadd listed
+        # there silently became "set group" (§7.19). No tuple, no fall-through.
+        if route == "/api/notes/save":
+            self._notes_save(body)
+        elif route == "/api/notes/quickadd":
+            self._notes_quickadd(body)
+        elif route == "/api/notes/toggle":
+            self._notes_toggle(body)
+        elif route == "/api/notes/rename":
+            self._notes_rename(body)
+        elif route == "/api/notes/delete":
+            self._notes_delete(body)
+        elif route == "/api/notes/order":
+            self._notes_order(body)
+        elif route == "/api/notes/group":
+            self._notes_group(body)
+        elif route == "/api/notes/collapse":
+            self._notes_collapse(body)
+        elif route == "/api/notes/movegroup":
+            self._notes_movegroup(body)
+        elif route == "/api/notes/pin":
+            self._notes_pin(body)
+        elif route == "/api/notes/deleteall":
+            self._notes_deleteall(body)
+        elif route == "/api/notes/renameall":
+            self._notes_renameall(body)
+        elif route == "/api/spawn":
+            self._spawn(body)
+        elif route == "/api/rename":
+            self._rename(body)
+        elif route == "/api/tags":
+            self._tags(body)
+        elif route == "/api/read":
+            self._read(body)
+        elif route == "/api/override":
+            self._override(body)
+        elif route == "/api/open":
+            self._open(body)
+        else:
+            self._send_json(404, {"error": "No such route."})
+
+    # -- notes routes --------------------------------------------------------
+
+    def _day_of(self, body: dict) -> str | None:
+        day = body.get("date") or ""
+        return day if _valid_day(day) else None
+
+    def _notes_save(self, body: dict) -> None:
+        day = self._day_of(body)
+        if not day:
+            self._send_json(400, {"error": "Bad date."})
+            return
+        notes.write_day(day, str(body.get("text") or ""), str(body.get("page") or ""))
+        self._send_json(200, {"ok": True})
+
+    def _notes_quickadd(self, body: dict) -> None:
+        day = self._day_of(body)
+        if not day:
+            self._send_json(400, {"error": "Bad date."})
+            return
+        text = str(body.get("text") or "").strip()
+        if not text:
+            self._send_json(400, {"error": "Nothing to add."})
+            return
+        slug = str(body.get("slug") or "").strip()
+        if slug and f"@{slug}" not in text:
+            # The panel is a view over the pad; the mention is what ties the
+            # line back to the session, so append it if it was not typed.
+            text = f"{text} @{slug}"
+        if body.get("todo") and not re.match(r"^\s*[-*]\s+\[[ xX]\]", text):
+            text = f"- [ ] {text}"
+        notes.append_line(day, text)
+        self._send_json(200, {"ok": True})
+
+    def _notes_toggle(self, body: dict) -> None:
+        day = self._day_of(body)
+        if not day:
+            self._send_json(400, {"error": "Bad date."})
+            return
+        try:
+            notes.toggle(day, int(body.get("line") or 0), str(body.get("page") or ""))
+        except (IndexError, ValueError):
+            # The file changed underneath the rail; the client re-reads.
+            self._send_json(409, {"error": "That line is not a checkbox any more."})
+            return
+        self._send_json(200, {"ok": True})
+
+    def _notes_rename(self, body: dict) -> None:
+        day = self._day_of(body)
+        if not day:
+            self._send_json(400, {"error": "Bad date."})
+            return
+        try:
+            notes.rename_page(day, str(body.get("page") or ""), str(body.get("name") or ""))
+        except (ValueError, FileExistsError, OSError) as error:
+            self._send_json(409, {"error": str(error) or "Could not rename."})
+            return
+        self._send_json(200, {"ok": True})
+
+    def _notes_delete(self, body: dict) -> None:
+        day = self._day_of(body)
+        if not day:
+            self._send_json(400, {"error": "Bad date."})
+            return
+        notes.delete_page(day, str(body.get("page") or ""))
+        self._send_json(200, {"ok": True})
+
+    def _notes_order(self, body: dict) -> None:
+        day = self._day_of(body)
+        order = body.get("order")
+        if not day or not isinstance(order, list):
+            self._send_json(400, {"error": "Bad order."})
+            return
+        notes.set_order(day, [str(name) for name in order])
+        self._send_json(200, {"ok": True})
+
+    def _notes_group(self, body: dict) -> None:
+        day = self._day_of(body)
+        if not day:
+            self._send_json(400, {"error": "Bad date."})
+            return
+        notes.set_group(day, str(body.get("page") or ""), str(body.get("group") or ""))
+        self._send_json(200, {"ok": True})
+
+    def _notes_collapse(self, body: dict) -> None:
+        day = self._day_of(body)
+        if not day:
+            self._send_json(400, {"error": "Bad date."})
+            return
+        notes.set_collapsed(day, str(body.get("group") or ""), bool(body.get("collapsed")))
+        self._send_json(200, {"ok": True})
+
+    def _notes_movegroup(self, body: dict) -> None:
+        day = self._day_of(body)
+        if not day:
+            self._send_json(400, {"error": "Bad date."})
+            return
+        before = body.get("before")
+        notes.move_group(day, str(body.get("group") or ""),
+                         str(before) if before else None)
+        self._send_json(200, {"ok": True})
+
+    def _notes_pin(self, body: dict) -> None:
+        page = str(body.get("page") or "").strip()
+        if not page:
+            self._send_json(400, {"error": "No page named."})
+            return
+        days = body.get("days")
+        notes.set_pinned(page, bool(body.get("pinned")),
+                         str(body.get("group") or ""),
+                         [int(d) for d in days] if isinstance(days, list) else [])
+        self._send_json(200, {"ok": True})
+
+    def _notes_deleteall(self, body: dict) -> None:
+        page = str(body.get("page") or "").strip()
+        if not page:
+            self._send_json(400, {"error": "No page named."})
+            return
+        self._send_json(200, {"removed": notes.delete_everywhere(page)})
+
+    def _notes_renameall(self, body: dict) -> None:
+        page = str(body.get("page") or "").strip()
+        name = str(body.get("name") or "").strip()
+        if not page or not name:
+            self._send_json(400, {"error": "Both names are needed."})
+            return
+        try:
+            notes.rename_everywhere(page, name)
+        except (ValueError, FileExistsError, OSError) as error:
+            self._send_json(409, {"error": str(error) or "Could not rename."})
+            return
+        self._send_json(200, {"ok": True})
+
+    # -- session routes ------------------------------------------------------
+
+    def _spawn(self, body: dict) -> None:
+        projects = discover_projects(self.fleet.raw())
+        engine = "codex" if str(body.get("engine") or "") == "codex" else "claude"
+        cwd = str(body.get("cwd") or "")
+        ok, message, job_id = spawn_agent(
+            cwd,
+            str(body.get("prompt") or ""),
+            str(body.get("model") or "") or None,
+            projects,
+            engine,
+        )
+        if not ok:
+            self._send_json(400, {"error": message})
+            return
+        name = str(body.get("name") or "").strip()
+        if name:
+            if job_id:
+                self.fleet.name_when_seen(job_id, name)
+            elif engine == "codex":
+                self.fleet.name_codex_when_seen(cwd, name)
+            else:
+                # Say the name was not applied rather than dropping it silently.
+                message += " Could not read its id, so the name was not applied."
+        self._send_json(200, {"ok": True, "message": message})
+
+    def _rename(self, body: dict) -> None:
+        session = self._session_by_id(str(body.get("sessionId") or ""))
+        if session is None:
+            self._send_json(404, {"error": "Unknown session."})
+            return
+        name = str(body.get("name") or "").strip()
+        discovery.save_custom_name(session.session_id, name)
+        session.custom_name = name or None
+        self._send_json(200, {"ok": True})
+
+    def _tags(self, body: dict) -> None:
+        session = self._session_by_id(str(body.get("sessionId") or ""))
+        if session is None:
+            self._send_json(404, {"error": "Unknown session."})
+            return
+        raw = body.get("tags")
+        cleaned = discovery.normalize_tags(raw if isinstance(raw, list) else [])
+        discovery.save_tags(session.session_id, cleaned)
+        session.tags = cleaned
+        self._send_json(200, {"tags": cleaned})
+
+    def _read(self, body: dict) -> None:
+        # One route, both directions: the client says what it wants the
+        # state to be. Marking unread forgets the read position rather than
+        # setting a flag -- unread is "have you seen this far", and the honest
+        # way to say no is to have no record.
+        session = self._session_by_id(str(body.get("sessionId") or ""))
+        if session is None:
+            self._send_json(404, {"error": "Unknown session."})
+            return
+        if body.get("unread"):
+            discovery.mark_unread(session.session_id)
+            session.unread = True
+        else:
+            discovery.mark_read(session.session_id, session.last_activity)
+            session.unread = False
+        self._send_json(200, {"ok": True})
+
+    def _override(self, body: dict) -> None:
+        session = self._session_by_id(str(body.get("sessionId") or ""))
+        if session is None:
+            self._send_json(404, {"error": "Unknown session."})
+            return
+        to = body.get("to")
+        if to in ("", None, "auto"):
+            to = None
+        # base and at come from the server's view of reality, never from the
+        # client: the card the user dragged may already be showing an
+        # override, and re-basing onto that pins the entry to a state that
+        # can never expire.
+        ok, message = discovery.save_override(
+            session.session_id, to, session.real_status, session.last_activity)
+        if not ok:
+            self._send_json(409, {"error": message})
+            return
+        self._send_json(200, {"ok": True, "message": message})
+
+    def _open(self, body: dict) -> None:
+        session = self._session_by_id(str(body.get("sessionId") or ""))
+        if session is None:
+            self._send_json(404, {"error": "Unknown session."})
+            return
+        # Two different verbs share this route. A background session is joined
+        # (attach, or focus the tab already attached); an interactive session
+        # cannot be joined -- its keyboard belongs to the pty inside whatever
+        # emulator owns it -- but a Terminal.app tab can at least be brought to
+        # the front. focus() explains itself for hosts it cannot script, which
+        # is the honest half of "get into a session" for Cursor-hosted ones.
+        if session.kind == "background":
+            ok, message = open_in_terminal(session)
+        elif session.pid:
+            ok, message = terminal.focus(session.pid)
+        else:
+            ok, message = False, ("This interactive session reports no pid, so its "
+                                  "terminal tab cannot be found.")
+        if not ok:
+            self._send_json(409, {"error": message})
+            return
+        self._send_json(200, {"ok": True, "message": message})
+
+
+# --- entry point -------------------------------------------------------------
+
+
+def serve(port: int = 8787, open_browser: bool = True,
+          roots: list[str] | None = None) -> None:
+    """Start the poller and the HTTP server, print the one URL that gets in."""
+    if not (STATIC / "app.html").is_file():
+        raise SystemExit("agentgrid/static/app.html is missing; the web UI cannot start.")
+    scanning = configure_roots(roots)
+    fleet = Fleet()
+    fleet.start()
+    token = secrets.token_urlsafe(24)
+    # Bind fleet and token onto a per-server subclass rather than globals, so
+    # two servers in one process cannot share state by accident.
+    handler = type("BoundHandler", (Handler,), {"fleet": fleet, "token": token})
+    try:
+        httpd = ThreadingHTTPServer(("127.0.0.1", port), handler)
+    except OSError:
+        # Address already in use: a second instance starts on a free port
+        # instead of dying.
+        httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    httpd.daemon_threads = True
+    url = f"http://127.0.0.1:{httpd.server_address[1]}/?t={token}"
+    print("agentgrid web UI")
+    print(f"  {url}")
+    print("  projects from: " + (", ".join(str(root) for root in scanning) or "(no roots found)"))
+    # flush=True because Python block-buffers stdout when it is not a
+    # terminal, and `ag --web > log &` must still show the URL that carries
+    # the token -- it is the only way in.
+    print("  loopback only, token-gated, stops when you Ctrl-C this terminal.",
+          flush=True)
+    if open_browser:
+        threading.Timer(0.4, lambda: webbrowser.open(url)).start()
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        print("\nstopped.")
+    finally:
+        fleet.stop()
+        httpd.server_close()

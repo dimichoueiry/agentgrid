@@ -1035,14 +1035,16 @@ def collect(cache: TranscriptCache | None = None) -> tuple[list[Session], str | 
 
     now = time.time()
     for index, ready in enumerate(enriched):
-        # An interactive session's turn ending is a reply, not idleness: the
-        # CLI only has busy/idle for these, so a card would otherwise fall
+        # A turn ending is a reply, not idleness: a card would otherwise fall
         # straight from Working to a hidden column with its answer unread.
         # "Idle with output you have not seen" files under Replied -- either
         # you have opened this session before and it has spoken since, or it
         # spoke within the last hour. Reading it returns the card to Idle;
-        # sessions that have sat unopened for ages stay honestly Idle.
-        if ready.kind == "interactive" and ready.status == "idle":
+        # sessions that have sat unopened for ages stay honestly Idle. This
+        # keys off STATUS, not kind -- a background session you were attached
+        # to also reports idle when the turn ends, and it was landing in Idle
+        # with a fresh reply on it.
+        if ready.status == "idle":
             seen_at = seen.get(ready.session_id, 0.0)
             spoke_since_read = ready.last_activity > seen_at
             recent = now - ready.last_activity < RECENT_REPLY_SECONDS

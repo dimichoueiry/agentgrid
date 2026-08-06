@@ -296,8 +296,67 @@ def discover_projects(sessions: list) -> list[dict]:
 # --- starting and joining sessions ------------------------------------------
 
 
+# --- the agent library -------------------------------------------------------
+#
+# Reusable agent definitions: a name, an engine, a model and a system prompt,
+# saved once and spawnable in one click. This is deliberately just data --
+# a definition is nothing but a saved way of launching a real session, so
+# everything on the board (attach, stop, transcripts) works on the result.
+
+AGENTS_PATH = Path.home() / ".agentgrid" / "agents.json"
+MAX_SYSTEM_PROMPT = 8000
+
+
+def load_saved_agents() -> list[dict]:
+    """The library, oldest first. Missing or corrupt file is an empty library."""
+    try:
+        raw = json.loads(AGENTS_PATH.read_text("utf-8"))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(raw, list):
+        return []
+    agents = []
+    for entry in raw:
+        if isinstance(entry, dict) and str(entry.get("name") or "").strip():
+            agents.append({
+                "name": str(entry["name"])[:60],
+                "engine": "codex" if entry.get("engine") == "codex" else "claude",
+                "model": str(entry.get("model") or ""),
+                "systemPrompt": str(entry.get("systemPrompt") or "")[:MAX_SYSTEM_PROMPT],
+            })
+    return agents
+
+
+def _write_saved_agents(agents: list[dict]) -> None:
+    AGENTS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    temporary = AGENTS_PATH.with_suffix(".json.tmp")
+    temporary.write_text(json.dumps(agents, indent=2), "utf-8")
+    os.replace(temporary, AGENTS_PATH)
+
+
+def save_saved_agent(name: str, engine: str, model: str, system_prompt: str) -> list[dict]:
+    """Save or overwrite one definition by name (case-insensitive)."""
+    name = name.strip()[:60]
+    agents = [a for a in load_saved_agents() if a["name"].lower() != name.lower()]
+    agents.append({
+        "name": name,
+        "engine": "codex" if engine == "codex" else "claude",
+        "model": model.strip(),
+        "systemPrompt": system_prompt.strip()[:MAX_SYSTEM_PROMPT],
+    })
+    _write_saved_agents(agents)
+    return agents
+
+
+def delete_saved_agent(name: str) -> list[dict]:
+    agents = [a for a in load_saved_agents() if a["name"].lower() != name.strip().lower()]
+    _write_saved_agents(agents)
+    return agents
+
+
 def spawn_agent(cwd: str, prompt: str, model: str | None,
-                allowed: list[dict], engine: str = "claude") -> tuple[bool, str, str | None]:
+                allowed: list[dict], engine: str = "claude",
+                system_prompt: str = "") -> tuple[bool, str, str | None]:
     """Start an agent -- `claude --bg` or `codex exec` -- in a known project.
 
     The prompt is unconstrained -- an agent that could only run vetted prompts
@@ -309,6 +368,14 @@ def spawn_agent(cwd: str, prompt: str, model: str | None,
         return False, "Give the agent something to do.", None
     if cwd not in {project["path"] for project in allowed}:
         return False, "That directory is not one of the known projects.", None
+
+    # The library's system prompt rides inside the task rather than through a
+    # CLI flag: neither `claude --bg` nor `codex exec` documents a
+    # system-prompt option that is stable across versions, and a spawn that
+    # fails on an unknown flag is worse than a framed preamble.
+    if system_prompt.strip():
+        prompt = (f"<system instructions>\n{system_prompt.strip()}\n"
+                  f"</system instructions>\n\n{prompt}")
 
     if engine == "codex":
         # codex exec runs the whole task and only then exits, so it cannot be
@@ -398,6 +465,13 @@ tell application "Terminal"
     set title displays window size of theTab to false
     set title displays file name of theTab to false
   on error
+  end try
+  -- Raise Terminal again at the end: the first activate fires before the tab
+  -- exists, and on a busy desktop the browser can keep focus -- which read
+  -- as "Open did nothing" and taught people to double-click.
+  try
+    set index of front window to 1
+    activate
   end try
 end tell
 '''
@@ -534,6 +608,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(200, {"pages": notes.all_pages()})
         elif route == "/api/projects":
             self._send_json(200, {"projects": discover_projects(self.fleet.raw())})
+        elif route == "/api/agents":
+            self._send_json(200, {"agents": load_saved_agents()})
         elif route == "/api/transcript":
             self._get_transcript(query)
         else:
@@ -642,6 +718,17 @@ class Handler(BaseHTTPRequestHandler):
             self._notes_renameall(body)
         elif route == "/api/spawn":
             self._spawn(body)
+        elif route == "/api/agents/save":
+            name = str(body.get("name") or "").strip()
+            if not name:
+                self._send_json(400, {"error": "A reusable agent needs a name."})
+            else:
+                self._send_json(200, {"agents": save_saved_agent(
+                    name, str(body.get("engine") or "claude"),
+                    str(body.get("model") or ""),
+                    str(body.get("systemPrompt") or ""))})
+        elif route == "/api/agents/delete":
+            self._send_json(200, {"agents": delete_saved_agent(str(body.get("name") or ""))})
         elif route == "/api/rename":
             self._rename(body)
         elif route == "/api/tags":
@@ -799,6 +886,7 @@ class Handler(BaseHTTPRequestHandler):
             str(body.get("model") or "") or None,
             projects,
             engine,
+            str(body.get("systemPrompt") or ""),
         )
         if not ok:
             self._send_json(400, {"error": message})

@@ -381,6 +381,8 @@ details.tools .tfail{color:var(--failed)}
 .sheet.wide{width:min(780px,94vw)}
 .stitle{font-size:15px;font-weight:600;letter-spacing:-.015em;margin:0 0 12px}
 .sheet label{display:block;font-size:11.5px;color:var(--text-3);margin:0 0 10px}
+.librow{display:flex;gap:6px;align-items:stretch;margin-top:4px}
+.librow select{flex:1;min-width:0}
 .sheet label input,.sheet label select,.sheet label textarea{
   display:block;width:100%;margin-top:3px;font-size:12.5px;padding:6px 9px;color:var(--text);
 }
@@ -482,6 +484,8 @@ details.tools .tfail{color:var(--failed)}
   <select class="ctl" id="projectSel" title="Project"></select>
   <select class="ctl" id="tagSel" title="Tag"></select>
   <div class="toggles" id="toggles"></div>
+  <div class="toggles"><button id="alertsBtn" aria-pressed="false"
+    title="Notify when an agent needs you or replies (while this tab is open)">Alerts</button></div>
   <div class="spacer"></div>
   <button class="btn key" id="newBtn" title="Start a new agent  (n)">New agent</button>
   <input id="search" type="search" placeholder="Search  /" autocomplete="off">
@@ -530,6 +534,12 @@ details.tools .tfail{color:var(--failed)}
 <div class="modal" id="modal" hidden>
   <div class="sheet">
     <div class="stitle">New agent</div>
+    <label>Library <span class="hint">reusable agents — pick one to fill the sheet</span>
+      <div class="librow">
+        <select id="naLib"><option value="">— none —</option></select>
+        <button class="btn sm" id="naLibSave" title="Save the fields below under the Name as a reusable agent">Save</button>
+        <button class="btn sm" id="naLibDel" hidden>Delete</button>
+      </div></label>
     <label>Name <span class="hint">optional — what you will look for on the board</span>
       <input id="naName" maxlength="60" autocomplete="off"></label>
     <label>Project
@@ -546,6 +556,8 @@ details.tools .tfail{color:var(--failed)}
         <option value="opus">Opus</option>
         <option value="haiku">Haiku</option>
       </select></label>
+    <label>System prompt <span class="hint">optional — rides along with every run</span>
+      <textarea id="naSys" rows="3" placeholder="You are a…"></textarea></label>
     <label>Task
       <textarea id="naTask" rows="5" placeholder="What should it do?"></textarea></label>
     <div class="srow">
@@ -1647,10 +1659,20 @@ function closeManage() {
 
 /* ---------------------------------------------------------------- new agent */
 
+let agentLibrary = [];
+
+function fillLibrarySelect(selected) {
+  $("naLib").innerHTML = `<option value="">— none —</option>` +
+    agentLibrary.map(a =>
+      `<option value="${esc(a.name)}">${esc(a.name)} · ${esc(a.engine)}</option>`).join("");
+  $("naLib").value = selected || "";
+  $("naLibDel").hidden = !$("naLib").value;
+}
+
 async function openNewAgent() {
   $("modal").hidden = false;
   $("naErr").textContent = "";
-  $("naTask").value = ""; $("naName").value = "";
+  $("naTask").value = ""; $("naName").value = ""; $("naSys").value = "";
   try {
     const data = await api("/api/projects");
     projectsCache = data.projects || [];
@@ -1661,6 +1683,10 @@ async function openNewAgent() {
   // if a project filter is set, that is almost certainly where this one belongs
   if (project && projectsCache.some(p => p.path === project)) sel.value = project;
   syncEngineModels();
+  try {
+    agentLibrary = (await api("/api/agents")).agents || [];
+  } catch (e) { agentLibrary = agentLibrary || []; }
+  fillLibrarySelect("");
   $("naName").focus();
 }
 // each engine has its own model vocabulary; Default always means "let the
@@ -1683,6 +1709,7 @@ async function startAgent() {
     r = await post("/api/spawn", {
       cwd: $("naProject").value, prompt, engine: $("naEngine").value,
       model: $("naModel").value, name: $("naName").value.trim(),
+      systemPrompt: $("naSys").value.trim(),
     });
   } finally { $("naStart").disabled = false; }
   if (r && r.error) { $("naErr").textContent = r.error; return; }
@@ -1707,12 +1734,45 @@ function setView(v) {
 
 /* --------------------------------------------------------------------- poll */
 
+/* ------------------------------------------------------------------ alerts */
+// A blocked agent discovered "whenever you happen to look" was the founding
+// problem; the notification is what closes that loop. Client-side only, so
+// alerts exist exactly while a board tab is open — no daemon, as ever.
+let alertsOn = localStorage.getItem("agentgrid.alerts") === "1";
+const prevStatus = new Map();
+
+function notifySession(s, line) {
+  if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
+  const n = new Notification(`${s.title} ${line}`, {
+    body: s.project + (s.engine === "codex" ? " · codex" : ""),
+    tag: s.sessionId,   // one live notification per session, not a pile
+  });
+  n.onclick = () => { window.focus(); openSession(s.sessionId); n.close(); };
+}
+
+function checkAlerts() {
+  const seeded = prevStatus.size > 0;   // first poll only seeds, never fires
+  for (const s of sessions) {
+    const was = prevStatus.get(s.sessionId);
+    if (seeded && alertsOn && was && was !== s.status) {
+      if (s.status === "blocked") notifySession(s, "needs you");
+      else if (s.status === "done" && was === "working" && s.unread) notifySession(s, "replied");
+    }
+    prevStatus.set(s.sessionId, s.status);
+  }
+}
+
+function applyAlertsBtn() {
+  $("alertsBtn").setAttribute("aria-pressed", alertsOn ? "true" : "false");
+}
+
 async function poll() {
   try {
     const data = await api("/api/sessions");
     sessions = data.sessions || [];
     polledAt = data.polledAt || 0;
     fleetError = data.error || "";
+    checkAlerts();
   } catch (e) {
     fleetError = "server unreachable";
   }
@@ -1751,10 +1811,15 @@ function bindEvents() {
   $("board").addEventListener("click", e => {
     const open = e.target.closest("[data-open]");
     if (open) {
-      // straight in from the card; the refusal, if any, arrives as a toast
+      // straight in from the card; the refusal, if any, arrives as a toast.
+      // Disabled while in flight: a fast double-click raced two attach
+      // requests, and the second opened a second tab onto the same session.
       e.stopPropagation();
+      if (open.disabled) return;
+      open.disabled = true;
       post("/api/open", {sessionId: open.dataset.open}).then(r => {
         toast((r && (r.error || r.message)) || "Opened.");
+        setTimeout(() => { open.disabled = false; }, 1500);
       });
       return;
     }
@@ -1795,8 +1860,12 @@ function bindEvents() {
     const mv = e.target.closest("button.mv");
     if (mv) { moveSession(openId, mv.dataset.to); return; }
     if (e.target.closest("#openBtn")) {
+      const btn = e.target.closest("#openBtn");
+      if (btn.disabled) return;
+      btn.disabled = true;   // same double-click race as the card button
       post("/api/open", {sessionId: openId}).then(r => {
         toast((r && (r.error || r.message)) || "Opened.");
+        setTimeout(() => { btn.disabled = false; }, 1500);
       });
       return;
     }
@@ -2095,6 +2164,59 @@ function bindEvents() {
   $("modal").addEventListener("click", e => { if (e.target === $("modal")) closeNewAgent(); });
   $("naStart").addEventListener("click", startAgent);
   $("naEngine").addEventListener("change", syncEngineModels);
+  // the library: picking a saved agent fills the sheet; Save stores the
+  // sheet under the Name; a definition is just a saved way of launching
+  $("naLib").addEventListener("change", () => {
+    const def = agentLibrary.find(a => a.name === $("naLib").value);
+    $("naLibDel").hidden = !def;
+    if (!def) return;
+    $("naEngine").value = def.engine;
+    syncEngineModels();
+    if (def.model && ![...$("naModel").options].some(o => o.value === def.model)) {
+      $("naModel").insertAdjacentHTML("beforeend",
+        `<option value="${esc(def.model)}">${esc(def.model)}</option>`);
+    }
+    $("naModel").value = def.model || "";
+    $("naSys").value = def.systemPrompt || "";
+    $("naName").value = def.name;
+    $("naTask").focus();
+  });
+  $("naLibSave").addEventListener("click", async () => {
+    const name = $("naName").value.trim() || $("naLib").value;
+    if (!name) { $("naErr").textContent = "Give it a name first — that is what the library files it under."; return; }
+    const r = await post("/api/agents/save", {
+      name, engine: $("naEngine").value, model: $("naModel").value,
+      systemPrompt: $("naSys").value.trim(),
+    });
+    if (r && r.error) { $("naErr").textContent = r.error; return; }
+    agentLibrary = (r && r.agents) || agentLibrary;
+    fillLibrarySelect(name);
+    toast(`Saved "${name}" to the library.`);
+  });
+  $("naLibDel").addEventListener("click", async () => {
+    const name = $("naLib").value; if (!name) return;
+    const r = await post("/api/agents/delete", {name});
+    agentLibrary = (r && r.agents) || agentLibrary;
+    fillLibrarySelect("");
+    toast(`Removed "${name}" from the library.`);
+  });
+  applyAlertsBtn();
+  $("alertsBtn").addEventListener("click", async () => {
+    if (!alertsOn) {
+      // permission must be asked from a user gesture, and this is the one
+      if (typeof Notification === "undefined") { toast("This browser has no notifications."); return; }
+      if (Notification.permission !== "granted") {
+        const p = await Notification.requestPermission();
+        if (p !== "granted") { toast("Notifications are blocked for this site."); return; }
+      }
+      alertsOn = true;
+    } else {
+      alertsOn = false;
+    }
+    localStorage.setItem("agentgrid.alerts", alertsOn ? "1" : "0");
+    applyAlertsBtn();
+    toast(alertsOn ? "Alerts on — you will be notified when an agent needs you or replies." : "Alerts off.");
+  });
   $("naName").addEventListener("keydown", e => {
     // the task is required; submitting from the name box would start an agent
     // with nothing to do

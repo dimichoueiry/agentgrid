@@ -36,6 +36,12 @@ on run argv
         try
           if (tty of t) is equal to wanted then
             set selected of t to true
+            try
+              -- A days-old session's window is often minimised, and raising
+              -- by index does not unminimise: Terminal came forward showing
+              -- some other window, which read as "it focused the wrong tab".
+              set miniaturized of w to false
+            end try
             set index of w to 1
             activate
             return "ok"
@@ -145,13 +151,34 @@ def focus_tty(tty: str) -> tuple[bool, str]:
     return False, f"No Terminal.app tab owns {tty} — it may have closed."
 
 
+def process_command(pid: int) -> str | None:
+    """The command a pid is running right now, or None if it is gone."""
+    done = _run(["ps", "-o", "command=", "-p", str(pid)])
+    if done is None or done.returncode != 0:
+        return None
+    command = (done.stdout or "").strip()
+    return command or None
+
+
 def focus(pid: int) -> tuple[bool, str]:
     """Focus the terminal tab a pid lives in, or say exactly why not.
 
     Refuses non-Terminal.app hosts with a reason rather than guessing:
     Cursor's and VS Code's tabs have no external interface to focus, and a
-    wrong guess would raise some unrelated window.
+    wrong guess would raise some unrelated window. Two staleness checks come
+    first, because the pid on record is only a claim: macOS reuses pids, so
+    a session from yesterday can point at a process that is no longer claude
+    at all -- and following it would raise whichever tab that stranger
+    happens to live in.
     """
+    command = process_command(pid)
+    if command is None:
+        return False, ("That session's process is gone -- its terminal, if any, "
+                       "closed with it.")
+    if not re.search(r"(^|/)claude(\s|$)", command):
+        return False, ("That session's recorded pid now belongs to a different "
+                       "process (macOS reuses pids), so its tab cannot be found. "
+                       "The session itself has ended.")
     tty = tty_of(pid)
     if tty is None:
         return False, "That session has no controlling terminal to focus."

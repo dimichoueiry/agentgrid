@@ -241,6 +241,18 @@ record at all. Unread appears only on settled sessions — an unread marker on a
 running agent would just be saying "it is running", which the column already
 says.
 
+## Alerts
+
+The **Alerts** toggle in the bar turns on desktop notifications: one when any
+session lands in **Needs you**, one when a working agent replies with
+something you have not read. Clicking a notification focuses the board and
+opens that session's panel. The first click asks the browser for permission.
+
+*Why this is the way it is.* The founding problem was discovering a blocked
+agent minutes or hours late, and a board still has to be looked at. The
+notification closes that loop — and it lives in the page, not a service, so
+alerts exist exactly while a board tab is open. Nothing runs when it closes.
+
 ## Tags
 
 Free-form labels per session: at most 6 each, at most 24 characters. A
@@ -261,8 +273,17 @@ nothing is noise.
 
 ## Starting agents
 
-**New agent** (or `n`) opens a sheet with five fields, in order: **Name**
-(optional), **Project**, **Engine** (Claude or Codex), **Model**, **Task**.
+**New agent** (or `n`) opens a sheet with a **Library** row and five fields:
+**Name** (optional), **Project**, **Engine** (Claude or Codex), **Model**,
+**System prompt** (optional), **Task**.
+
+The library holds reusable agent definitions — a name, an engine, a model
+and a system prompt, stored in `~/.agentgrid/agents.json`. Picking one fills
+the sheet; **Save** stores the current fields under the Name; a definition
+is nothing but a saved way of launching a real session, so everything on the
+board works on the result. The system prompt rides inside the task as a
+framed preamble, because neither CLI documents a version-stable
+system-prompt flag for detached runs.
 The model options follow the engine; Default always means "let the CLI's own
 config decide". `Cmd/Ctrl+Enter` in the task field starts. `Enter` in the
 name field advances rather than submitting — the task is required, and

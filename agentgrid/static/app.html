@@ -543,7 +543,16 @@ details.tools .tfail{color:var(--failed)}
     <label>Name <span class="hint">optional — what you will look for on the board</span>
       <input id="naName" maxlength="60" autocomplete="off"></label>
     <label>Project
-      <select id="naProject"></select></label>
+      <select id="naProject"></select>
+      <div class="librow">
+        <button class="btn sm" id="naFav">★ Favourite</button>
+        <button class="btn sm" id="naHide">Hide</button>
+        <button class="btn sm" id="naAddProj">+ Add path</button>
+      </div>
+      <div class="librow" id="naAddRow" hidden>
+        <input id="naAddPath" placeholder="~/Desktop/drawcal" autocomplete="off">
+        <button class="btn sm" id="naAddGo">Add</button>
+      </div></label>
     <label>Engine
       <select id="naEngine">
         <option value="claude">Claude</option>
@@ -1669,19 +1678,37 @@ function fillLibrarySelect(selected) {
   $("naLibDel").hidden = !$("naLib").value;
 }
 
+// favourites float to the top under their own heading; hidden entries stay
+// listed at the bottom so they can be unhidden without a separate manager
+function fillProjectSelect(selected) {
+  const opt = p => `<option value="${esc(p.path)}">${esc(p.label || p.name)}</option>`;
+  const favs = projectsCache.filter(p => p.fav && !p.hidden);
+  const rest = projectsCache.filter(p => !p.fav && !p.hidden);
+  const hid = projectsCache.filter(p => p.hidden);
+  $("naProject").innerHTML =
+    (favs.length ? `<optgroup label="Favourites">${favs.map(opt).join("")}</optgroup>` : "") +
+    `<optgroup label="Projects">${rest.map(opt).join("")}</optgroup>` +
+    (hid.length ? `<optgroup label="Hidden">${hid.map(opt).join("")}</optgroup>` : "");
+  if (selected && projectsCache.some(p => p.path === selected)) $("naProject").value = selected;
+  syncProjectButtons();
+}
+function syncProjectButtons() {
+  const p = projectsCache.find(x => x.path === $("naProject").value);
+  $("naFav").textContent = p && p.fav ? "★ Unfavourite" : "★ Favourite";
+  $("naHide").textContent = p && p.hidden ? "Unhide" : "Hide";
+}
+
 async function openNewAgent() {
   $("modal").hidden = false;
   $("naErr").textContent = "";
   $("naTask").value = ""; $("naName").value = ""; $("naSys").value = "";
+  $("naAddRow").hidden = true;
   try {
     const data = await api("/api/projects");
     projectsCache = data.projects || [];
   } catch (e) { projectsCache = projectsCache || []; }
-  const sel = $("naProject");
-  sel.innerHTML = projectsCache.map(p =>
-    `<option value="${esc(p.path)}">${esc(p.label || p.name)}</option>`).join("");
   // if a project filter is set, that is almost certainly where this one belongs
-  if (project && projectsCache.some(p => p.path === project)) sel.value = project;
+  fillProjectSelect(project && projectsCache.some(p => p.path === project) ? project : "");
   syncEngineModels();
   try {
     agentLibrary = (await api("/api/agents")).agents || [];
@@ -2164,6 +2191,40 @@ function bindEvents() {
   $("modal").addEventListener("click", e => { if (e.target === $("modal")) closeNewAgent(); });
   $("naStart").addEventListener("click", startAgent);
   $("naEngine").addEventListener("change", syncEngineModels);
+  // project picker preferences: favourite, hide, and add-by-hand — the scan
+  // is one level deep on purpose, so ~/Desktop/anything needs a way in
+  $("naProject").addEventListener("change", syncProjectButtons);
+  $("naFav").addEventListener("click", async () => {
+    const p = projectsCache.find(x => x.path === $("naProject").value); if (!p) return;
+    const r = await post("/api/projects/pref", {path: p.path, fav: !p.fav});
+    projectsCache = (r && r.projects) || projectsCache;
+    fillProjectSelect(p.path);
+  });
+  $("naHide").addEventListener("click", async () => {
+    const p = projectsCache.find(x => x.path === $("naProject").value); if (!p) return;
+    const r = await post("/api/projects/pref", {path: p.path, hidden: !p.hidden});
+    projectsCache = (r && r.projects) || projectsCache;
+    // hiding what you had selected should not leave it selected
+    fillProjectSelect(p.hidden ? p.path : "");
+  });
+  $("naAddProj").addEventListener("click", () => {
+    $("naAddRow").hidden = !$("naAddRow").hidden;
+    if (!$("naAddRow").hidden) $("naAddPath").focus();
+  });
+  async function addProjectPath() {
+    const path = $("naAddPath").value.trim(); if (!path) return;
+    const r = await post("/api/projects/add", {path});
+    if (r && r.error) { $("naErr").textContent = r.error; return; }
+    $("naErr").textContent = "";
+    projectsCache = (r && r.projects) || projectsCache;
+    fillProjectSelect(r.path);
+    $("naAddPath").value = ""; $("naAddRow").hidden = true;
+    toast(`Added ${r.path.split("/").pop()}.`);
+  }
+  $("naAddGo").addEventListener("click", addProjectPath);
+  $("naAddPath").addEventListener("keydown", e => {
+    if (e.key === "Enter") { e.preventDefault(); addProjectPath(); }
+  });
   // the library: picking a saved agent fills the sheet; Save stores the
   // sheet under the Name; a definition is just a saved way of launching
   $("naLib").addEventListener("change", () => {

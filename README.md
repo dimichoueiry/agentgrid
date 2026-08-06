@@ -304,6 +304,14 @@ Defaults: `~` and `~/Documents/GitHub`. `--root DIR` (repeatable) or
 scan is one level deep — `~/work/clients/foo` needs `--root ~/work/clients`.
 Two checkouts sharing a folder name are disambiguated by their parent folder.
 
+The picker is also curatable, in `~/.agentgrid/projects.json`: **+ Add path**
+puts any directory in the list by hand (the escape hatch for the one-deep
+scan), **★ Favourite** floats a project to the top under its own heading,
+and **Hide** drops one from the everyday list — hidden entries stay listed
+at the bottom so they can be unhidden without a separate manager. Hiding is
+a display preference, never a security boundary: hidden projects still count
+as known directories for spawning.
+
 *Why this is the way it is.* Name comes first because it is the thing you will
 look for on the board afterwards — auto-generated titles are derived from the
 first prompt, so three sessions started from the same ticket all read

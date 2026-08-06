@@ -279,7 +279,17 @@ def discover_projects(sessions: list) -> list[dict]:
             candidate = Path(session.cwd)
             if candidate.is_dir():
                 paths.add(candidate)
-    ordered = sorted(paths, key=lambda p: (p.name.lower(), str(p).lower()))
+    # Preferences are applied fresh on every call, on top of the cached scan:
+    # a favourite or a hand-added path must not wait out the scan TTL.
+    prefs = load_project_prefs()
+    for added in prefs["added"]:
+        candidate = Path(added)
+        if candidate.is_dir():
+            paths.add(candidate)
+    favourites = set(prefs["favorites"])
+    hidden = set(prefs["hidden"])
+    ordered = sorted(paths, key=lambda p: (str(p) not in favourites,
+                                           p.name.lower(), str(p).lower()))
     by_name: dict[str, int] = {}
     for path in ordered:
         by_name[path.name] = by_name.get(path.name, 0) + 1
@@ -289,8 +299,64 @@ def discover_projects(sessions: list) -> list[dict]:
         # identical entries in a picker that starts real work is ambiguity
         # worth spending a few characters on.
         label = path.name if by_name[path.name] == 1 else f"{path.name}  ·  {path.parent}"
-        projects.append({"path": str(path), "name": path.name, "label": label})
+        projects.append({"path": str(path), "name": path.name, "label": label,
+                         "fav": str(path) in favourites,
+                         "hidden": str(path) in hidden})
     return projects
+
+
+# Picker preferences: paths added by hand (the scan is one level deep on
+# purpose, so ~/Desktop/anything needs a way in), favourites that float to
+# the top, and hidden entries that stop cluttering a list you pick from
+# every day. Hiding is a display preference, never a security boundary --
+# hidden projects still count as known directories for spawning.
+
+PROJECT_PREFS_PATH = Path.home() / ".agentgrid" / "projects.json"
+
+
+def load_project_prefs() -> dict:
+    try:
+        raw = json.loads(PROJECT_PREFS_PATH.read_text("utf-8"))
+    except (OSError, ValueError):
+        raw = {}
+    if not isinstance(raw, dict):
+        raw = {}
+    return {key: [str(p) for p in raw.get(key, []) if isinstance(p, str)]
+            for key in ("added", "favorites", "hidden")}
+
+
+def save_project_prefs(prefs: dict) -> None:
+    PROJECT_PREFS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    temporary = PROJECT_PREFS_PATH.with_suffix(".json.tmp")
+    temporary.write_text(json.dumps(prefs, indent=2, sort_keys=True), "utf-8")
+    os.replace(temporary, PROJECT_PREFS_PATH)
+
+
+def add_project(raw_path: str) -> tuple[bool, str]:
+    """Add a directory to the picker by hand. Resolved so it compares sanely."""
+    candidate = Path(raw_path).expanduser()
+    try:
+        candidate = candidate.resolve()
+    except OSError:
+        return False, "That path could not be resolved."
+    if not candidate.is_dir():
+        return False, f"{candidate} is not a directory."
+    prefs = load_project_prefs()
+    if str(candidate) not in prefs["added"]:
+        prefs["added"].append(str(candidate))
+        save_project_prefs(prefs)
+    return True, str(candidate)
+
+
+def set_project_pref(path: str, kind: str, on: bool) -> None:
+    """Flip one path in the favourites or hidden list."""
+    prefs = load_project_prefs()
+    entries = prefs[kind]
+    if on and path not in entries:
+        entries.append(path)
+    elif not on and path in entries:
+        entries.remove(path)
+    save_project_prefs(prefs)
 
 
 # --- starting and joining sessions ------------------------------------------
@@ -718,6 +784,20 @@ class Handler(BaseHTTPRequestHandler):
             self._notes_renameall(body)
         elif route == "/api/spawn":
             self._spawn(body)
+        elif route == "/api/projects/add":
+            ok, message = add_project(str(body.get("path") or ""))
+            if ok:
+                self._send_json(200, {"ok": True, "path": message,
+                                      "projects": discover_projects(self.fleet.raw())})
+            else:
+                self._send_json(400, {"error": message})
+        elif route == "/api/projects/pref":
+            path = str(body.get("path") or "")
+            if "fav" in body:
+                set_project_pref(path, "favorites", bool(body.get("fav")))
+            if "hidden" in body:
+                set_project_pref(path, "hidden", bool(body.get("hidden")))
+            self._send_json(200, {"projects": discover_projects(self.fleet.raw())})
         elif route == "/api/agents/save":
             name = str(body.get("name") or "").strip()
             if not name:

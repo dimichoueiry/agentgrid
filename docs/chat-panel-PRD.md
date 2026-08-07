@@ -29,8 +29,9 @@ loss and no change to how sessions run or bill**.
   keys, no per-token bill).
 - **Libraries: Python stdlib only.** No Agent SDK, **no LangGraph / LangChain**,
   no agent framework. See §6.1.
-- **Permissions v1:** a **mode selector** in the UI (auto-accept / default /
-  plan). Per-tool Allow/Deny is Phase 2 (needs a small MCP approval server).
+- **Permissions:** a **posture selector** per session — **Auto (run
+  everything, never ask)** or **Read-only (plan)**. Approval is never forced;
+  interactive per-tool Allow/Deny is dropped from the plan (see §7).
 - **Steering v1:** a **queue** — the next message sends when the current
   response finishes. Mid-response injection is out of scope (SDK-only).
 - **New sessions from the panel:** yes.
@@ -128,14 +129,19 @@ composer (Send + Stop), streaming render, idle/streaming/error/empty states.
 
 ## 7. Permissions (decided)
 
-- **v1 — mode selector** in the panel, applied per turn via `--permission-mode`:
-  `bypassPermissions`/`acceptEdits` (auto-accept), `default`, `plan`. Every tool
-  action is rendered + a Stop button; scope is the session's own repo.
-- **Phase 2 — per-tool Allow/Deny** via `--permission-prompt-tool`: the daemon
-  runs a tiny MCP "approval" tool that blocks, forwards the request to the
-  browser over SSE, and returns the decision. Flagged: the permission tool's I/O
-  schema is undocumented (reverse-engineered) and it can't approve MCP tools
-  marked `requiresUserInteraction`.
+Approval is **never forced** — that is the whole point. It is a per-session
+posture the user picks, and "never ask" is a first-class choice:
+
+- **Auto — run everything** (`--permission-mode bypassPermissions`): no prompts,
+  ever. Every action is still rendered, and the **Stop** button is the safety net.
+- **Read-only** (`--permission-mode plan`): explore and answer without changing
+  anything on disk.
+
+That is the entire permissions story for now. **Interactive per-tool Allow/Deny
+is dropped**: it forces a decision on every action (the thing we don't want),
+and in headless mode it would need a reverse-engineered MCP approval server not
+worth building. If a "review each tool" posture is ever wanted, it becomes one
+more opt-in selector option later — never the default, never forced.
 
 ## 8. Steering / queue (decided)
 
@@ -152,8 +158,8 @@ composer (Send + Stop), streaming render, idle/streaming/error/empty states.
 - **P2 — backend complete (~2 days).** Queue, cancel + disconnect cleanup,
   permission-mode selector, new-session, `working`-session guard, tests. UI
   specialist builds §6.4 in parallel against the contract.
-- **P3 — polish (ongoing).** Per-tool approval (§7 Phase 2), token-delta
-  streaming, richer tool cards, cost display.
+- **P3 — polish (ongoing).** Token-delta streaming, richer tool cards, cost
+  display.
 
 ## 10. Risks & mitigations
 

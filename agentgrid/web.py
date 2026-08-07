@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import re
 import secrets
 import shlex
@@ -39,7 +40,7 @@ from datetime import date, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from agentgrid import discovery, notes, sync, terminal, transcript
+from agentgrid import chat, discovery, notes, sync, terminal, transcript
 
 STATIC = Path(__file__).resolve().parent / "static"
 POLL_SECONDS = 2.0
@@ -761,6 +762,10 @@ class Handler(BaseHTTPRequestHandler):
                 "branch": config.get("branch", sync.DEFAULT_BRANCH),
                 "lastSync": config.get("last_sync"),
             })
+        elif route == "/api/chat/stream":
+            self._chat_stream(query)
+        elif route == "/api/chat/state":
+            self._send_json(200, self.chat.state(self._one(query, "session")))
         elif route == "/api/transcript":
             self._get_transcript(query)
         else:
@@ -906,8 +911,69 @@ class Handler(BaseHTTPRequestHandler):
             self._open(body)
         elif route == "/api/sync":
             self._sync(body)
+        elif route == "/api/chat":
+            self._chat_send(body)
+        elif route == "/api/chat/cancel":
+            self.chat.cancel(str(body.get("sessionId") or ""))
+            self._send_json(200, {"ok": True})
         else:
             self._send_json(404, {"error": "No such route."})
+
+    # -- chat routes ---------------------------------------------------------
+
+    def _chat_send(self, body: dict) -> None:
+        # cwd always comes from the tracked session, never the client -- that is
+        # the boundary keeping this from being "run claude anywhere".
+        session = self._session_by_id(str(body.get("sessionId") or ""))
+        if session is None:
+            self._send_json(404, {"error": "Unknown session."})
+            return
+        message = str(body.get("message") or "").strip()
+        if not message:
+            self._send_json(400, {"error": "Say something to send."})
+            return
+        posture = str(body.get("posture") or chat.DEFAULT_POSTURE)
+        self.chat.send(session.session_id, session.cwd, message, posture)
+        self._send_json(200, {"ok": True})
+
+    def _chat_stream(self, query: dict) -> None:
+        """Server-Sent Events for one session's turns. Blocks in its own thread.
+
+        The stream stays open for the life of the panel, delivering every turn's
+        events. A subscriber queue is registered for this connection and drained
+        here; when the browser goes away the write fails and we unsubscribe. A
+        disconnect does NOT cancel the turn -- interrupting a real edit mid-flight
+        is worse than letting it finish; the Stop button is the explicit way out.
+        """
+        session = self._session_by_id(self._one(query, "session"))
+        if session is None:
+            self._send_json(404, {"error": "Unknown session."})
+            return
+        room = self.chat.session(session.session_id, session.cwd)
+        channel = room.subscribe()
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "keep-alive")
+            self.send_header("X-Accel-Buffering", "no")  # defeat proxy buffering
+            self.end_headers()
+            self.wfile.write(b": connected\n\n")
+            self.wfile.flush()
+            while True:
+                try:
+                    event = channel.get(timeout=15)
+                except queue.Empty:
+                    self.wfile.write(b": ping\n\n")  # heartbeat surfaces a dead client
+                    self.wfile.flush()
+                    continue
+                payload = json.dumps(event).encode("utf-8")
+                self.wfile.write(b"data: " + payload + b"\n\n")
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass
+        finally:
+            room.unsubscribe(channel)
 
     def _sync(self, body: dict) -> None:
         # Commit-pull-push the notes folder to the configured git remote. The
@@ -1180,9 +1246,10 @@ def serve(port: int = 8787, open_browser: bool = True,
     fleet = Fleet()
     fleet.start()
     token = secrets.token_urlsafe(24)
-    # Bind fleet and token onto a per-server subclass rather than globals, so
-    # two servers in one process cannot share state by accident.
-    handler = type("BoundHandler", (Handler,), {"fleet": fleet, "token": token})
+    # Bind fleet, token and the chat manager onto a per-server subclass rather
+    # than globals, so two servers in one process cannot share state by accident.
+    handler = type("BoundHandler", (Handler,),
+                   {"fleet": fleet, "token": token, "chat": chat.ChatManager()})
     try:
         httpd = ThreadingHTTPServer(("127.0.0.1", port), handler)
     except OSError:

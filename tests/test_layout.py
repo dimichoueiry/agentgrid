@@ -367,6 +367,57 @@ class DismissRouteTests(unittest.TestCase):
                 self.assertEqual(discovery.load_dismissed(), {})
 
 
+class ReplyPromotionTests(unittest.TestCase):
+    """apply_reply_promotion: which idle sessions read as Replied ("done")."""
+
+    NOW = 1_000_000.0
+    HOUR = 3600.0
+    DAY = 86_400.0
+
+    def promote(self, session, seen):
+        return discovery.apply_reply_promotion(session, seen, self.NOW)
+
+    def test_interactive_reply_stays_replied_after_it_is_read(self):
+        # The reported bug: opening the answer marks it read at exactly its
+        # last_activity, and the card must NOT fall out of Replied for that.
+        activity = self.NOW - self.HOUR
+        session = make_session(kind="interactive", status="idle",
+                               last_activity=activity)
+        seen = {session.session_id: activity}  # mark_read stores last_activity
+        self.assertEqual(self.promote(session, seen).status, "done")
+
+    def test_interactive_reply_is_replied_before_it_is_read(self):
+        session = make_session(kind="interactive", status="idle",
+                               last_activity=self.NOW - self.HOUR)
+        self.assertEqual(self.promote(session, {}).status, "done")
+
+    def test_interactive_falls_to_idle_after_48h_of_silence(self):
+        activity = self.NOW - (49 * self.HOUR)
+        session = make_session(kind="interactive", status="idle",
+                               last_activity=activity)
+        seen = {session.session_id: activity}
+        self.assertEqual(self.promote(session, seen).status, "idle")
+
+    def test_background_reply_returns_to_idle_once_read(self):
+        # The older rule is preserved for sessions you were attached to.
+        activity = self.NOW - self.HOUR
+        session = make_session(kind="background", status="idle",
+                               last_activity=activity)
+        seen = {session.session_id: activity}
+        self.assertEqual(self.promote(session, seen).status, "idle")
+
+    def test_background_reply_is_replied_when_it_spoke_since_read(self):
+        session = make_session(kind="background", status="idle",
+                               last_activity=self.NOW - 10.0)
+        seen = {session.session_id: self.NOW - self.HOUR}  # read an hour ago
+        self.assertEqual(self.promote(session, seen).status, "done")
+
+    def test_non_idle_status_is_left_untouched(self):
+        session = make_session(kind="interactive", status="working",
+                               last_activity=self.NOW - self.HOUR)
+        self.assertEqual(self.promote(session, {}).status, "working")
+
+
 # ---------------------------------------------------------------------------
 # --cwd scoping
 

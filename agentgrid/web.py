@@ -665,6 +665,135 @@ def spawn_interactive(cwd: str, prompt: str, model: str | None) -> tuple[bool, s
     return True, f"Opened an interactive claude in {Path(cwd).name}.", None
 
 
+# --- @-mention file search ---------------------------------------------------
+#
+# The chat composer's `@` autocomplete needs the files under a session's cwd,
+# ranked against what the user has typed so far. The whole set is listed first
+# and only the ranked *result* is capped -- never the pool searched over -- so a
+# match is never missed for being past an arbitrary cut-off in the raw list.
+
+MAX_FILE_RESULTS = 50
+# The repo path (git ls-files) is unbounded; this bounds only the os.walk
+# fallback so a non-repo home directory cannot turn one keystroke into a walk of
+# the whole disk. High enough that any ordinary project is listed in full.
+WALK_FILE_CAP = 20000
+
+
+def list_files(cwd: str) -> list[str]:
+    """Every path under `cwd`, relative to it, gitignore-aware.
+
+    Inside a git repo `git ls-files` is the source of truth: it already honours
+    .gitignore and every nested one, and `--others --exclude-standard` folds in
+    files that are new-but-not-ignored, so a file just written shows up before
+    it is committed. Run with cwd=cwd, git scopes and relativises to that
+    directory for free. Outside a repo -- or if git is missing -- a bounded
+    os.walk stands in, skipping .git, node_modules and dotdirs so it does not
+    wander into caches. The full set is returned; ranking and the cap happen on
+    top of it, never before.
+    """
+    tracked = _git_files(cwd)
+    if tracked is not None:
+        return tracked
+    return _walk_files(cwd)
+
+
+def _git_files(cwd: str) -> list[str] | None:
+    """Tracked + untracked-but-not-ignored paths, or None when cwd isn't a repo."""
+    try:
+        inside = subprocess.run(
+            ["git", "rev-parse", "--is-inside-work-tree"],
+            cwd=cwd, capture_output=True, text=True, timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if inside.returncode != 0 or inside.stdout.strip() != "true":
+        return None
+    paths: list[str] = []
+    seen: set[str] = set()
+    # Two passes, deduped: committed files first, then untracked-but-not-ignored.
+    for extra in ([], ["--others", "--exclude-standard"]):
+        try:
+            done = subprocess.run(
+                ["git", "ls-files", "-z"] + extra,
+                cwd=cwd, capture_output=True, text=True, timeout=15,
+            )
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if done.returncode != 0:
+            continue
+        for rel in done.stdout.split("\0"):
+            if rel and rel not in seen:
+                seen.add(rel)
+                paths.append(rel)
+    return paths
+
+
+def _walk_files(cwd: str) -> list[str]:
+    """A bounded, dotdir-skipping walk for directories that are not git repos."""
+    root = os.path.abspath(cwd)
+    skip = {".git", "node_modules"}
+    out: list[str] = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        # Prune in place so os.walk never descends into vcs/vendor/dot dirs.
+        dirnames[:] = [d for d in dirnames
+                       if d not in skip and not d.startswith(".")]
+        for name in filenames:
+            if name.startswith("."):
+                continue
+            out.append(os.path.relpath(os.path.join(dirpath, name), root))
+            if len(out) >= WALK_FILE_CAP:
+                return out
+    return out
+
+
+def _subseq(hay: str, needle: str) -> bool:
+    """True when every char of `needle` appears in order within `hay`."""
+    it = iter(hay)
+    return all(ch in it for ch in needle)
+
+
+def _file_score(path: str, q: str) -> int | None:
+    """A match score for `path` against a lower-cased `q`, or None for no match.
+
+    Higher is better, in tiers: the basename starts with q, the basename
+    contains q, the whole path contains q, and last, q is a scattered
+    subsequence of the path (so "webpy" still finds "web.py"). Ties break toward
+    shorter paths in rank_files, since the shorter one is usually meant.
+    """
+    low = path.lower()
+    base = low.rsplit("/", 1)[-1]
+    at = base.find(q)
+    if at == 0:
+        return 1000
+    if at > 0:
+        return 800 - at
+    at = low.find(q)
+    if at >= 0:
+        return 500 - min(at, 400)
+    if _subseq(low, q):
+        return 200
+    return None
+
+
+def rank_files(paths: list[str], query: str) -> list[str]:
+    """Best matches first for `query` over the full path set.
+
+    An empty query keeps the natural order (git's, or the walk's) so a bare `@`
+    still offers something. Otherwise every path is scored and the non-matches
+    drop out; shorter paths and a case-folded path break ties.
+    """
+    q = (query or "").strip().lower()
+    if not q:
+        return list(paths)
+    scored: list[tuple[int, str]] = []
+    for path in paths:
+        score = _file_score(path, q)
+        if score is not None:
+            scored.append((score, path))
+    scored.sort(key=lambda sp: (-sp[0], len(sp[1]), sp[1].lower()))
+    return [path for _score, path in scored]
+
+
 # --- the HTTP handler --------------------------------------------------------
 
 
@@ -768,6 +897,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(200, self.chat.state(self._one(query, "session")))
         elif route == "/api/transcript":
             self._get_transcript(query)
+        elif route == "/api/files":
+            self._get_files(query)
         else:
             self._send_json(404, {"error": "No such route."})
 
@@ -824,6 +955,22 @@ class Handler(BaseHTTPRequestHandler):
         blocks = transcript.render_blocks(path)
         # The tail is the part you opened it to read.
         self._send_json(200, {"blocks": blocks[-600:]})
+
+    def _get_files(self, query: dict) -> None:
+        """Fuzzy file-path search under a session's cwd, for @-mention complete.
+
+        The whole tracked file set is searched, then ranked; only the returned
+        list is capped for UI sanity. cwd is validated as an existing directory
+        -- the composer hands its own open session's project path -- and a bad
+        path is a 400 rather than a walk of somewhere unexpected.
+        """
+        cwd = self._one(query, "cwd")
+        if not cwd or not os.path.isdir(cwd):
+            self._send_json(400, {"error": "cwd must be an existing directory."})
+            return
+        q = self._one(query, "q")
+        ranked = rank_files(list_files(cwd), q)
+        self._send_json(200, {"cwd": cwd, "q": q, "files": ranked[:MAX_FILE_RESULTS]})
 
     # -- POST ----------------------------------------------------------------
 

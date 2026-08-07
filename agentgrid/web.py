@@ -734,7 +734,7 @@ class Handler(BaseHTTPRequestHandler):
         if route == "/":
             self._send(200, (STATIC / "app.html").read_bytes(), "text/html; charset=utf-8")
         elif route == "/api/sessions":
-            self._send_json(200, self.fleet.snapshot())
+            self._send_json(200, self._sessions_snapshot())
         elif route == "/api/notes":
             self._get_notes(query)
         elif route == "/api/history":
@@ -918,6 +918,21 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(200, {"ok": True})
         else:
             self._send_json(404, {"error": "No such route."})
+
+    def _sessions_snapshot(self) -> dict:
+        """The board's fleet, with the chat's own live signal overlaid.
+
+        `claude agents` lists the fleet but never reports a headless chat turn
+        (`claude -p --resume`) as the session working -- yet the panel is
+        driving exactly that. The ChatManager knows, so a session with a chat
+        turn in flight is shown Working here; like any working card it then
+        cannot be dragged or re-filed until it settles.
+        """
+        snapshot = self.fleet.snapshot()
+        for session in snapshot.get("sessions", []):
+            if self.chat.state(session["sessionId"]).get("running"):
+                session["status"] = "working"
+        return snapshot
 
     # -- chat routes ---------------------------------------------------------
 

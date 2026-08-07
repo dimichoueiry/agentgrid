@@ -1,179 +1,179 @@
-# AgentGrid Chat Panel — PRD
+# AgentGrid Chat Panel — PRD (v2, decisions locked)
 
-**Status:** Draft, for review
+**Status:** For review
 **Date:** 2026-08-07
 **Owner:** Dimitri El-Choueiry
-**Related:** builds on the existing web board (`agentgrid/web.py`, `agentgrid/static/app.html`) and session model (`agentgrid/discovery.py`)
+**Related:** extends the web board (`agentgrid/web.py`, `agentgrid/static/app.html`) and session model (`agentgrid/discovery.py`)
 
 ---
 
 ## 1. Summary
 
-Add a chat panel to the AgentGrid board that lets you talk to a Claude Code
-session in the browser — rendered as clean chat, not a terminal — while it runs
-as **real, headless Claude Code** on your machine, in your repo, with all its
-tools. It drives `claude -p --output-format stream-json` under the hood and
-renders the streamed events.
+Chat with a Claude Code session **in the browser**, rendered as clean chat
+(not a terminal), while it runs as the **real `claude` CLI** on your machine —
+your repo, your tools, **your existing Claude Code login**. Under the hood it
+drives `claude -p --output-format stream-json` and renders the streamed events.
 
 ## 2. Problem
 
-The terminal TUI is functional but visually rough, and the only way to interact
-with a session today is to open its terminal tab. We want a nicer, native
-interaction surface **without** giving up any Claude Code capability.
+The terminal TUI is visually rough and the only way to interact with a session
+is its terminal tab. We want a nicer interaction surface with **zero capability
+loss and no change to how sessions run or bill**.
 
-## 3. Goals / Non-goals
+## 3. Decisions locked (from review)
 
-**Goals**
-- Chat with a session from the board; responses render as markdown + tool cards.
-- It is the *real* Claude Code: same tools, same local process, same repo, same
-  config. Zero capability loss.
-- Clean handoff: backend and frontend developed against a fixed event contract,
-  so a UI specialist can build the panel independently.
+- **Engine: the CLI, not the Agent SDK.** The SDK requires a *paid API key* and
+  is not allowed to use the Claude Code subscription login (Anthropic policy).
+  The CLI uses each user's **existing login** — essential for you *and* for
+  anyone you distribute to (they sign in once with their own Claude Code, no
+  keys, no per-token bill).
+- **Libraries: Python stdlib only.** No Agent SDK, **no LangGraph / LangChain**,
+  no agent framework. See §6.1.
+- **Permissions v1:** a **mode selector** in the UI (auto-accept / default /
+  plan). Per-tool Allow/Deny is Phase 2 (needs a small MCP approval server).
+- **Steering v1:** a **queue** — the next message sends when the current
+  response finishes. Mid-response injection is out of scope (SDK-only).
+- **New sessions from the panel:** yes.
 
-**Non-goals (v1)**
-- Not replacing the terminal, IDE extension, or desktop app — they all keep working.
-- Not a full IDE (no file tree, no editor).
-- Not remote/hosted — stays loopback + token-gated + local, like the rest of the app.
-- Not multi-user.
+## 4. Principle: it is the real Claude Code, on your login
 
-## 4. Principle: it is the real Claude Code
-
-`claude -p` (print/headless) is the **same binary** as the interactive CLI. `-p`
-changes the *output* (a JSON event stream instead of a drawn TUI), not the
-*engine*. Concretely, a chat turn:
-
-- runs `claude` as a local subprocess with the working directory set to the
-  session's repo — it edits your actual files and runs your actual commands;
-- loads your `CLAUDE.md`, memory, skills, MCP servers, permissions, and auth
-  (no `--bare`);
-- with `--resume <session_id>`, continues the *same* conversation and transcript
-  the board already tracks.
-
-Nothing is sandboxed or stripped. The panel is a nicer face on the same engine.
+`claude -p` (headless/print) is the **same binary** as the interactive CLI. It
+runs as a local subprocess with `cwd` set to the session's repo — same tools,
+same files, same config, same auth. The `system/init` event even reports
+`apiKeySource`, so we can *show* that it's your subscription, not an API key.
+Nothing is sandboxed or stripped.
 
 ## 5. Users & primary flow
 
-1. On the board, click a session → a **Chat** panel opens on the right.
+1. Click a session on the board → a **Chat** panel opens on the right.
 2. Type a message, press Enter.
 3. Watch it stream: assistant text as bubbles, tool calls as cards ("Edited
-   `web.py`", "Ran `pytest` → 72 passed"), diffs inline.
-4. The work happens in the real repo, live. Stop button cancels the turn.
+   `web.py`", "Ran `pytest` → 72 passed"). Real edits in the real repo. Stop
+   cancels the turn.
+4. Type again while it's working → queued, sent when the current response ends.
 
 ## 6. Architecture
 
-### 6.1 Backend components (my scope — build after PRD approval)
+### 6.1 Libraries / dependencies (explicit)
 
-1. **`agentgrid/chat.py` — turn manager.**
-   - `start_turn(session_id, message, cwd, permission_mode) -> turn_id`: spawn
-     `claude -p --resume <sid> --output-format stream-json --verbose
-     --include-partial-messages [--permission-mode <mode>] "<message>"` with
-     `cwd=<repo>`; stream stdout.
-   - In-memory registry `turn_id -> {process, queue}` so turns can be streamed
-     and cancelled. No files written (consistent with the poller's discipline).
-   - `events(turn_id)`: generator yielding **normalized** UI events (see 6.2),
-     parsed from stdout lines, deferring partial trailing lines (same technique
-     as `TranscriptCache`).
-   - `cancel(turn_id)`: terminate the subprocess and its group; clean up.
+**Stdlib only. Zero new dependencies.**
+- `subprocess` — drive `claude -p` (stdin = `/dev/null`, message passed as an arg).
+- `http.server` — SSE stream (already the app's server).
+- `json` — parse the `stream-json` output.
+- `threading` — already used by the fleet poller.
+
+**Not using — and why:** the Agent SDK (breaks the login model, §3), and
+**LangGraph / LangChain / any agent framework**. Those build an agent loop; but
+**Claude Code already *is* the agent** — it has its own loop, tools, memory, and
+permissions. Wrapping it in a second framework is the wrong layer: heavier, more
+to break, and it buys nothing here. We drive one agent and render its output.
+
+### 6.2 Backend components (my scope)
+
+1. **`agentgrid/chat.py` — turn/queue manager.**
+   - `send(session_id, message, permission_mode)`: enqueue a message for a
+     session. If idle, start a turn now; if a turn is running, it fires when
+     that turn finishes (the v1 "queue").
+   - A turn = `claude -p --resume <sid> --output-format stream-json --verbose
+     [--permission-mode <mode>] "<message>"`, `cwd=<repo>`, `stdin=DEVNULL`.
+   - Parse stdout JSONL incrementally (defer partial trailing lines, same
+     discipline as `TranscriptCache`) → **normalize** to §6.3 events.
+   - In-memory registry `session_id -> {process, queue, subscribers}` (no files
+     written on the hot path, matching the poller's rule).
+   - `cancel(session_id)`: terminate the process group; clear the queue.
 
 2. **HTTP routes in `web.py`** (token-gated, loopback, like every route):
-   - `POST /api/chat` `{sessionId, message}` → validates, resolves the session's
-     cwd from the fleet, starts a turn, returns `{turnId}`.
-   - `GET /api/chat/stream?turn=<id>` → **Server-Sent Events**: writes `data:
-     <json>\n\n` per normalized event until `turn_done`. `ThreadingHTTPServer`
-     already serves each request on its own thread, so a held-open stream is
-     fine. On client disconnect → cancel the turn (kill the subprocess).
-   - `POST /api/chat/cancel` `{turn}` → cancel.
+   - `POST /api/chat` `{sessionId, message, permissionMode?}` → resolve the
+     session's cwd from the fleet, enqueue/start, return `{ok}`.
+   - `GET /api/chat/stream?session=<id>` → **SSE**: `data: <json>\n\n` per
+     normalized event. `ThreadingHTTPServer` serves each on its own thread; on
+     client disconnect → cancel the turn.
+   - `POST /api/chat/cancel` `{sessionId}` → stop + clear queue.
+   - `GET /api/chat/state?session=<id>` → `{running, queued}` for the UI.
 
 3. **Session resolution & guards.** cwd comes from the tracked session (never
-   client-supplied); refuse to chat a session whose status is `working`
-   (resuming a live turn would fork/conflict — see Open Decisions).
+   client-supplied). New session = same flow without `--resume`; capture the new
+   `session_id` from the `init`/`result` event so the board picks it up.
 
-### 6.2 The contract — SSE event API (the handoff boundary)
+### 6.3 The event contract — SSE API (handoff boundary; verified vs CLI 2.1.201)
 
-This is the fixed interface between backend and frontend. The UI specialist codes
-against exactly this; the backend guarantees exactly this. Each SSE `data:` line
-is one JSON object:
+The backend maps the CLI's raw `stream-json` to this small vocabulary. The UI
+codes against *only* this; a CLI change can't break the panel. One JSON object
+per SSE `data:` line:
 
 ```jsonc
-{ "type": "turn_started",   "turnId": "t_ab12", "sessionId": "…" }
-{ "type": "assistant_delta","text": "partial streaming text…" }
-{ "type": "assistant_message","text": "a complete assistant message (markdown)" }
-{ "type": "tool_use",       "id": "tu_1", "name": "Edit", "input": { … } }
-{ "type": "tool_result",    "id": "tu_1", "ok": true, "summary": "web.py +12 −3" }
-{ "type": "turn_done",      "turnId": "t_ab12", "stats": { "durationMs": 8400 } }
-{ "type": "error",          "message": "human-readable reason" }
+// from CLI system/init
+{ "type":"turn_started",   "sessionId":"…", "model":"…", "cwd":"…", "authSource":"subscription" }
+// from an assistant text block
+{ "type":"assistant_message","text":"markdown text" }
+// from an assistant thinking block (UI may mute/hide)
+{ "type":"thinking",       "text":"…" }
+// from an assistant tool_use block
+{ "type":"tool_use",       "id":"toolu_…", "name":"Edit", "input":{…} }
+// from the user/tool_result message
+{ "type":"tool_result",    "id":"toolu_…", "ok":true, "summary":"note.txt read" }
+// from CLI result
+{ "type":"turn_done",      "ok":true, "result":"…", "stats":{ "durationMs":8400, "numTurns":2, "costUsd":0.32 } }
+{ "type":"error",          "message":"…" }        // api/rate-limit/spawn errors
 ```
 
-Design rule: the backend **normalizes** Claude Code's raw `stream-json` into this
-small vocabulary, so the UI never has to know the CLI's internal event shapes and
-a CLI change can't break the panel.
+*(v1 streams whole assistant blocks. Token-by-token deltas via
+`--include-partial-messages` are a P3 nicety, not required.)*
 
-### 6.3 Frontend components (UI specialist's scope)
+### 6.4 Frontend components (UI specialist's scope)
 
-Built against §6.2 only. Reuses existing helpers where possible.
+Built against §6.3 only. Reuse existing helpers: chat panel (mirror the detail
+panel), message bubbles (assistant via the existing `md()`), tool-call cards,
+composer (Send + Stop), streaming render, idle/streaming/error/empty states.
 
-1. **Chat panel** — slide-in container per session (mirror the existing detail
-   panel pattern).
-2. **Message list** — user bubbles; assistant bubbles rendered via the existing
-   `md()` markdown-lite function; **tool-call cards** for `tool_use`/`tool_result`.
-3. **Composer** — textarea + Send + Stop.
-4. **Streaming render** — consume the SSE stream, append `assistant_delta` text
-   live, finalize on `assistant_message`.
-5. **States** — idle / streaming / error / empty, matching the board's visual language.
+## 7. Permissions (decided)
 
-## 7. Permissions (the key decision)
+- **v1 — mode selector** in the panel, applied per turn via `--permission-mode`:
+  `bypassPermissions`/`acceptEdits` (auto-accept), `default`, `plan`. Every tool
+  action is rendered + a Stop button; scope is the session's own repo.
+- **Phase 2 — per-tool Allow/Deny** via `--permission-prompt-tool`: the daemon
+  runs a tiny MCP "approval" tool that blocks, forwards the request to the
+  browser over SSE, and returns the decision. Flagged: the permission tool's I/O
+  schema is undocumented (reverse-engineered) and it can't approve MCP tools
+  marked `requiresUserInteraction`.
 
-Interactive Claude Code asks "run this? (y/n)". A non-terminal UI must handle
-that. Two paths:
+## 8. Steering / queue (decided)
 
-- **A. Bounded permission mode (recommended for v1).** Run with a mode such as
-  `acceptEdits` so edits/commands within the session's repo proceed, and render
-  every tool action clearly + a Stop button. Simple; ships fast. Risk: it
-  auto-runs tools without a per-action prompt.
-- **B. Approval UI (later phase).** Backend surfaces a permission request as an
-  event; the panel shows Allow/Deny; the decision is sent back. Needs Claude
-  Code's headless permission-prompt mechanism (exact hook — a permission-prompt
-  MCP tool vs. the Agent SDK `canUseTool` callback — **to be verified before
-  building B**). More work, safest UX.
+- **v1:** queue; the next message fires when the current response finishes (one
+  `claude -p` per turn — natural chat ordering).
+- **Not in v1:** mid-response injection between tool calls (SDK streaming-input
+  only, which needs the paid API key).
 
-## 8. Phases & estimates (estimates are for me, the backend builder)
+## 9. Phases & estimates (for me, the backend builder)
 
-- **P1 — prove it streams (~half a day).** `chat.py` + SSE route + subprocess,
-  passing raw-normalized events. Test via `curl` / console: send a message to a
-  real session, watch tool calls edit a real file. Go/no-go on the whole idea.
-- **P2 — backend complete (~2–3 days).** Full §6.2 normalization, cancel +
-  disconnect cleanup, cwd resolution, `working`-session guard, permission mode.
-  UI specialist builds §6.3 in parallel against the contract.
-- **P3 — polish (ongoing).** Approval UI (option B), inline diffs, richer tool
-  cards, new-session-from-panel, error/empty states.
-
-## 9. Open decisions (need your call before I build the backend)
-
-1. **Permission model for v1** — A (bounded auto-accept, recommended) or B
-   (approval UI now)?
-2. **Which sessions are chattable** — recommend: idle / replied / done sessions
-   only; block while `working`; and because resuming an interactive session
-   forks it, offer "start a new session here" instead of resuming those.
-3. **New sessions from the panel** — allow starting a brand-new session (no
-   `--resume`, just `claude -p` in a chosen repo) in v1, or resume-only first?
+- **P1 — prove it streams (~half a day).** `chat.py` + SSE route + subprocess +
+  §6.3 normalization for one session. `curl`-tested: send a message to a real
+  session, watch tool calls edit a real file. Go/no-go.
+- **P2 — backend complete (~2 days).** Queue, cancel + disconnect cleanup,
+  permission-mode selector, new-session, `working`-session guard, tests. UI
+  specialist builds §6.4 in parallel against the contract.
+- **P3 — polish (ongoing).** Per-tool approval (§7 Phase 2), token-delta
+  streaming, richer tool cards, cost display.
 
 ## 10. Risks & mitigations
 
-- **Auto-accept does something unwanted** → bounded mode + every action visible +
-  Stop; scope to the session's own repo.
-- **Resuming a live session forks/conflicts** → block chat while `working`.
-- **SSE + threaded server edge cases** (client disconnect, zombie process) → kill
-  the subprocess on disconnect; reap on `turn_done`.
-- **Resume continuity across session kinds** (background vs interactive
-  transcripts) → verify `--resume` behavior in P1.
+- **Auto-accept does something unwanted** → every action visible + Stop; scope
+  to the session's repo; default the selector to a non-bypass mode.
+- **Resuming a `working` session forks/conflicts** → guard (queue to it instead
+  of starting a competing turn; block if truly mid-turn elsewhere).
+- **SSE + threaded server edge cases** (disconnect, zombie process) → kill the
+  subprocess on disconnect; reap on `turn_done`.
+- **Cost visibility** → surface `total_cost_usd` from the `result` event so a
+  turn's cost is never hidden.
 
 ## 11. Success criteria
 
 From the board, send a message to a real session and watch it — in the browser,
-with no terminal — stream a response and **edit a real file in the real repo**.
-The transcript stays continuous with what the board already shows.
+no terminal — stream a response and **edit a real file in the real repo**, on
+**your** login, transcript continuous with what the board shows.
 
-## 12. Out of scope / future
+## 12. Out of scope
 
-Hosted/remote use, multi-user, file tree/editor, and the approval UI (option B)
-are explicitly later. v1 is: chat one session, one repo, streaming, real tools.
+SDK/API-key-only features (mid-response steering, clean per-tool approval as a
+callback), hosted/remote/multi-user. v1 is: chat one session, one repo,
+streaming, real tools, your login.

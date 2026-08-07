@@ -1118,7 +1118,7 @@ function chatOpen(id, engine) {
   const ta = $("cInput"); ta.value = ""; chatGrow(ta);
   chatSetStatus();
   chatConnect(id);
-  chatSyncState();
+  chatSyncState(true);   // adopt a turn already in flight before we subscribed
 }
 
 // Chat (default) shows the conversation + composer; Details shows the session's
@@ -1247,14 +1247,20 @@ function chatSetStatus() {
   $("cStop").hidden = !chatRunning;
 }
 
-async function chatSyncState() {
+// SSE (turn_started/turn_done) is the source of truth for "running"; this only
+// refreshes the queued count. adoptRunning is set once — on open — so a turn we
+// subscribed to late (its turn_started already gone) still shows Working. After
+// turn_done the backend flag is briefly stale-true while the subprocess exits,
+// so adopting it there would relight "Working…" forever.
+async function chatSyncState(adoptRunning = false) {
   const id = openId; if (!id) return;
   let st;
   try { st = await api(`/api/chat/state?session=${encodeURIComponent(id)}`); }
   catch (_) { return; }
   if (id !== openId || !st) return;
   chatQueued = st.queued || 0;
-  if (typeof st.running === "boolean" && !chatRunning) chatRunning = st.running;
+  if (adoptRunning && typeof st.running === "boolean" && !chatRunning)
+    chatRunning = st.running;
   chatSetStatus();
 }
 

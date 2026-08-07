@@ -694,3 +694,10 @@ a screen.
 ## Further reading
 
 - [docs/USAGE.md](docs/USAGE.md) — a task-oriented walkthrough
+
+## License
+
+Apache License 2.0 — see [LICENSE](LICENSE). Copyright 2026 Dimitri
+El-Choueiry. In short: use, modify and redistribute freely, including
+commercially, provided you keep the license and attribution and note any
+changes; it also grants a patent license and comes with no warranty.

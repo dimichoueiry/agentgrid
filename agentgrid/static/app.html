@@ -521,6 +521,15 @@ details.cthink[open]>summary::before{transform:rotate(90deg)}
 .atmenu button.on{background:var(--card-hover);color:var(--text)}
 .atmenu .atname{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
   font-family:var(--sans);font-size:11px;color:var(--text-3)}
+/* @ file picker in the chat composer: taller and scrollable — a fuzzy match
+   over a whole repo can return many rows. Basename first, dim path after. */
+.atfiles{max-height:244px;overflow-y:auto}
+.atfiles button{font-family:var(--mono);font-size:11.5px}
+.atfiles button.on{background:var(--card-hover);color:var(--text)}
+.atfiles .afname{flex:0 0 auto;color:var(--text-2)}
+.atfiles button.on .afname{color:var(--text)}
+.atfiles .afdir{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  font-size:11px;color:var(--text-3)}
 
 /* ---------- toast ---------- */
 .toast{
@@ -700,6 +709,9 @@ details.cthink[open]>summary::before{transform:rotate(90deg)}
 
 <div class="pmenu" id="pmenu" hidden></div>
 <div class="pmenu atmenu" id="atMenu" hidden></div>
+<!-- The chat composer's own @ file picker. Separate from #atMenu (the notes
+     pad's @session menu), so typing @ in each never drives the other. -->
+<div class="pmenu atfiles" id="atFiles" hidden></div>
 
 <div class="scrim" id="scrim2"></div>
 <aside class="panel" id="managePanel">
@@ -848,6 +860,8 @@ try { hiddenCols = JSON.parse(localStorage.getItem("agentgrid.hidden") || '["idl
 catch (e) { hiddenCols = ["idle", "complete"]; }
 let rosterOpen = false, metaSig = "", rosterSig = "", transSig = "", transFirst = true;
 let projectsCache = null;
+// chat composer @ file autocomplete
+let atFileHits = [], atFileFrom = -1, atFileSel = 0, atFileTimer = null, atFileReqSeq = 0;
 
 // notes
 let view = localStorage.getItem("agentgrid.view") || "board";
@@ -1083,6 +1097,7 @@ function openSession(id) {
 
 function closePanel() {
   openId = null; openAgent = null;
+  hideAtFiles();
   chatClose();
   $("panel").classList.remove("on"); $("scrim").classList.remove("on");
   render();
@@ -1269,7 +1284,7 @@ async function chatSend() {
   const msg = ta.value.trim();
   if (!msg || !openId) return;
   const id = openId;
-  ta.value = ""; chatGrow(ta);
+  ta.value = ""; chatGrow(ta); hideAtFiles();
   // show Working at once (also suspends the poll's disk refresh, so the live
   // nodes below survive until the turn lands on disk and the poll reconciles)
   chatRunning = true; chatSetStatus();
@@ -1296,6 +1311,87 @@ function chatStop() {
 function chatGrow(ta) {
   ta.style.height = "auto";
   ta.style.height = Math.min(ta.scrollHeight, 150) + "px";
+}
+
+/* ------------------------------------------- @ file mentions (chat composer)
+   Type @ then a path fragment to pick a file under the open session's cwd;
+   accepting inserts `@relative/path ` and, on send, the CLI expands it the way
+   the terminal does. Distinct from the notes pad's @session menu (#atMenu):
+   this one drives #atFiles, so typing @ in either never fires the other. */
+
+function openSessionCwd() {
+  const s = sessions.find(x => x.sessionId === openId);
+  return s ? (s.cwd || "") : "";
+}
+
+// The token being typed after the most recent @ — start-of-line or a space
+// must precede it (so foo@bar and emails don't trigger), and it stops at
+// whitespace, so several @mentions can live in one message.
+function atFileToken(el) {
+  const m = /(?:^|\s)@([^\s@]*)$/.exec(el.value.slice(0, el.selectionStart));
+  if (!m) return null;
+  return {at: el.selectionStart - m[1].length - 1, q: m[1]};   // at = the @ itself
+}
+
+function checkAtFiles() {
+  const el = $("cInput");
+  const cwd = openSessionCwd();
+  const tok = el ? atFileToken(el) : null;
+  if (!tok || !cwd) { hideAtFiles(); return; }
+  atFileFrom = tok.at;
+  const seq = ++atFileReqSeq;               // stamps this request; a later one wins
+  clearTimeout(atFileTimer);
+  atFileTimer = setTimeout(async () => {
+    let d;
+    try {
+      d = await api(`/api/files?cwd=${encodeURIComponent(cwd)}&q=${encodeURIComponent(tok.q)}`);
+    } catch (_) { return; }
+    // Drop a slow answer the typist has already moved past, or one that landed
+    // after the composer lost focus.
+    if (seq !== atFileReqSeq || $("cInput") !== document.activeElement) return;
+    atFileHits = (d && d.files) || [];
+    if (!atFileHits.length) { hideAtFiles(); return; }
+    atFileSel = 0;
+    paintAtFiles();
+  }, 120);
+}
+
+function paintAtFiles() {
+  const menu = $("atFiles");
+  menu.innerHTML = atFileHits.map((p, i) => {
+    const cut = p.lastIndexOf("/");
+    const base = esc(cut >= 0 ? p.slice(cut + 1) : p);
+    const dir = cut >= 0 ? esc(p.slice(0, cut + 1)) : "";
+    return `<button data-af="${i}"${i === atFileSel ? ' class="on"' : ""}>` +
+      `<span class="afname">${base}</span>` +
+      (dir ? `<span class="afdir">${dir}</span>` : "") + `</button>`;
+  }).join("");
+  // Anchored above the composer (it sits at the panel foot), growing upward.
+  const r = $("cInput").getBoundingClientRect();
+  menu.hidden = false;
+  menu.style.left = `${Math.max(8, r.left)}px`;
+  menu.style.width = `${Math.min(420, Math.max(240, r.width))}px`;
+  menu.style.top = "auto";
+  menu.style.bottom = `${window.innerHeight - r.top + 6}px`;
+  const on = menu.querySelector("button.on");
+  if (on) on.scrollIntoView({block: "nearest"});
+}
+
+function insertAtFile(i) {
+  const el = $("cInput");
+  const hit = atFileHits[i];
+  if (!el || !hit) { hideAtFiles(); return; }
+  const end = el.selectionStart;            // capture before the caret moves
+  el.setRangeText(`@${hit} `, atFileFrom, end, "end");
+  hideAtFiles();
+  chatGrow(el);
+  el.focus();
+}
+
+function hideAtFiles() {
+  $("atFiles").hidden = true;
+  atFileHits = []; atFileFrom = -1;
+  clearTimeout(atFileTimer);
 }
 
 // a human verb + a short object for a tool call, e.g. "Edited web.py"
@@ -2348,10 +2444,31 @@ function bindEvents() {
     localStorage.setItem("agentgrid.chatModel", chatModel);       // a view preference, remembered
   });
   const cin = $("cInput");
-  cin.addEventListener("input", () => chatGrow(cin));
+  cin.addEventListener("input", () => { chatGrow(cin); checkAtFiles(); });
+  cin.addEventListener("click", checkAtFiles);          // caret moved into/out of a token
+  cin.addEventListener("blur", hideAtFiles);            // menu picks use mousedown, so focus survives
   cin.addEventListener("keydown", e => {
+    // the @ file menu grabs nav keys while it is open; stopPropagation keeps the
+    // document-level Escape from closing the whole panel out from under it
+    if (!$("atFiles").hidden && atFileHits.length) {
+      if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); hideAtFiles(); return; }
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        e.preventDefault(); e.stopPropagation();
+        atFileSel = (atFileSel + (e.key === "ArrowDown" ? 1 : atFileHits.length - 1)) % atFileHits.length;
+        paintAtFiles(); return;
+      }
+      if (e.key === "Enter" || e.key === "Tab") {
+        e.preventDefault(); e.stopPropagation(); insertAtFile(atFileSel); return;
+      }
+    }
     // Enter sends; Shift+Enter is a newline (the textarea's default)
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); chatSend(); }
+  });
+  // mousedown, not click: click fires after the textarea has already blurred
+  $("atFiles").addEventListener("mousedown", e => {
+    e.preventDefault();                                 // keep the textarea focused
+    const b = e.target.closest("button[data-af]");
+    if (b) insertAtFile(Number(b.dataset.af));
   });
 
   $("panel").addEventListener("click", e => {
@@ -2761,11 +2878,13 @@ function bindEvents() {
   // dismiss popovers on outside click
   document.addEventListener("mousedown", e => {
     if (!$("pmenu").hidden && !e.target.closest("#pmenu")) closeMenus();
+    if (!$("atFiles").hidden && !e.target.closest("#atFiles") && !e.target.closest("#cInput")) hideAtFiles();
   });
 
   // keyboard: Escape closes the topmost thing; single keys never fire while typing
   document.addEventListener("keydown", e => {
     if (e.key === "Escape") {
+      if (!$("atFiles").hidden) { hideAtFiles(); return; }
       if (!$("pmenu").hidden || !$("atMenu").hidden) { closeMenus(); return; }
       if (!$("gridModal").hidden) { $("gridModal").hidden = true; return; }
       if (!$("modal").hidden) { closeNewAgent(); return; }

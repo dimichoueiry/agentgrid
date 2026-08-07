@@ -63,6 +63,12 @@ OVERRIDABLE = ("blocked", "done", "idle", COMPLETE)
 # output reads as "replied", not "idle" -- see collect().
 RECENT_REPLY_SECONDS = 3600
 
+# An interactive session you have talked to holds its Replied slot even after
+# you have read the answer -- opening a reply is not the same as being done
+# with the conversation. It only falls to Idle once it has gone quiet (no new
+# activity in the transcript) for this long. See collect().
+INTERACTIVE_REPLY_WINDOW = 48 * 3600
+
 # An interactive session drops off `claude agents` the instant its terminal
 # closes; its transcript is read back from disk for this long so a closed tab
 # lingers as a card you can still find and resume rather than vanishing. Held
@@ -921,6 +927,37 @@ def save_override(
     return True, f"Moved to {to}."
 
 
+def apply_reply_promotion(session: Session, seen: dict, now: float) -> Session:
+    """File an idle session with a reply on it under Replied instead of Idle.
+
+    Idle is only the CLI's word for "the turn ended"; on this board a turn
+    that ended is a reply, and a card would otherwise fall straight from
+    Working into a hidden column with its answer unseen.
+
+    Two rules land it in Replied. An interactive session -- one you steer from
+    this board -- holds its Replied slot for as long as its transcript was
+    touched inside INTERACTIVE_REPLY_WINDOW, whether or not you have read the
+    answer: opening a reply is not the same as being done with the
+    conversation, so reading no longer demotes it and only real silence (48h
+    with no new activity) does. A background session keeps the older rule --
+    you were attached to it, not driving it from here, so reading its reply
+    returns the card to Idle -- either it has spoken since you last read it,
+    or it spoke within the last hour.
+    """
+    if session.status != "idle":
+        return session
+    seen_at = seen.get(session.session_id, 0.0)
+    spoke_since_read = session.last_activity > seen_at
+    recent = now - session.last_activity < RECENT_REPLY_SECONDS
+    fresh_interactive = (
+        session.kind == "interactive"
+        and now - session.last_activity < INTERACTIVE_REPLY_WINDOW
+    )
+    if fresh_interactive or (spoke_since_read and (seen_at > 0 or recent)):
+        session.status = "done"
+    return session
+
+
 def apply_override(session: Session, overrides: dict) -> Session:
     """Apply a manual override, if reality has not moved on since it was made.
 
@@ -1137,21 +1174,7 @@ def collect(cache: TranscriptCache | None = None) -> tuple[list[Session], str | 
         enriched.append(recovered)
 
     for index, ready in enumerate(enriched):
-        # A turn ending is a reply, not idleness: a card would otherwise fall
-        # straight from Working to a hidden column with its answer unread.
-        # "Idle with output you have not seen" files under Replied -- either
-        # you have opened this session before and it has spoken since, or it
-        # spoke within the last hour. Reading it returns the card to Idle;
-        # sessions that have sat unopened for ages stay honestly Idle. This
-        # keys off STATUS, not kind -- a background session you were attached
-        # to also reports idle when the turn ends, and it was landing in Idle
-        # with a fresh reply on it.
-        if ready.status == "idle":
-            seen_at = seen.get(ready.session_id, 0.0)
-            spoke_since_read = ready.last_activity > seen_at
-            recent = now - ready.last_activity < RECENT_REPLY_SECONDS
-            if spoke_since_read and (seen_at > 0 or recent):
-                ready.status = "done"
+        ready = apply_reply_promotion(ready, seen, now)
         ready = apply_override(ready, overrides)
         ready.unread = ready.last_activity > seen.get(ready.session_id, 0.0)
         enriched[index] = ready

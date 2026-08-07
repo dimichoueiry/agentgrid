@@ -191,9 +191,9 @@ class ChatSession:
 
     # -- turns --------------------------------------------------------------
 
-    def send(self, message: str, posture: str) -> None:
+    def send(self, message: str, posture: str, model: str = "") -> None:
         """Queue a message; start the worker if it isn't already draining."""
-        self._pending.put((message, posture))
+        self._pending.put((message, posture, model))
         with self._lock:
             if self._worker is None or not self._worker.is_alive():
                 self._worker = threading.Thread(target=self._drain, daemon=True)
@@ -202,17 +202,22 @@ class ChatSession:
     def _drain(self) -> None:
         while True:
             try:
-                message, posture = self._pending.get_nowait()
+                message, posture, model = self._pending.get_nowait()
             except queue.Empty:
                 return
-            self._run_turn(message, posture)
+            self._run_turn(message, posture, model)
 
-    def _run_turn(self, message: str, posture: str) -> None:
+    def _run_turn(self, message: str, posture: str, model: str = "") -> None:
         argv = [
             CLAUDE_BIN, "-p", message,
             "--output-format", "stream-json", "--verbose",
             "--permission-mode", permission_mode(posture),
         ]
+        # An explicit model overrides the CLI default for this turn only; empty
+        # means "whatever your Claude Code is configured to use". Passed as its
+        # own argv element (never a shell string), so it cannot inject.
+        if model:
+            argv += ["--model", model]
         if self.session_id:
             argv += ["--resume", self.session_id]
         try:
@@ -311,8 +316,9 @@ class ChatManager:
                 existing.cwd = cwd
             return existing
 
-    def send(self, session_id: str, cwd: str, message: str, posture: str) -> None:
-        self.session(session_id, cwd).send(message, posture)
+    def send(self, session_id: str, cwd: str, message: str, posture: str,
+             model: str = "") -> None:
+        self.session(session_id, cwd).send(message, posture, model)
 
     def cancel(self, session_id: str) -> None:
         with self._lock:

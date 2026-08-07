@@ -933,7 +933,10 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(400, {"error": "Say something to send."})
             return
         posture = str(body.get("posture") or chat.DEFAULT_POSTURE)
-        self.chat.send(session.session_id, session.cwd, message, posture)
+        # Optional per-turn model override (e.g. "sonnet"/"opus"/"haiku"); empty
+        # keeps the CLI's configured default. cwd still comes from the session.
+        model = str(body.get("model") or "")
+        self.chat.send(session.session_id, session.cwd, message, posture, model)
         self._send_json(200, {"ok": True})
 
     def _chat_stream(self, query: dict) -> None:

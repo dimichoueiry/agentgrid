@@ -133,6 +133,17 @@ working-or-not; the fields above remain the fallback for interactive sessions,
 which have no job directory. `blocked`, `failed` and `stopped` are never
 overridden by tempo.
 
+None of those signals catches a *hung* agent — one whose `state`/`status`/
+`tempo` still claim it is working while its transcript has gone silent. So a
+card still reported working but silent past a threshold (15 min by default)
+carries an advisory **⚠ quiet 18m** badge. It is advisory on purpose: it never
+moves the card out of Working. Measured over real transcripts, P99.9 of the
+gaps between writes *during genuine work* is ~12.6 min, so 15 min sits just
+past it — but the tail is long (a slow build or a sleeping laptop can be
+legitimately silent for hours), and reclassifying a live agent as settled is
+the one mistake the board refuses to make. The badge flags the suspicion and
+leaves the verdict to you.
+
 A session's display name falls back through four sources, in order: a name you
 typed, the AI-generated title, the CLI's auto-generated name, the first eight
 characters of the session id.

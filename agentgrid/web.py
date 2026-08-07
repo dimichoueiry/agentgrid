@@ -1245,6 +1245,8 @@ class Handler(BaseHTTPRequestHandler):
             self._tags(body)
         elif route == "/api/read":
             self._read(body)
+        elif route == "/api/dismiss":
+            self._dismiss(body)
         elif route == "/api/override":
             self._override(body)
         elif route == "/api/open":
@@ -1634,6 +1636,21 @@ class Handler(BaseHTTPRequestHandler):
         else:
             discovery.mark_read(session.session_id, session.last_activity)
             session.unread = False
+        self._send_json(200, {"ok": True})
+
+    def _dismiss(self, body: dict) -> None:
+        # One route, both directions, like /api/read: the client asks to clear
+        # a card or to bring it back. A dismissal is a position (the reply you
+        # cleared), so a live session that speaks again returns on its own and
+        # the board can never lose a session that is actually still talking.
+        session = self._session_by_id(str(body.get("sessionId") or ""))
+        if session is None:
+            self._send_json(404, {"error": "Unknown session."})
+            return
+        if body.get("undo"):
+            discovery.restore_session(session.session_id)
+        else:
+            discovery.dismiss_session(session.session_id, session.last_activity)
         self._send_json(200, {"ok": True})
 
     def _override(self, body: dict) -> None:

@@ -145,6 +145,16 @@ select.ctl{font-size:12.5px;padding:3px 6px;max-width:170px;color:var(--text-2)}
 }
 .card:hover .copen,.card:focus-within .copen{opacity:1}
 .copen:hover{color:var(--text)}
+/* clear a card off the board — a flex child so it reserves its own space and
+   the age never jumps when it fades in; quiet until hover, red only under the
+   cursor so a resting board never shows a wall of delete marks */
+.cdel{
+  flex:0 0 auto;opacity:0;transition:opacity .12s;font:inherit;font-size:14px;
+  line-height:1;color:var(--text-3);background:transparent;border:0;
+  padding:0 2px;margin:-1px -2px 0 -4px;cursor:pointer;
+}
+.card:hover .cdel,.card:focus-within .cdel{opacity:.5}
+.cdel:hover{opacity:1;color:var(--failed)}
 .crow{display:flex;align-items:baseline;gap:8px}
 .name{
   flex:1;min-width:0;font-size:13px;font-weight:550;letter-spacing:-.01em;
@@ -563,6 +573,11 @@ details.cthink[open]>summary::before{transform:rotate(90deg)}
   padding:8px 14px;font-size:12.5px;color:var(--text);box-shadow:0 6px 24px rgba(0,0,0,.14);
   max-width:70vw;
 }
+.toast-undo{
+  font:inherit;font-size:12px;font-weight:600;color:var(--claude);
+  background:transparent;border:0;padding:2px 4px;margin-left:10px;cursor:pointer;
+}
+.toast-undo:hover{text-decoration:underline}
 </style>
 </head>
 <body>
@@ -906,6 +921,19 @@ function toast(msg) {
   toast._t = setTimeout(() => { t.hidden = true; }, 2800);
 }
 
+// A toast that offers to undo. Held longer than a plain one so the Undo is
+// actually reachable; clicking it fires the callback and dismisses at once.
+function toastUndo(msg, onUndo) {
+  const t = $("toast");
+  t.textContent = msg;
+  const btn = document.createElement("button");
+  btn.className = "toast-undo"; btn.textContent = "Undo";
+  btn.onclick = () => { t.hidden = true; clearTimeout(toast._t); onUndo(); };
+  t.appendChild(btn); t.hidden = false;
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => { t.hidden = true; }, 6500);
+}
+
 /* ------------------------------------------------------------------- state */
 
 // board
@@ -1008,6 +1036,11 @@ function cardFor(s) {
       (stale
         ? `<span class="stale" title="Reported working, but its transcript has been silent for ${stale} — it may be stalled or hung. Still counted as working; check or stop it.">⚠ quiet ${stale}</span>`
         : `<span class="age">${ageStr(s.idleSeconds)}</span>`) +
+      // no × on a working card: it would only reappear on its next line, and a
+      // running session is stopped, not deleted
+      (s.status !== "working"
+        ? `<button class="cdel" data-del="${esc(s.sessionId)}" draggable="false" title="Delete — clear this card off the board">×</button>`
+        : "") +
       `</div>` +
       `<div class="sub">${esc(s.project)}${s.engine === "codex" ? " · codex" : ""}` +
       `${s.branch ? " · " + esc(s.branch) : ""}` +
@@ -1161,6 +1194,23 @@ function closePanel() {
   chatClose();
   $("panel").classList.remove("on"); $("scrim").classList.remove("on");
   render();
+}
+
+// Clear a card off the board. Optimistic: the card leaves at once and the
+// server records the dismissal so the next poll agrees; Undo restores it
+// both here and on disk. Shared by the card's × and the panel's Delete.
+function deleteSession(id) {
+  const s = sessions.find(x => x.sessionId === id);
+  if (!s) return;
+  const label = s.customName || s.title || id.slice(0, 8);
+  post("/api/dismiss", {sessionId: id});
+  sessions = sessions.filter(x => x.sessionId !== id);
+  if (openId === id) closePanel(); else render();
+  toastUndo(`Deleted “${label}”`, () => {
+    post("/api/dismiss", {sessionId: id, undo: true});
+    if (!sessions.some(x => x.sessionId === id)) sessions.push(s);
+    render();
+  });
 }
 
 /* --------------------------------------------------------- chat (in panel) */
@@ -1636,10 +1686,14 @@ function renderPanel() {
         : `<button class="btn key" id="openBtn" title="Bring its terminal tab to the front (Terminal.app only — joining would fork the conversation)">Open in Terminal</button>`;
     const unreadBtn = settled
       ? `<button class="btn sm" id="unreadBtn">Mark unread</button>` : "";
+    // A running session is stopped, not deleted, so Delete waits until it settles.
+    const deleteBtn = working
+      ? ""
+      : `<button class="btn sm danger" id="deleteBtn" title="Clear this card off the board. A closed session stays gone; a live one returns only if it speaks again.">Delete</button>`;
     $("pMeta").innerHTML =
       `<div class="prow"><div class="plabel">Name</div>` +
       `<input id="renameIn" value="${esc(s.customName || "")}" placeholder="${esc(s.title || "")}" maxlength="60"></div>` +
-      `<div class="prow"><div class="mvrow">${openBtn}${unreadBtn}</div></div>` +
+      `<div class="prow"><div class="mvrow">${openBtn}${unreadBtn}${deleteBtn}</div></div>` +
       (working ? `<div class="prow"><div class="mvnote">Running — stop it before re-filing.</div></div>` : "") +
       `<div class="prow"><div class="plabel">Tags</div><div class="tagrow" id="tagRow">` +
         (s.tags || []).map(t =>
@@ -2676,6 +2730,8 @@ function bindEvents() {
 
   // board: click selects/opens, drag re-files
   $("board").addEventListener("click", e => {
+    const del = e.target.closest("[data-del]");
+    if (del) { e.stopPropagation(); deleteSession(del.dataset.del); return; }
     const open = e.target.closest("[data-open]");
     if (open) {
       // straight in from the card; the refusal, if any, arrives as a toast.
@@ -2812,6 +2868,10 @@ function bindEvents() {
       const s = sessions.find(x => x.sessionId === openId);
       if (s) s.unread = true;
       metaSig = ""; renderPanel(); render();
+      return;
+    }
+    if (e.target.closest("#deleteBtn")) {
+      deleteSession(openId);
       return;
     }
     const rr = e.target.closest(".rrow");

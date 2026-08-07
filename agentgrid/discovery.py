@@ -48,6 +48,7 @@ NAMES_PATH = Path.home() / ".agentgrid" / "names.json"
 OVERRIDES_PATH = Path.home() / ".agentgrid" / "overrides.json"
 TAGS_PATH = Path.home() / ".agentgrid" / "tags.json"
 READ_PATH = Path.home() / ".agentgrid" / "read.json"
+DISMISSED_PATH = Path.home() / ".agentgrid" / "dismissed.json"
 
 MAX_TAGS_PER_SESSION = 6
 MAX_TAG_LENGTH = 24
@@ -1013,6 +1014,43 @@ def mark_unread(session_id: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Dismissals -- cards the human has cleared off the board.
+
+
+def load_dismissed() -> dict:
+    return _read_json(DISMISSED_PATH)
+
+
+def dismiss_session(session_id: str, at: float) -> None:
+    """Clear a session's card off the board, from this reply onward.
+
+    Stored as a position, not a flag, exactly like a read mark: the session
+    is hidden only while its last activity is no newer than the moment you
+    dismissed it. A closed or idle session never speaks again, so it stays
+    gone -- which is the whole point of the button -- but a session that turns
+    out to be alive and says something new earns its card back on its own,
+    with nothing watching to un-hide it. Deleting is therefore safe: the worst
+    it can do to a live session is hide it until its next line.
+    """
+    store = load_dismissed()
+    store[session_id] = float(at)
+    _write_json(DISMISSED_PATH, store)
+
+
+def restore_session(session_id: str) -> None:
+    """Undo a dismissal by forgetting the position."""
+    store = load_dismissed()
+    store.pop(session_id, None)
+    _write_json(DISMISSED_PATH, store)
+
+
+def is_dismissed(session: Session, dismissed: dict) -> bool:
+    """True while a dismissed session has said nothing new since it was cleared."""
+    at = dismissed.get(session.session_id)
+    return at is not None and session.last_activity <= at
+
+
+# ---------------------------------------------------------------------------
 # Tags.
 
 
@@ -1194,6 +1232,14 @@ def collect(cache: TranscriptCache | None = None) -> tuple[list[Session], str | 
         ready = apply_override(session, overrides)
         ready.unread = ready.last_activity > seen.get(session.session_id, 0.0)
         enriched.append(ready)
+
+    # Cards the human cleared off the board drop out last, after every source
+    # has been folded in, so one pass covers fleet, recovered and codex alike.
+    # A dismissal that has been outlived by new activity is silently ignored --
+    # the session speaks again and its card returns -- so this poll-time read
+    # never has to prune the file, keeping collect() write-free.
+    dismissed = load_dismissed()
+    enriched = [s for s in enriched if not is_dismissed(s, dismissed)]
 
     enriched.sort(key=lambda s: s.sort_key)
     return enriched, None

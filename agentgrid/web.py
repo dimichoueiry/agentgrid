@@ -499,6 +499,116 @@ def delete_saved_agent(name: str) -> list[dict]:
     return agents
 
 
+# --- the prompt / skills library --------------------------------------------
+#
+# Reusable prompts ("skills"): a slug name, a one-line description and a body,
+# saved once and expanded from the composer with `/name`. The same shape as the
+# agent library above -- a separate JSON store, atomic writes, name is the key --
+# and, like it, deliberately just data: expanding a prompt only fills the
+# textarea, it never sends. An opt-in export writes each one to Claude Code's
+# own `~/.claude/commands/<name>.md` so `/name` also works in the terminal.
+
+PROMPTS_PATH = Path.home() / ".agentgrid" / "prompts.json"
+# The command file lives in Claude Code's own directory; this is the ONE place
+# under ~/.claude this feature ever touches, and only ever for files it manages.
+CLAUDE_COMMANDS_DIR = Path.home() / ".claude" / "commands"
+MAX_PROMPT_BODY = 20000
+MAX_PROMPT_DESC = 200
+
+
+def _prompt_slug(name: str) -> str:
+    """A slug that is safe both as the store's key and as a command filename.
+
+    Same rules as the session slug -- lowercase, non-alphanumerics folded to
+    single hyphens -- so `/name` in the composer, the store key and the
+    `<name>.md` on disk all agree on the spelling. Bounded so it cannot become
+    a pathological filename.
+    """
+    text = re.sub(r"[^a-z0-9]+", "-", str(name or "").lower()).strip("-")
+    return text[:60]
+
+
+def load_saved_prompts() -> list[dict]:
+    """The library, oldest first. Missing or corrupt file is an empty library."""
+    try:
+        raw = json.loads(PROMPTS_PATH.read_text("utf-8"))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(raw, list):
+        return []
+    prompts = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        slug = _prompt_slug(entry.get("name") or "")
+        if not slug:
+            continue
+        prompts.append({
+            "name": slug,
+            "description": str(entry.get("description") or "")[:MAX_PROMPT_DESC],
+            "body": str(entry.get("body") or "")[:MAX_PROMPT_BODY],
+        })
+    return prompts
+
+
+def _write_saved_prompts(prompts: list[dict]) -> None:
+    PROMPTS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    temporary = PROMPTS_PATH.with_suffix(".json.tmp")
+    temporary.write_text(json.dumps(prompts, indent=2), "utf-8")
+    os.replace(temporary, PROMPTS_PATH)
+
+
+def save_saved_prompt(name: str, description: str, body: str) -> list[dict]:
+    """Save or overwrite one prompt, keyed by its slug."""
+    slug = _prompt_slug(name)
+    prompts = [p for p in load_saved_prompts() if p["name"] != slug]
+    prompts.append({
+        "name": slug,
+        "description": description.strip()[:MAX_PROMPT_DESC],
+        "body": body.strip()[:MAX_PROMPT_BODY],
+    })
+    _write_saved_prompts(prompts)
+    return prompts
+
+
+def delete_saved_prompt(name: str) -> list[dict]:
+    slug = _prompt_slug(name)
+    prompts = [p for p in load_saved_prompts() if p["name"] != slug]
+    _write_saved_prompts(prompts)
+    return prompts
+
+
+def export_prompt_to_claude(name: str) -> tuple[bool, str]:
+    """Write one prompt to `~/.claude/commands/<name>.md` as a custom command.
+
+    The file is Claude Code's documented custom-command format: an optional YAML
+    frontmatter block carrying the description, then the prompt body. Only ever
+    creates or overwrites the single file this prompt owns; nothing else under
+    ~/.claude is read, moved or removed. Explicit by design -- there is no code
+    path that writes here without the user asking for this prompt by name.
+    """
+    slug = _prompt_slug(name)
+    prompt = next((p for p in load_saved_prompts() if p["name"] == slug), None)
+    if prompt is None:
+        return False, "No such prompt to export."
+    front = ""
+    description = re.sub(r"\s+", " ", prompt["description"]).strip()
+    if description:
+        # A double-quoted YAML scalar so a colon or '#' in the description can
+        # never break the frontmatter; only backslash and quote need escaping.
+        safe = description.replace("\\", "\\\\").replace('"', '\\"')
+        front = f'---\ndescription: "{safe}"\n---\n\n'
+    body = prompt["body"]
+    text = front + body + ("" if body.endswith("\n") else "\n")
+    try:
+        CLAUDE_COMMANDS_DIR.mkdir(parents=True, exist_ok=True)
+        path = CLAUDE_COMMANDS_DIR / f"{slug}.md"
+        path.write_text(text, "utf-8")
+    except OSError as error:
+        return False, f"Could not write the command file: {error}"
+    return True, str(path)
+
+
 def spawn_agent(cwd: str, prompt: str, model: str | None,
                 allowed: list[dict], engine: str = "claude",
                 system_prompt: str = "", interactive: bool = False,
@@ -939,6 +1049,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(200, {"projects": discover_projects(self.fleet.raw())})
         elif route == "/api/agents":
             self._send_json(200, {"agents": load_saved_agents()})
+        elif route == "/api/prompts":
+            self._send_json(200, {"prompts": load_saved_prompts()})
         elif route == "/api/sync":
             # The remote and branch to pre-fill the sync sheet with; never any
             # secret, because none is stored -- the transport is the user's git.
@@ -1109,6 +1221,24 @@ class Handler(BaseHTTPRequestHandler):
                     str(body.get("systemPrompt") or ""))})
         elif route == "/api/agents/delete":
             self._send_json(200, {"agents": delete_saved_agent(str(body.get("name") or ""))})
+        elif route == "/api/prompts/save":
+            name = str(body.get("name") or "").strip()
+            if not _prompt_slug(name):
+                self._send_json(400, {"error": "A prompt needs a name with a letter or digit in it."})
+            elif not str(body.get("body") or "").strip():
+                self._send_json(400, {"error": "A prompt needs a body — the text /name expands to."})
+            else:
+                self._send_json(200, {"prompts": save_saved_prompt(
+                    name, str(body.get("description") or ""),
+                    str(body.get("body") or ""))})
+        elif route == "/api/prompts/delete":
+            self._send_json(200, {"prompts": delete_saved_prompt(str(body.get("name") or ""))})
+        elif route == "/api/prompts/export":
+            ok, message = export_prompt_to_claude(str(body.get("name") or ""))
+            if ok:
+                self._send_json(200, {"ok": True, "path": message})
+            else:
+                self._send_json(400, {"error": message})
         elif route == "/api/rename":
             self._rename(body)
         elif route == "/api/tags":

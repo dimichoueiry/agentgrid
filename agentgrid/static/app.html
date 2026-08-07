@@ -545,6 +545,16 @@ details.cthink[open]>summary::before{transform:rotate(90deg)}
 .atfiles button.on .afname{color:var(--text)}
 .atfiles .afdir{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
   font-size:11px;color:var(--text-3)}
+/* the composer's /slash palette — same popup, wider, with a description tail */
+.slashmenu{width:300px}
+.slashmenu button{font-family:var(--mono);font-size:11.5px}
+.slashmenu button.on{background:var(--card-hover);color:var(--text)}
+.slashmenu .slname{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  font-family:var(--sans);font-size:11px;color:var(--text-3)}
+/* prompt-library list inside the sheet: the manage-panel rows, capped so a long
+   library scrolls rather than pushing the form off-screen */
+.plist{max-height:42vh;overflow-y:auto;margin:8px 0 4px;border-top:1px solid var(--line)}
+.plist .mvnote{font-size:12px;color:var(--text-3);padding:12px 2px}
 
 /* ---------- toast ---------- */
 .toast{
@@ -570,6 +580,7 @@ details.cthink[open]>summary::before{transform:rotate(90deg)}
   <div class="toggles"><button id="alertsBtn" aria-pressed="false"
     title="Notify when an agent needs you or replies (while this tab is open)">Alerts</button></div>
   <div class="spacer"></div>
+  <button class="btn" id="promptsBtn" title="Reusable prompts — expand them in the composer with /name">/ Prompts</button>
   <button class="btn" id="syncBtn" title="Sync your notes to a GitHub repo">⟳ Sync</button>
   <button class="btn key" id="newBtn" title="Start a new agent  (n)">New agent</button>
   <input id="search" type="search" placeholder="Search  /" autocomplete="off">
@@ -645,7 +656,7 @@ details.cthink[open]>summary::before{transform:rotate(90deg)}
         <option value="opus">Opus</option>
         <option value="haiku">Haiku</option>
       </select>
-      <span class="chint"><span class="kc">&#9166;</span> send &nbsp;·&nbsp; <span class="kc">&#8679;&#9166;</span> newline</span>
+      <span class="chint"><span class="kc">&#9166;</span> send &nbsp;·&nbsp; <span class="kc">&#8679;&#9166;</span> newline &nbsp;·&nbsp; <span class="kc">/</span> prompts</span>
     </div>
   </div>
   <!-- Details tab: name, actions, tags, notes, move-to, facts, roster. -->
@@ -724,11 +735,40 @@ details.cthink[open]>summary::before{transform:rotate(90deg)}
   </div>
 </div>
 
+<div class="modal" id="promptModal" hidden>
+  <div class="sheet wide">
+    <div class="stitle">Prompt library</div>
+    <p class="hint" style="margin:0 0 12px">Reusable prompts you expand in the composer by typing
+      <b>/name</b> — expanding fills the box, it never sends, so you can edit first.
+      <b>Export to Claude Code</b> writes one to <code>~/.claude/commands/name.md</code>
+      so <b>/name</b> works in the terminal too.</p>
+    <!-- add / edit share one form; Save upserts by name (the slug is the key) -->
+    <label>Name <span class="hint">a short slug — this is the <b>/name</b> you type</span>
+      <input id="plName" maxlength="60" autocomplete="off" placeholder="i-have-adhd"></label>
+    <label>Description <span class="hint">optional — shown in the list, and exported as the command's description</span>
+      <input id="plDesc" maxlength="200" autocomplete="off" placeholder="Break work into small, checkable steps"></label>
+    <label>Prompt <span class="hint">the text /name expands to</span>
+      <textarea id="plBody" rows="5" placeholder="Please break this into small steps and check in with me after each one."></textarea></label>
+    <div class="srow">
+      <span class="hint err" id="plErr"></span>
+      <span class="spacer"></span>
+      <button class="btn sm" id="plNew" hidden>Clear</button>
+      <button class="btn key" id="plSave">Save prompt</button>
+    </div>
+    <div class="plist" id="plList"></div>
+    <div class="srow">
+      <span class="spacer"></span>
+      <button class="btn" id="plClose">Close</button>
+    </div>
+  </div>
+</div>
+
 <div class="pmenu" id="pmenu" hidden></div>
 <div class="pmenu atmenu" id="atMenu" hidden></div>
 <!-- The chat composer's own @ file picker. Separate from #atMenu (the notes
      pad's @session menu), so typing @ in each never drives the other. -->
 <div class="pmenu atfiles" id="atFiles" hidden></div>
+<div class="pmenu slashmenu" id="slashMenu" hidden></div>
 
 <div class="scrim" id="scrim2"></div>
 <aside class="panel" id="managePanel">
@@ -891,6 +931,9 @@ let pageGroups = {}, collapsedGroups = [], pinnedPages = [], currentPages = [];
 let notesData = null, menuFor = null, dragPage = null, dragGroup = null;
 let expandedRow = null, managePages = [];
 let atFrom = -1, atSel = 0, atHits = [];
+// prompt / skills library + the composer's /slash palette over it
+let promptLibrary = [], plEditing = null;
+let slashFrom = -1, slashSel = 0, slashHits = [];
 
 // columns are data, not markup; they are built once and only cards move
 const COLUMNS = [
@@ -1944,6 +1987,7 @@ function openPageMenu(name, anchorRect) {
 function closeMenus() {
   $("pmenu").hidden = true; menuFor = null;
   hideAt();
+  hideSlash();
 }
 
 async function menuAction(act, el) {
@@ -2166,6 +2210,126 @@ function insertAt(i) {
   el.focus();
 }
 function hideAt() { $("atMenu").hidden = true; atHits = []; atFrom = -1; }
+
+/* ------------------------------------------------ prompt / skills library */
+// Reusable prompts saved once and expanded from the composer with /name. Kept
+// loaded so the /slash palette works even if the manager was never opened.
+
+async function loadPrompts() {
+  try { promptLibrary = (await api("/api/prompts")).prompts || []; }
+  catch (e) { promptLibrary = promptLibrary || []; }
+}
+
+function openPrompts() {
+  $("promptModal").hidden = false;
+  plEditing = null;
+  clearPromptForm();
+  loadPrompts().then(renderPrompts);
+  $("plName").focus();
+}
+function closePrompts() { $("promptModal").hidden = true; }
+
+function clearPromptForm() {
+  plEditing = null;
+  $("plName").value = ""; $("plDesc").value = ""; $("plBody").value = "";
+  $("plErr").textContent = "";
+  $("plNew").hidden = true;
+}
+// picking Edit loads a row into the same form; the name is what it upserts on
+function fillPromptForm(name) {
+  const p = promptLibrary.find(x => x.name === name); if (!p) return;
+  plEditing = p.name;
+  $("plName").value = p.name; $("plDesc").value = p.description || "";
+  $("plBody").value = p.body || ""; $("plErr").textContent = "";
+  $("plNew").hidden = false;
+  $("plBody").focus();
+}
+
+function renderPrompts() {
+  $("plList").innerHTML = promptLibrary.map(p =>
+    `<div class="mrow" data-plrow="${esc(p.name)}">` +
+    `<div class="mtop"><span class="mname">/${esc(p.name)}</span>` +
+    `<span class="mfacts">${esc(p.description || "no description")}</span>` +
+    `<span class="macts">` +
+    `<button data-plact="edit" data-plname="${esc(p.name)}">Edit</button>` +
+    `<button data-plact="export" data-plname="${esc(p.name)}" ` +
+    `title="Write ~/.claude/commands/${esc(p.name)}.md">Export to Claude Code</button>` +
+    `<button class="danger" data-plact="delete" data-plname="${esc(p.name)}">Delete</button>` +
+    `</span></div></div>`).join("") ||
+    `<div class="mvnote">No prompts yet — add one above, then type /name in the composer.</div>`;
+}
+
+async function savePrompt() {
+  const name = $("plName").value.trim();
+  const body = $("plBody").value.trim();
+  if (!name) { $("plErr").textContent = "Give it a name — that is the /name you will type."; return; }
+  if (!body) { $("plErr").textContent = "Give it a body — the text /name expands to."; return; }
+  const r = await post("/api/prompts/save",
+    {name, description: $("plDesc").value.trim(), body});
+  if (r && r.error) { $("plErr").textContent = r.error; return; }
+  promptLibrary = (r && r.prompts) || promptLibrary;
+  clearPromptForm();
+  renderPrompts();
+  toast(`Saved "/${name.toLowerCase().replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, "")}".`);
+}
+
+async function deletePrompt(name) {
+  const r = await post("/api/prompts/delete", {name});
+  promptLibrary = (r && r.prompts) || promptLibrary;
+  if (plEditing === name) clearPromptForm();
+  renderPrompts();
+  toast(`Removed "/${name}".`);
+}
+
+async function exportPrompt(name) {
+  const r = await post("/api/prompts/export", {name});
+  if (r && r.error) { toast(r.error); return; }
+  toast(`Exported → ${r.path}`);
+}
+
+/* --------------------------------------------------- composer /slash palette */
+// The @ menu's twin, over the prompt library: type /name in the composer to
+// filter, arrow/enter to accept. Accepting swaps the /token for the prompt's
+// body and stops there — it never sends, so the turn is always reviewed first.
+
+function checkSlashMenu() {
+  const el = $("cInput"); if (!el) { hideSlash(); return; }
+  // a slash only opens the palette at the very start of the message, or right
+  // after whitespace — so a URL or a path mid-sentence never triggers it
+  const m = /(?:^|\s)\/([a-z0-9-]*)$/i.exec(el.value.slice(0, el.selectionStart));
+  if (!m) { hideSlash(); return; }
+  slashFrom = el.selectionStart - m[1].length - 1;   // index of the "/"
+  const q = m[1].toLowerCase();
+  slashHits = promptLibrary.filter(p => !q || p.name.includes(q)).slice(0, 8);
+  if (!slashHits.length) { hideSlash(); return; }
+  slashSel = 0;
+  const menu = $("slashMenu");
+  menu.innerHTML = slashHits.map((p, i) =>
+    `<button data-slash="${i}"${i === slashSel ? ' class="on"' : ""}>/${esc(p.name)}` +
+    (p.description ? `<span class="slname">${esc(p.description)}</span>` : "") +
+    `</button>`).join("");
+  // anchored above the textarea: it sits at the foot of the panel, so a menu
+  // dropped below it would fall off-screen
+  const r = el.getBoundingClientRect();
+  menu.hidden = false;
+  menu.style.left = `${Math.max(8, r.left)}px`;
+  menu.style.top = `${Math.max(8, r.top - menu.offsetHeight - 6)}px`;
+}
+function paintSlash() {
+  $("slashMenu").querySelectorAll("button").forEach((b, i) =>
+    b.classList.toggle("on", i === slashSel));
+}
+function insertSlash(i) {
+  const p = slashHits[i];
+  const el = $("cInput");
+  if (!p) { hideSlash(); return; }
+  const end = el.selectionStart;            // capture before the caret moves
+  el.setRangeText(p.body, slashFrom, end, "end");
+  hideSlash();
+  el.focus();
+  chatGrow(el);                             // the body may be several lines
+}
+function hideSlash() { $("slashMenu").hidden = true; slashHits = []; slashFrom = -1; }
 
 /* ----------------------------------------------------------- page grid modal */
 
@@ -2486,6 +2650,23 @@ function bindEvents() {
   $("syncBtn").addEventListener("click", openSync);
   $("syncCancel").addEventListener("click", closeSync);
   $("syncGo").addEventListener("click", doSync);
+
+  // prompt / skills library
+  $("promptsBtn").addEventListener("click", openPrompts);
+  $("plClose").addEventListener("click", closePrompts);
+  $("promptModal").addEventListener("click", e => { if (e.target === $("promptModal")) closePrompts(); });
+  $("plSave").addEventListener("click", savePrompt);
+  $("plNew").addEventListener("click", clearPromptForm);
+  $("plBody").addEventListener("keydown", e => {
+    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); savePrompt(); }
+  });
+  $("plList").addEventListener("click", e => {
+    const b = e.target.closest("button[data-plact]"); if (!b) return;
+    const name = b.dataset.plname, act = b.dataset.plact;
+    if (act === "edit") fillPromptForm(name);
+    else if (act === "export") exportPrompt(name);
+    else if (act === "delete") deletePrompt(name);
+  });
   ["syncRemote", "syncBranch"].forEach(id => $(id).addEventListener("keydown", e => {
     if (e.key === "Enter") { e.preventDefault(); doSync(); }
     else if (e.key === "Escape") closeSync();
@@ -2562,9 +2743,9 @@ function bindEvents() {
     localStorage.setItem("agentgrid.chatModel", chatModel);       // a view preference, remembered
   });
   const cin = $("cInput");
-  cin.addEventListener("input", () => { chatGrow(cin); checkAtFiles(); });
-  cin.addEventListener("click", checkAtFiles);          // caret moved into/out of a token
-  cin.addEventListener("blur", hideAtFiles);            // menu picks use mousedown, so focus survives
+  cin.addEventListener("input", () => { chatGrow(cin); checkAtFiles(); checkSlashMenu(); });
+  cin.addEventListener("click", () => { checkAtFiles(); checkSlashMenu(); });   // caret moved into/out of a token
+  cin.addEventListener("blur", () => { hideAtFiles(); hideSlash(); });          // menu picks use mousedown, so focus survives
   cin.addEventListener("keydown", e => {
     // the @ file menu grabs nav keys while it is open; stopPropagation keeps the
     // document-level Escape from closing the whole panel out from under it
@@ -2579,6 +2760,17 @@ function bindEvents() {
         e.preventDefault(); e.stopPropagation(); insertAtFile(atFileSel); return;
       }
     }
+    // the /slash palette intercepts navigation keys while it is open
+    if (!$("slashMenu").hidden) {
+      // stop Escape bubbling to the global handler, or it would also close the panel
+      if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); hideSlash(); return; }
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        e.preventDefault();
+        slashSel = (slashSel + (e.key === "ArrowDown" ? 1 : slashHits.length - 1)) % slashHits.length;
+        paintSlash(); return;
+      }
+      if (e.key === "Enter" || e.key === "Tab") { e.preventDefault(); insertSlash(slashSel); return; }
+    }
     // Enter sends; Shift+Enter is a newline (the textarea's default)
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); chatSend(); }
   });
@@ -2587,6 +2779,12 @@ function bindEvents() {
     e.preventDefault();                                 // keep the textarea focused
     const b = e.target.closest("button[data-af]");
     if (b) insertAtFile(Number(b.dataset.af));
+  });
+  // mousedown, not click: click fires after the textarea has lost focus
+  $("slashMenu").addEventListener("mousedown", e => {
+    e.preventDefault();
+    const b = e.target.closest("button[data-slash]");
+    if (b) insertSlash(Number(b.dataset.slash));
   });
   cin.addEventListener("paste", chatPaste);
   // the × on a pending-attachment chip
@@ -3009,8 +3207,10 @@ function bindEvents() {
   document.addEventListener("keydown", e => {
     if (e.key === "Escape") {
       if (!$("atFiles").hidden) { hideAtFiles(); return; }
+      if (!$("slashMenu").hidden) { hideSlash(); return; }
       if (!$("pmenu").hidden || !$("atMenu").hidden) { closeMenus(); return; }
       if (!$("gridModal").hidden) { $("gridModal").hidden = true; return; }
+      if (!$("promptModal").hidden) { closePrompts(); return; }
       if (!$("modal").hidden) { closeNewAgent(); return; }
       if ($("managePanel").classList.contains("on")) { closeManage(); return; }
       if ($("panel").classList.contains("on")) { closePanel(); return; }
@@ -3041,6 +3241,7 @@ $("spans").querySelectorAll("button").forEach(b =>
   b.setAttribute("aria-pressed", String(b.dataset.span === span)));
 
 poll(); setInterval(poll, 2000);                                       // fleet
+loadPrompts();      // so the composer's /slash palette works before the manager is opened
 setInterval(() => { if (!document.hidden) render(); }, 1000);          // ages tick
 setInterval(() => { if (view !== "notes" && !document.hidden) loadNotes(true); },
             30000);                                                    // open count

@@ -655,8 +655,8 @@ details.cthink[open]>summary::before{transform:rotate(90deg)}
       </select></label>
     <label>Session <span class="hint">background survives a closed terminal; interactive opens a tab you watch and type into</span>
       <select id="naSession">
-        <option value="background">Background</option>
         <option value="interactive">Interactive (macOS)</option>
+        <option value="background">Background</option>
       </select></label>
     <label>Model
       <select id="naModel">
@@ -2087,7 +2087,7 @@ async function openNewAgent() {
   $("modal").hidden = false;
   $("naErr").textContent = "";
   $("naTask").value = ""; $("naName").value = ""; $("naSys").value = "";
-  $("naSession").value = "background";
+  $("naSession").value = "interactive";
   $("naAddRow").hidden = true;
   try {
     const data = await api("/api/projects");

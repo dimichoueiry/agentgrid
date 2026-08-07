@@ -49,6 +49,27 @@ def permission_mode(posture: str) -> str:
     return POSTURES.get(posture, POSTURES[DEFAULT_POSTURE])
 
 
+def with_attachments(message: str, attachments: list[str] | None) -> str:
+    """Fold attachment file paths into the prompt text `claude -p` receives.
+
+    Headless Claude Code has no image flag that is stable across releases; what
+    it does reliably is read a local file whose absolute path appears in the
+    prompt (its Read tool renders PNG/JPEG/GIF/WebP visually). So a pasted image
+    is saved to disk and named here -- the path IS the attachment. Each path is
+    on its own line, and an image with no words of its own still gets a nudge to
+    look, so an image-only turn is not a bare list of paths.
+    """
+    paths = [str(p) for p in (attachments or []) if str(p).strip()]
+    if not paths:
+        return message
+    listing = "\n".join(f"- {path}" for path in paths)
+    body = (message or "").strip()
+    label = "Attached image:" if len(paths) == 1 else "Attached images:"
+    if body:
+        return f"{body}\n\n{label}\n{listing}"
+    return f"Please look at the attached image(s):\n{listing}"
+
+
 # ---------------------------------------------------------------------------
 # Normalizing the CLI's stream-json into the UI vocabulary.
 
@@ -191,9 +212,10 @@ class ChatSession:
 
     # -- turns --------------------------------------------------------------
 
-    def send(self, message: str, posture: str, model: str = "") -> None:
+    def send(self, message: str, posture: str, model: str = "",
+             attachments: list[str] | None = None) -> None:
         """Queue a message; start the worker if it isn't already draining."""
-        self._pending.put((message, posture, model))
+        self._pending.put((message, posture, model, list(attachments or [])))
         with self._lock:
             if self._worker is None or not self._worker.is_alive():
                 self._worker = threading.Thread(target=self._drain, daemon=True)
@@ -202,14 +224,18 @@ class ChatSession:
     def _drain(self) -> None:
         while True:
             try:
-                message, posture, model = self._pending.get_nowait()
+                message, posture, model, attachments = self._pending.get_nowait()
             except queue.Empty:
                 return
-            self._run_turn(message, posture, model)
+            self._run_turn(message, posture, model, attachments)
 
-    def _run_turn(self, message: str, posture: str, model: str = "") -> None:
+    def _run_turn(self, message: str, posture: str, model: str = "",
+                  attachments: list[str] | None = None) -> None:
+        # Pasted images ride in as absolute paths folded into the prompt text,
+        # so the CLI reads them the same way it reads any file named in a prompt.
+        prompt = with_attachments(message, attachments)
         argv = [
-            CLAUDE_BIN, "-p", message,
+            CLAUDE_BIN, "-p", prompt,
             "--output-format", "stream-json", "--verbose",
             "--permission-mode", permission_mode(posture),
         ]
@@ -317,8 +343,8 @@ class ChatManager:
             return existing
 
     def send(self, session_id: str, cwd: str, message: str, posture: str,
-             model: str = "") -> None:
-        self.session(session_id, cwd).send(message, posture, model)
+             model: str = "", attachments: list[str] | None = None) -> None:
+        self.session(session_id, cwd).send(message, posture, model, attachments)
 
     def cancel(self, session_id: str) -> None:
         with self._lock:

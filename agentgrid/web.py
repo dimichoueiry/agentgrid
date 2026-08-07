@@ -24,6 +24,8 @@ Design decisions worth keeping:
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import os
 import queue
@@ -46,6 +48,61 @@ STATIC = Path(__file__).resolve().parent / "static"
 POLL_SECONDS = 2.0
 DEFAULT_PROJECT_ROOTS = [Path.home(), Path.home() / "Documents" / "GitHub"]
 PROJECTS_TTL = 30.0
+
+# Pasted images land beside the app's other state under ~/.agentgrid, one
+# directory per session. The cap is on the decoded image; the body cap sits
+# above it with room for base64's ~4/3 inflation plus the JSON envelope, so an
+# in-bounds image is never rejected by the outer guard.
+UPLOADS_DIR = Path.home() / ".agentgrid" / "uploads"
+MAX_UPLOAD_BYTES = 10 * 1024 * 1024
+MAX_BODY_BYTES = 16 * 1024 * 1024
+
+# Magic-byte signatures for the image types the chat can paste. Content-type is
+# never trusted -- the client controls it -- so the bytes themselves decide, and
+# a file that is not really an image is refused before it touches disk.
+IMAGE_SIGNATURES: tuple[tuple[bytes, str], ...] = (
+    (b"\x89PNG\r\n\x1a\n", "png"),
+    (b"\xff\xd8\xff", "jpg"),
+    (b"GIF87a", "gif"),
+    (b"GIF89a", "gif"),
+)
+
+
+def image_extension(data: bytes) -> str | None:
+    """The file extension for `data` if it is a supported image, else None.
+
+    WebP is checked separately: its signature is a RIFF container whose type
+    tag sits at byte 8, not at the very start.
+    """
+    for signature, ext in IMAGE_SIGNATURES:
+        if data.startswith(signature):
+            return ext
+    if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "webp"
+    return None
+
+
+def safe_stem(name: str) -> str:
+    """A filesystem-safe label from a client-supplied name, no directory parts.
+
+    Any path the client sends is reduced to its final component and then to a
+    conservative character set, so a crafted name can neither traverse out of
+    the uploads directory nor smuggle a separator into the filename.
+    """
+    stem = Path(str(name or "")).name
+    stem = re.sub(r"\.[A-Za-z0-9]+$", "", stem)          # drop the extension
+    stem = re.sub(r"[^A-Za-z0-9._-]+", "-", stem).strip("-.")
+    return stem[:48] or "paste"
+
+
+def session_uploads_dir(session_id: str) -> Path:
+    """The uploads directory for one session.
+
+    Sanitised identically on the write side and the validation side, so the two
+    always agree on where a session's images live -- a session id is a UUID in
+    practice, but never trusted as a raw path component regardless.
+    """
+    return UPLOADS_DIR / (re.sub(r"[^A-Za-z0-9._-]+", "-", session_id) or "session")
 
 # The CLI colours its output, so anything read back from it must be stripped
 # of escape sequences before a regex can find the job id in it.
@@ -442,6 +499,116 @@ def delete_saved_agent(name: str) -> list[dict]:
     return agents
 
 
+# --- the prompt / skills library --------------------------------------------
+#
+# Reusable prompts ("skills"): a slug name, a one-line description and a body,
+# saved once and expanded from the composer with `/name`. The same shape as the
+# agent library above -- a separate JSON store, atomic writes, name is the key --
+# and, like it, deliberately just data: expanding a prompt only fills the
+# textarea, it never sends. An opt-in export writes each one to Claude Code's
+# own `~/.claude/commands/<name>.md` so `/name` also works in the terminal.
+
+PROMPTS_PATH = Path.home() / ".agentgrid" / "prompts.json"
+# The command file lives in Claude Code's own directory; this is the ONE place
+# under ~/.claude this feature ever touches, and only ever for files it manages.
+CLAUDE_COMMANDS_DIR = Path.home() / ".claude" / "commands"
+MAX_PROMPT_BODY = 20000
+MAX_PROMPT_DESC = 200
+
+
+def _prompt_slug(name: str) -> str:
+    """A slug that is safe both as the store's key and as a command filename.
+
+    Same rules as the session slug -- lowercase, non-alphanumerics folded to
+    single hyphens -- so `/name` in the composer, the store key and the
+    `<name>.md` on disk all agree on the spelling. Bounded so it cannot become
+    a pathological filename.
+    """
+    text = re.sub(r"[^a-z0-9]+", "-", str(name or "").lower()).strip("-")
+    return text[:60]
+
+
+def load_saved_prompts() -> list[dict]:
+    """The library, oldest first. Missing or corrupt file is an empty library."""
+    try:
+        raw = json.loads(PROMPTS_PATH.read_text("utf-8"))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(raw, list):
+        return []
+    prompts = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        slug = _prompt_slug(entry.get("name") or "")
+        if not slug:
+            continue
+        prompts.append({
+            "name": slug,
+            "description": str(entry.get("description") or "")[:MAX_PROMPT_DESC],
+            "body": str(entry.get("body") or "")[:MAX_PROMPT_BODY],
+        })
+    return prompts
+
+
+def _write_saved_prompts(prompts: list[dict]) -> None:
+    PROMPTS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    temporary = PROMPTS_PATH.with_suffix(".json.tmp")
+    temporary.write_text(json.dumps(prompts, indent=2), "utf-8")
+    os.replace(temporary, PROMPTS_PATH)
+
+
+def save_saved_prompt(name: str, description: str, body: str) -> list[dict]:
+    """Save or overwrite one prompt, keyed by its slug."""
+    slug = _prompt_slug(name)
+    prompts = [p for p in load_saved_prompts() if p["name"] != slug]
+    prompts.append({
+        "name": slug,
+        "description": description.strip()[:MAX_PROMPT_DESC],
+        "body": body.strip()[:MAX_PROMPT_BODY],
+    })
+    _write_saved_prompts(prompts)
+    return prompts
+
+
+def delete_saved_prompt(name: str) -> list[dict]:
+    slug = _prompt_slug(name)
+    prompts = [p for p in load_saved_prompts() if p["name"] != slug]
+    _write_saved_prompts(prompts)
+    return prompts
+
+
+def export_prompt_to_claude(name: str) -> tuple[bool, str]:
+    """Write one prompt to `~/.claude/commands/<name>.md` as a custom command.
+
+    The file is Claude Code's documented custom-command format: an optional YAML
+    frontmatter block carrying the description, then the prompt body. Only ever
+    creates or overwrites the single file this prompt owns; nothing else under
+    ~/.claude is read, moved or removed. Explicit by design -- there is no code
+    path that writes here without the user asking for this prompt by name.
+    """
+    slug = _prompt_slug(name)
+    prompt = next((p for p in load_saved_prompts() if p["name"] == slug), None)
+    if prompt is None:
+        return False, "No such prompt to export."
+    front = ""
+    description = re.sub(r"\s+", " ", prompt["description"]).strip()
+    if description:
+        # A double-quoted YAML scalar so a colon or '#' in the description can
+        # never break the frontmatter; only backslash and quote need escaping.
+        safe = description.replace("\\", "\\\\").replace('"', '\\"')
+        front = f'---\ndescription: "{safe}"\n---\n\n'
+    body = prompt["body"]
+    text = front + body + ("" if body.endswith("\n") else "\n")
+    try:
+        CLAUDE_COMMANDS_DIR.mkdir(parents=True, exist_ok=True)
+        path = CLAUDE_COMMANDS_DIR / f"{slug}.md"
+        path.write_text(text, "utf-8")
+    except OSError as error:
+        return False, f"Could not write the command file: {error}"
+    return True, str(path)
+
+
 def spawn_agent(cwd: str, prompt: str, model: str | None,
                 allowed: list[dict], engine: str = "claude",
                 system_prompt: str = "", interactive: bool = False,
@@ -665,6 +832,135 @@ def spawn_interactive(cwd: str, prompt: str, model: str | None) -> tuple[bool, s
     return True, f"Opened an interactive claude in {Path(cwd).name}.", None
 
 
+# --- @-mention file search ---------------------------------------------------
+#
+# The chat composer's `@` autocomplete needs the files under a session's cwd,
+# ranked against what the user has typed so far. The whole set is listed first
+# and only the ranked *result* is capped -- never the pool searched over -- so a
+# match is never missed for being past an arbitrary cut-off in the raw list.
+
+MAX_FILE_RESULTS = 50
+# The repo path (git ls-files) is unbounded; this bounds only the os.walk
+# fallback so a non-repo home directory cannot turn one keystroke into a walk of
+# the whole disk. High enough that any ordinary project is listed in full.
+WALK_FILE_CAP = 20000
+
+
+def list_files(cwd: str) -> list[str]:
+    """Every path under `cwd`, relative to it, gitignore-aware.
+
+    Inside a git repo `git ls-files` is the source of truth: it already honours
+    .gitignore and every nested one, and `--others --exclude-standard` folds in
+    files that are new-but-not-ignored, so a file just written shows up before
+    it is committed. Run with cwd=cwd, git scopes and relativises to that
+    directory for free. Outside a repo -- or if git is missing -- a bounded
+    os.walk stands in, skipping .git, node_modules and dotdirs so it does not
+    wander into caches. The full set is returned; ranking and the cap happen on
+    top of it, never before.
+    """
+    tracked = _git_files(cwd)
+    if tracked is not None:
+        return tracked
+    return _walk_files(cwd)
+
+
+def _git_files(cwd: str) -> list[str] | None:
+    """Tracked + untracked-but-not-ignored paths, or None when cwd isn't a repo."""
+    try:
+        inside = subprocess.run(
+            ["git", "rev-parse", "--is-inside-work-tree"],
+            cwd=cwd, capture_output=True, text=True, timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if inside.returncode != 0 or inside.stdout.strip() != "true":
+        return None
+    paths: list[str] = []
+    seen: set[str] = set()
+    # Two passes, deduped: committed files first, then untracked-but-not-ignored.
+    for extra in ([], ["--others", "--exclude-standard"]):
+        try:
+            done = subprocess.run(
+                ["git", "ls-files", "-z"] + extra,
+                cwd=cwd, capture_output=True, text=True, timeout=15,
+            )
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if done.returncode != 0:
+            continue
+        for rel in done.stdout.split("\0"):
+            if rel and rel not in seen:
+                seen.add(rel)
+                paths.append(rel)
+    return paths
+
+
+def _walk_files(cwd: str) -> list[str]:
+    """A bounded, dotdir-skipping walk for directories that are not git repos."""
+    root = os.path.abspath(cwd)
+    skip = {".git", "node_modules"}
+    out: list[str] = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        # Prune in place so os.walk never descends into vcs/vendor/dot dirs.
+        dirnames[:] = [d for d in dirnames
+                       if d not in skip and not d.startswith(".")]
+        for name in filenames:
+            if name.startswith("."):
+                continue
+            out.append(os.path.relpath(os.path.join(dirpath, name), root))
+            if len(out) >= WALK_FILE_CAP:
+                return out
+    return out
+
+
+def _subseq(hay: str, needle: str) -> bool:
+    """True when every char of `needle` appears in order within `hay`."""
+    it = iter(hay)
+    return all(ch in it for ch in needle)
+
+
+def _file_score(path: str, q: str) -> int | None:
+    """A match score for `path` against a lower-cased `q`, or None for no match.
+
+    Higher is better, in tiers: the basename starts with q, the basename
+    contains q, the whole path contains q, and last, q is a scattered
+    subsequence of the path (so "webpy" still finds "web.py"). Ties break toward
+    shorter paths in rank_files, since the shorter one is usually meant.
+    """
+    low = path.lower()
+    base = low.rsplit("/", 1)[-1]
+    at = base.find(q)
+    if at == 0:
+        return 1000
+    if at > 0:
+        return 800 - at
+    at = low.find(q)
+    if at >= 0:
+        return 500 - min(at, 400)
+    if _subseq(low, q):
+        return 200
+    return None
+
+
+def rank_files(paths: list[str], query: str) -> list[str]:
+    """Best matches first for `query` over the full path set.
+
+    An empty query keeps the natural order (git's, or the walk's) so a bare `@`
+    still offers something. Otherwise every path is scored and the non-matches
+    drop out; shorter paths and a case-folded path break ties.
+    """
+    q = (query or "").strip().lower()
+    if not q:
+        return list(paths)
+    scored: list[tuple[int, str]] = []
+    for path in paths:
+        score = _file_score(path, q)
+        if score is not None:
+            scored.append((score, path))
+    scored.sort(key=lambda sp: (-sp[0], len(sp[1]), sp[1].lower()))
+    return [path for _score, path in scored]
+
+
 # --- the HTTP handler --------------------------------------------------------
 
 
@@ -753,6 +1049,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(200, {"projects": discover_projects(self.fleet.raw())})
         elif route == "/api/agents":
             self._send_json(200, {"agents": load_saved_agents()})
+        elif route == "/api/prompts":
+            self._send_json(200, {"prompts": load_saved_prompts()})
         elif route == "/api/sync":
             # The remote and branch to pre-fill the sync sheet with; never any
             # secret, because none is stored -- the transport is the user's git.
@@ -768,6 +1066,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(200, self.chat.state(self._one(query, "session")))
         elif route == "/api/transcript":
             self._get_transcript(query)
+        elif route == "/api/files":
+            self._get_files(query)
         else:
             self._send_json(404, {"error": "No such route."})
 
@@ -825,6 +1125,22 @@ class Handler(BaseHTTPRequestHandler):
         # The tail is the part you opened it to read.
         self._send_json(200, {"blocks": blocks[-600:]})
 
+    def _get_files(self, query: dict) -> None:
+        """Fuzzy file-path search under a session's cwd, for @-mention complete.
+
+        The whole tracked file set is searched, then ranked; only the returned
+        list is capped for UI sanity. cwd is validated as an existing directory
+        -- the composer hands its own open session's project path -- and a bad
+        path is a 400 rather than a walk of somewhere unexpected.
+        """
+        cwd = self._one(query, "cwd")
+        if not cwd or not os.path.isdir(cwd):
+            self._send_json(400, {"error": "cwd must be an existing directory."})
+            return
+        q = self._one(query, "q")
+        ranked = rank_files(list_files(cwd), q)
+        self._send_json(200, {"cwd": cwd, "q": q, "files": ranked[:MAX_FILE_RESULTS]})
+
     # -- POST ----------------------------------------------------------------
 
     def do_POST(self) -> None:  # noqa: N802
@@ -833,8 +1149,14 @@ class Handler(BaseHTTPRequestHandler):
         if not self._authorized(query):
             self._send_json(403, {"error": "Bad or missing token."})
             return
+        length = int(self.headers.get("Content-Length") or 0)
+        if length > MAX_BODY_BYTES:
+            # Refuse an oversized body without draining it; close the connection
+            # so its unread tail can't be misread as the next request.
+            self.close_connection = True
+            self._send_json(413, {"error": "Request body is too large."})
+            return
         try:
-            length = int(self.headers.get("Content-Length") or 0)
             body = json.loads(self.rfile.read(length) or b"{}")
         except (ValueError, OSError):
             self._send_json(400, {"error": "Bad JSON body."})
@@ -899,6 +1221,24 @@ class Handler(BaseHTTPRequestHandler):
                     str(body.get("systemPrompt") or ""))})
         elif route == "/api/agents/delete":
             self._send_json(200, {"agents": delete_saved_agent(str(body.get("name") or ""))})
+        elif route == "/api/prompts/save":
+            name = str(body.get("name") or "").strip()
+            if not _prompt_slug(name):
+                self._send_json(400, {"error": "A prompt needs a name with a letter or digit in it."})
+            elif not str(body.get("body") or "").strip():
+                self._send_json(400, {"error": "A prompt needs a body — the text /name expands to."})
+            else:
+                self._send_json(200, {"prompts": save_saved_prompt(
+                    name, str(body.get("description") or ""),
+                    str(body.get("body") or ""))})
+        elif route == "/api/prompts/delete":
+            self._send_json(200, {"prompts": delete_saved_prompt(str(body.get("name") or ""))})
+        elif route == "/api/prompts/export":
+            ok, message = export_prompt_to_claude(str(body.get("name") or ""))
+            if ok:
+                self._send_json(200, {"ok": True, "path": message})
+            else:
+                self._send_json(400, {"error": message})
         elif route == "/api/rename":
             self._rename(body)
         elif route == "/api/tags":
@@ -913,6 +1253,8 @@ class Handler(BaseHTTPRequestHandler):
             self._sync(body)
         elif route == "/api/chat":
             self._chat_send(body)
+        elif route == "/api/chat/upload":
+            self._chat_upload(body)
         elif route == "/api/chat/cancel":
             self.chat.cancel(str(body.get("sessionId") or ""))
             self._send_json(200, {"ok": True})
@@ -944,15 +1286,100 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(404, {"error": "Unknown session."})
             return
         message = str(body.get("message") or "").strip()
-        if not message:
+        # Attachments are absolute paths this server minted at /api/chat/upload
+        # and are validated back to that directory below, so a message can be an
+        # image alone. Only a turn with neither words nor image is empty.
+        attachments = self._valid_attachments(body.get("attachments"), session)
+        if not message and not attachments:
             self._send_json(400, {"error": "Say something to send."})
             return
         posture = str(body.get("posture") or chat.DEFAULT_POSTURE)
         # Optional per-turn model override (e.g. "sonnet"/"opus"/"haiku"); empty
         # keeps the CLI's configured default. cwd still comes from the session.
         model = str(body.get("model") or "")
-        self.chat.send(session.session_id, session.cwd, message, posture, model)
+        self.chat.send(session.session_id, session.cwd, message, posture, model,
+                       attachments)
         self._send_json(200, {"ok": True})
+
+    def _valid_attachments(self, raw: object, session) -> list[str]:
+        """Keep only paths that are real files inside this session's uploads dir.
+
+        The client sends back the absolute paths /api/chat/upload returned, but
+        a path from the client is never trusted on its face: each is resolved
+        and must still live under ~/.agentgrid/uploads/<session id> and exist,
+        so the send path can never be steered at an arbitrary file on disk.
+        """
+        if not isinstance(raw, list):
+            return []
+        try:
+            root = session_uploads_dir(session.session_id).resolve()
+        except OSError:
+            return []
+        kept: list[str] = []
+        for entry in raw:
+            if not isinstance(entry, str) or not entry:
+                continue
+            try:
+                candidate = Path(entry).resolve()
+            except OSError:
+                continue
+            if candidate.parent == root and candidate.is_file():
+                kept.append(str(candidate))
+        return kept
+
+    def _chat_upload(self, body: dict) -> None:
+        """Save a pasted image to this session's uploads dir; return its path.
+
+        The bytes arrive base64 in a JSON body -- the shape every other POST
+        here already uses, so no multipart parser is needed. They are validated
+        as a real image by magic bytes (not the client's content-type), capped
+        at MAX_UPLOAD_BYTES, and written under ~/.agentgrid/uploads/<session id>/
+        beside the app's other state. The absolute path returned is what a later
+        chat turn hands to `claude -p` to read.
+        """
+        session = self._session_by_id(str(body.get("sessionId") or ""))
+        if session is None:
+            self._send_json(404, {"error": "Unknown session."})
+            return
+        data = body.get("data")
+        if not isinstance(data, str) or not data:
+            self._send_json(400, {"error": "No image data."})
+            return
+        # Accept a bare base64 string or a full `data:` URL; keep what follows
+        # the comma either way.
+        if data.startswith("data:"):
+            comma = data.find(",")
+            data = data[comma + 1:] if comma >= 0 else ""
+        try:
+            raw = base64.b64decode(data, validate=True)
+        except (ValueError, binascii.Error):
+            self._send_json(400, {"error": "Image data was not valid base64."})
+            return
+        if not raw:
+            self._send_json(400, {"error": "No image data."})
+            return
+        if len(raw) > MAX_UPLOAD_BYTES:
+            self._send_json(413, {"error": (
+                f"Image is larger than {MAX_UPLOAD_BYTES // (1024 * 1024)} MB.")})
+            return
+        ext = image_extension(raw)
+        if ext is None:
+            self._send_json(400, {"error": (
+                "That does not look like a PNG, JPEG, GIF or WebP image.")})
+            return
+        # The random tag makes two pastes in the same second distinct filenames.
+        session_dir = session_uploads_dir(session.session_id)
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        filename = f"{stamp}-{secrets.token_hex(3)}-{safe_stem(body.get('name'))}.{ext}"
+        dest = session_dir / filename
+        try:
+            session_dir.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(raw)
+        except OSError as error:
+            self._send_json(500, {"error": f"Could not save the image: {error}"})
+            return
+        self._send_json(200, {"path": str(dest), "name": filename,
+                              "bytes": len(raw)})
 
     def _chat_stream(self, query: dict) -> None:
         """Server-Sent Events for one session's turns. Blocks in its own thread.

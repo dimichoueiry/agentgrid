@@ -491,6 +491,7 @@ details.tools .tfail{color:var(--failed)}
   <div class="toggles"><button id="alertsBtn" aria-pressed="false"
     title="Notify when an agent needs you or replies (while this tab is open)">Alerts</button></div>
   <div class="spacer"></div>
+  <button class="btn" id="syncBtn" title="Sync your notes to a GitHub repo">⟳ Sync</button>
   <button class="btn key" id="newBtn" title="Start a new agent  (n)">New agent</button>
   <input id="search" type="search" placeholder="Search  /" autocomplete="off">
   <div class="stamp" id="stamp" title="Last refresh"></div>
@@ -584,6 +585,25 @@ details.tools .tfail{color:var(--failed)}
       <span class="hint">&#8984;&#9166; starts</span>
       <button class="btn" id="naCancel">Cancel</button>
       <button class="btn key" id="naStart">Start</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal" id="syncModal" hidden>
+  <div class="sheet">
+    <div class="stitle">Sync notes</div>
+    <p class="hint" style="margin:0 0 4px">Pushes your notes to a GitHub repo and pulls anything new, using
+      your own git login — no token is stored. Session names, tags and read
+      state stay on this machine.</p>
+    <label>Repository <span class="hint">an SSH or HTTPS URL of a repo you can push to</span>
+      <input id="syncRemote" placeholder="git@github.com:you/agentgrid-notes.git" autocomplete="off" spellcheck="false"></label>
+    <label>Branch
+      <input id="syncBranch" placeholder="main" autocomplete="off" spellcheck="false"></label>
+    <div class="srow">
+      <span class="hint" id="syncStatus"></span>
+      <span class="spacer"></span>
+      <button class="btn" id="syncCancel">Close</button>
+      <button class="btn key" id="syncGo">Sync now</button>
     </div>
   </div>
 </div>
@@ -1776,6 +1796,42 @@ async function startAgent() {
   poll();
 }
 
+/* --------------------------------------------------------------------- sync */
+// One sheet does both jobs: it fills from the saved remote/branch, and the same
+// button saves and runs. No token ever leaves the machine — the transport is
+// the user's own git — so there is nothing secret to show or store here.
+function syncedAgo(ts) {
+  if (!ts) return "never synced";
+  return "last synced " + ageStr(Math.max(0, Date.now() / 1000 - ts));
+}
+async function openSync() {
+  $("syncStatus").textContent = "";
+  $("syncStatus").classList.remove("err");
+  let cfg = {};
+  try { cfg = await api("/api/sync"); } catch (e) { cfg = {}; }
+  $("syncRemote").value = cfg.remote || "";
+  $("syncBranch").value = cfg.branch || "main";
+  $("syncStatus").textContent = syncedAgo(cfg.lastSync);
+  $("syncModal").hidden = false;
+  $("syncRemote").focus();
+}
+function closeSync() { $("syncModal").hidden = true; }
+async function doSync() {
+  const remote = $("syncRemote").value.trim();
+  if (!remote) { $("syncStatus").textContent = "Enter a repository URL first."; $("syncStatus").classList.add("err"); return; }
+  $("syncGo").disabled = true;
+  $("syncStatus").classList.remove("err");
+  $("syncStatus").textContent = "Syncing…";
+  let r;
+  try {
+    r = await post("/api/sync", { remote, branch: $("syncBranch").value.trim() || "main" });
+  } catch (e) { r = { error: "Could not reach the server." }; }
+  finally { $("syncGo").disabled = false; }
+  if (r && r.error) { $("syncStatus").textContent = r.error; $("syncStatus").classList.add("err"); return; }
+  $("syncStatus").textContent = syncedAgo((r && r.lastSync) || Date.now() / 1000);
+  toast((r && r.message) || "Synced.");
+}
+
 /* -------------------------------------------------------------------- views */
 
 function setView(v) {
@@ -1862,6 +1918,13 @@ function bindEvents() {
     $("toggles").dataset.sig = ""; applyVisibility(); render();
   });
   $("newBtn").addEventListener("click", openNewAgent);
+  $("syncBtn").addEventListener("click", openSync);
+  $("syncCancel").addEventListener("click", closeSync);
+  $("syncGo").addEventListener("click", doSync);
+  ["syncRemote", "syncBranch"].forEach(id => $(id).addEventListener("keydown", e => {
+    if (e.key === "Enter") { e.preventDefault(); doSync(); }
+    else if (e.key === "Escape") closeSync();
+  }));
   $("search").addEventListener("input", () => { query = $("search").value; render(); });
   $("search").addEventListener("keydown", e => { if (e.key === "Escape") $("search").blur(); });
 

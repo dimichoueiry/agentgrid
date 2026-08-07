@@ -544,6 +544,28 @@ store. Mentions are read out of the pads on demand (120 days back) rather
 than indexed — an index would be one more thing able to disagree with the
 notes.
 
+## Syncing notes to GitHub
+
+Notes are plain markdown, so syncing them is a git problem. The **⟳ Sync**
+button (top right) turns `~/.agentgrid/notes/` into a small git repository and,
+on each click, commits what changed, pulls what the remote has, and pushes.
+Name a repo you can push to once — an SSH or HTTPS GitHub URL — and it is
+remembered; only the notes and their page arrangement travel, never the
+machine-local state (session names, tags, read positions).
+
+The transport is **your own git** — your SSH key or credential helper — so
+agentgrid stores no token or password, in keeping with the loopback, no-secrets
+posture everywhere else. There is nothing to paste and nothing to leak.
+
+The order of operations is the safety guarantee, because notes are the one
+thing here you cannot afford to lose: local changes are committed *before*
+anything is pulled, the pull is a rebase that is **aborted, never forced
+through**, the moment it conflicts, and nothing ever force-pushes or resets
+hard. A genuine conflict (two machines editing the same lines) is reported for
+you to merge by hand rather than resolved by guesswork. A second machine whose
+notes folder is empty adopts the remote outright, so getting set up elsewhere
+is one click.
+
 ## View modes
 
 Three ways to sit, remembered across restarts: **Board** (the columns alone),
@@ -672,7 +694,8 @@ Everything agentgrid itself writes lives under `~/.agentgrid/`:
 ├── tags.json           # tags per session
 ├── read.json           # how far you had read each session
 ├── note-meta.json      # page arrangement and pins
-└── notes/              # the daily pads, plain markdown
+├── sync.json           # notes-sync remote, branch and last-sync time (no secrets)
+└── notes/              # the daily pads, plain markdown (a git repo once you sync)
 ```
 
 Every state file is written atomically (write a temp file, then rename), so a

@@ -39,7 +39,7 @@ from datetime import date, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from agentgrid import discovery, notes, terminal, transcript
+from agentgrid import discovery, notes, sync, terminal, transcript
 
 STATIC = Path(__file__).resolve().parent / "static"
 POLL_SECONDS = 2.0
@@ -752,6 +752,15 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(200, {"projects": discover_projects(self.fleet.raw())})
         elif route == "/api/agents":
             self._send_json(200, {"agents": load_saved_agents()})
+        elif route == "/api/sync":
+            # The remote and branch to pre-fill the sync sheet with; never any
+            # secret, because none is stored -- the transport is the user's git.
+            config = sync.load_config()
+            self._send_json(200, {
+                "remote": config.get("remote", ""),
+                "branch": config.get("branch", sync.DEFAULT_BRANCH),
+                "lastSync": config.get("last_sync"),
+            })
         elif route == "/api/transcript":
             self._get_transcript(query)
         else:
@@ -895,8 +904,24 @@ class Handler(BaseHTTPRequestHandler):
             self._override(body)
         elif route == "/api/open":
             self._open(body)
+        elif route == "/api/sync":
+            self._sync(body)
         else:
             self._send_json(404, {"error": "No such route."})
+
+    def _sync(self, body: dict) -> None:
+        # Commit-pull-push the notes folder to the configured git remote. The
+        # sync module saves the remote/branch before touching the network, so a
+        # failure still leaves the sheet pre-filled next time.
+        ok, message = sync.sync_notes(
+            str(body.get("remote") or ""),
+            str(body.get("branch") or sync.DEFAULT_BRANCH),
+        )
+        if not ok:
+            self._send_json(400, {"error": message})
+            return
+        self._send_json(200, {"ok": True, "message": message,
+                              "lastSync": sync.load_config().get("last_sync")})
 
     # -- notes routes --------------------------------------------------------
 

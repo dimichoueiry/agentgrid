@@ -292,14 +292,18 @@ body.split .notes{
 }
 .x{font-size:16px;color:var(--text-3);padding:2px 8px;border-radius:5px}
 .x:hover{background:var(--card-hover);color:var(--text)}
-/* the metadata is capped so it can't push the conversation off screen — it
-   takes its natural height up to ~45% of the panel, scrolling within itself if
-   taller; the transcript below gets the rest and is its own scroll region */
-.pbody{flex:0 0 auto;max-height:45%;overflow-y:auto;padding:12px 16px 14px}
-/* the transcript owns the remaining height and scrolls independently, so it can
-   open on — and follow — the newest turn without the metadata in the way */
-.tsec{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;
-  padding:9px 16px 6px;border-top:1px solid var(--line)}
+/* two tabs: Chat (the conversation) is default; Details holds the session's
+   name, actions, tags, notes, move-to and facts. The active tab is a neutral
+   underline — the accent stays reserved for Send / the primary action. */
+.ptabs{display:flex;gap:2px;padding:6px 12px 0;flex:0 0 auto;border-bottom:1px solid var(--line)}
+.ptabs .tab{padding:6px 12px 8px;font-size:12.5px;color:var(--text-3);
+  border-bottom:2px solid transparent;margin-bottom:-1px}
+.ptabs .tab:hover{color:var(--text-2)}
+.ptabs .tab[aria-selected=true]{color:var(--text);font-weight:550;border-bottom-color:var(--text)}
+/* each tab's pane fills the panel and scrolls on its own; only one shows */
+.pbody{flex:1 1 auto;min-height:0;overflow-y:auto;padding:14px 16px 20px}
+.tsec{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;padding:10px 16px 6px}
+.tsec[hidden],.pbody[hidden]{display:none}
 .tsec .plabel{flex:0 0 auto}
 .prow{margin:0 0 14px}
 .plabel{font-size:11.5px;color:var(--text-3);margin:0 0 4px}
@@ -584,15 +588,19 @@ details.cthink[open]>summary::before{transform:rotate(90deg)}
     <div class="ptitle" id="pTitle"></div>
     <button class="x" id="pClose" title="Close">&#215;</button>
   </div>
-  <div class="pbody" id="pBody"></div>
-  <!-- The conversation is its own scroll region so it opens on, and follows,
-       the newest turn — the metadata above never pushes it out of reach. -->
+  <!-- Chat first; the session's details sit behind a second tab, so opening a
+       session lands you in the conversation, not in its metadata. -->
+  <div class="ptabs" id="pTabs" role="tablist">
+    <button class="tab" data-tab="chat" role="tab" aria-selected="true">Chat</button>
+    <button class="tab" data-tab="details" role="tab" aria-selected="false">Details</button>
+  </div>
+  <!-- Chat tab: the conversation as its own scroll region, composer below. -->
   <div class="tsec" id="tSec">
     <div class="plabel" id="tTail"></div>
     <div class="tscroll" id="tScroll"></div>
   </div>
-  <!-- The composer: the transcript above is the conversation, this is where you
-       add to it. Hidden for sessions the Claude CLI can't resume (Codex). -->
+  <!-- The composer. Hidden off the Chat tab, and for sessions the Claude CLI
+       can't resume (Codex). -->
   <div class="pfoot" id="pFoot" hidden>
     <div class="cstatus" id="cStatus"></div>
     <div class="compose">
@@ -614,6 +622,8 @@ details.cthink[open]>summary::before{transform:rotate(90deg)}
       <span class="chint"><span class="kc">&#9166;</span> send &nbsp;·&nbsp; <span class="kc">&#8679;&#9166;</span> newline</span>
     </div>
   </div>
+  <!-- Details tab: name, actions, tags, notes, move-to, facts, roster. -->
+  <div class="pbody" id="pBody" hidden></div>
 </aside>
 
 <div class="modal" id="modal" hidden>
@@ -1068,6 +1078,7 @@ function openSession(id) {
   }
   renderPanel(); refreshTranscript(); loadMentions(); render();
   chatOpen(id, s ? s.engine : "");   // the panel is the chat: wire up the composer + live stream
+  setPanelTab("chat");               // open on the conversation; details are a tab away
 }
 
 function closePanel() {
@@ -1087,6 +1098,7 @@ function closePanel() {
    (queued count from /api/chat/state). Stop hits /api/chat/cancel. §6.3 only. */
 
 let chatSrc = null, chatRunning = false, chatQueued = 0;
+let panelTab = "chat", chatDisabled = false;   // Chat vs Details; codex = no composer
 let chatPosture = localStorage.getItem("agentgrid.chatPosture") || "auto";
 let chatModel = localStorage.getItem("agentgrid.chatModel") || "";   // "" = CLI default
 let chatDone = "";                 // the transient "Done · …" / "Stopped" line
@@ -1096,10 +1108,10 @@ const chatTools = new Map();       // tool_use id -> its live trace element
 function chatOpen(id, engine) {
   chatClose();                     // drop any previous session's stream/state
   chatDone = ""; chatRunning = false; chatQueued = 0; chatTools.clear();
-  // chat drives the Claude CLI; a Codex session can't be resumed by it
-  const chattable = engine !== "codex";
-  $("pFoot").hidden = !chattable;
-  if (!chattable) return;
+  // chat drives the Claude CLI; a Codex session can't be resumed by it — the
+  // Chat tab still shows its transcript, there's just no composer or live stream
+  chatDisabled = engine === "codex";
+  if (chatDisabled) return;
   document.querySelectorAll("#cPosture button").forEach(b =>
     b.setAttribute("aria-pressed", String(b.dataset.posture === chatPosture)));
   $("cModel").value = chatModel;
@@ -1107,6 +1119,23 @@ function chatOpen(id, engine) {
   chatSetStatus();
   chatConnect(id);
   chatSyncState();
+}
+
+// Chat (default) shows the conversation + composer; Details shows the session's
+// name, tags, notes, move-to and facts. One pane at a time; the composer only
+// exists on Chat (and never for a Codex session).
+function setPanelTab(tab) {
+  panelTab = tab === "details" ? "details" : "chat";
+  const chat = panelTab === "chat";
+  document.querySelectorAll("#pTabs .tab").forEach(b =>
+    b.setAttribute("aria-selected", String(b.dataset.tab === panelTab)));
+  $("tSec").hidden = !chat;
+  $("pFoot").hidden = !chat || chatDisabled;
+  $("pBody").hidden = chat;
+  if (chat) {
+    const t = $("tScroll"); if (t) t.scrollTop = t.scrollHeight;   // land on the newest turn
+    if (!chatDisabled) { const ta = $("cInput"); if (ta) setTimeout(() => ta.focus(), 20); }
+  }
 }
 
 function chatClose() {
@@ -1424,7 +1453,7 @@ async function refreshTranscript() {
   const host = $("tScroll");
   const nearBottom = host.scrollHeight - host.scrollTop - host.clientHeight < 60;
   $("tTail").textContent = blocks.length >= 600
-    ? "Transcript — showing the tail (last 600 blocks)" : "Transcript";
+    ? "Showing the tail — last 600 turns" : "";
   host.innerHTML = blocksHtml(blocks) ||
     `<div class="mvnote">Nothing here yet.</div>`;
   if (transFirst || nearBottom) host.scrollTop = host.scrollHeight;
@@ -2293,6 +2322,10 @@ function bindEvents() {
   // panel
   $("pClose").addEventListener("click", closePanel);
   $("scrim").addEventListener("click", closePanel);
+  $("pTabs").addEventListener("click", e => {
+    const b = e.target.closest("button[data-tab]");
+    if (b) setPanelTab(b.dataset.tab);
+  });
 
   // chat composer (inside the session panel)
   $("cSend").addEventListener("click", chatSend);

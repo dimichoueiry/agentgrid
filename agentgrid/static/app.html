@@ -292,7 +292,19 @@ body.split .notes{
 }
 .x{font-size:16px;color:var(--text-3);padding:2px 8px;border-radius:5px}
 .x:hover{background:var(--card-hover);color:var(--text)}
-.pbody{flex:1;min-height:0;overflow-y:auto;padding:12px 16px 20px}
+/* two tabs: Chat (the conversation) is default; Details holds the session's
+   name, actions, tags, notes, move-to and facts. The active tab is a neutral
+   underline — the accent stays reserved for Send / the primary action. */
+.ptabs{display:flex;gap:2px;padding:6px 12px 0;flex:0 0 auto;border-bottom:1px solid var(--line)}
+.ptabs .tab{padding:6px 12px 8px;font-size:12.5px;color:var(--text-3);
+  border-bottom:2px solid transparent;margin-bottom:-1px}
+.ptabs .tab:hover{color:var(--text-2)}
+.ptabs .tab[aria-selected=true]{color:var(--text);font-weight:550;border-bottom-color:var(--text)}
+/* each tab's pane fills the panel and scrolls on its own; only one shows */
+.pbody{flex:1 1 auto;min-height:0;overflow-y:auto;padding:14px 16px 20px}
+.tsec{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;padding:10px 16px 6px}
+.tsec[hidden],.pbody[hidden]{display:none}
+.tsec .plabel{flex:0 0 auto}
 .prow{margin:0 0 14px}
 .plabel{font-size:11.5px;color:var(--text-3);margin:0 0 4px}
 .prow .facts{font-size:11.5px;color:var(--text-2);line-height:1.7}
@@ -323,7 +335,7 @@ body.split .notes{
 .rtype{flex:0 0 auto;font-size:10.5px;color:var(--text-3)}
 
 /* transcript: both speakers get the same shape; hue is the only difference */
-.tscroll{min-height:120px}
+.tscroll{flex:1 1 auto;min-height:0;overflow-y:auto}
 .tailnote{font-size:10.5px;color:var(--text-3);margin:0 0 8px}
 .msg{background:var(--card);border-radius:7px;padding:10px 13px;margin:0 0 12px}
 .msg.user{border-left:2px solid var(--you)}
@@ -372,6 +384,49 @@ details.tools .tfail{color:var(--failed)}
 .mline.done:hover{opacity:1}
 .qa{display:flex;gap:5px;margin-top:6px}
 .qa input{flex:1;min-width:0;font-size:12px;padding:4px 8px}
+
+/* ---------- chat composer (lives inside the session panel) ---------- */
+/* The detail panel IS the chat. Its transcript (loaded from /api/transcript
+   every poll) is the persistent, disk-backed history — close and reopen and it
+   re-reads from disk, so nothing is lost. This footer is where you type; a
+   live turn streams straight into that transcript using the same .msg / .trace
+   shapes a saved turn uses, so live and settled read as one thing. The one
+   accent is Send and the queued count; the working dot is the board's 1.8s
+   breathe, and nothing else moves. */
+.pfoot{flex:0 0 auto;border-top:1px solid var(--line);padding:9px 16px 12px;background:var(--bg)}
+.pfoot[hidden]{display:none}
+.cstatus{display:flex;align-items:center;gap:7px;min-height:15px;margin:0 0 7px;
+  font-size:11px;color:var(--text-3);font-variant-numeric:tabular-nums}
+.cstatus .cdot{width:6px;height:6px;border-radius:50%;background:var(--text-2);
+  flex:0 0 auto;animation:breathe 1.8s ease-in-out infinite}
+.cstatus.err{color:var(--failed)}
+/* outstanding work you started: the one place the accent earns its keep here */
+.cqueue{color:var(--accent);font-weight:600}
+.compose{display:flex;gap:7px;align-items:flex-end}
+#cInput{flex:1;min-width:0;resize:none;height:38px;max-height:150px;padding:8px 10px;
+  font:13.5px/1.5 var(--sans);border-color:var(--line-2)}
+#cInput:focus{border-color:var(--accent)}
+/* secondary controls sit below the composer: posture, model, and the key hint */
+.cctl{display:flex;align-items:center;gap:8px;margin-top:8px}
+/* posture: the top bar's segmented control, reused verbatim */
+.seg{display:flex;border:1px solid var(--line-2);border-radius:6px;overflow:hidden;flex:0 0 auto}
+.seg button{padding:3px 10px;font-size:11.5px;color:var(--text-2)}
+.seg button+button{border-left:1px solid var(--line)}
+.seg button[aria-pressed=true]{background:var(--card-hover);color:var(--text);font-weight:550}
+.cctl select{flex:0 0 auto;font-size:11.5px;padding:3px 8px;color:var(--text-2);max-width:118px}
+.chint{font-size:10.5px;color:var(--text-3);margin-left:auto;white-space:nowrap}
+.chint .kc{color:var(--text-2)}
+/* thinking + error, when streamed live into the transcript (tool calls reuse
+   the transcript's own .trace/.tcall/.tres, so no extra rules are needed) */
+details.cthink{margin:0 0 12px}
+details.cthink>summary{list-style:none;font-family:var(--mono);font-size:10.5px;
+  color:var(--text-3);padding:1px 2px}
+details.cthink>summary::-webkit-details-marker{display:none}
+details.cthink>summary::before{content:"\203A";display:inline-block;margin-right:5px;
+  transition:transform .12s var(--ease)}
+details.cthink[open]>summary::before{transform:rotate(90deg)}
+.cthink .tthink{white-space:pre-wrap;overflow-wrap:anywhere;color:var(--text-3);padding:2px 2px 0 14px}
+.cerr{font-size:11.5px;color:var(--failed);margin:0 0 12px;padding:0 2px;overflow-wrap:anywhere}
 
 /* ---------- modal sheets ---------- */
 .modal{
@@ -533,7 +588,42 @@ details.tools .tfail{color:var(--failed)}
     <div class="ptitle" id="pTitle"></div>
     <button class="x" id="pClose" title="Close">&#215;</button>
   </div>
-  <div class="pbody" id="pBody"></div>
+  <!-- Chat first; the session's details sit behind a second tab, so opening a
+       session lands you in the conversation, not in its metadata. -->
+  <div class="ptabs" id="pTabs" role="tablist">
+    <button class="tab" data-tab="chat" role="tab" aria-selected="true">Chat</button>
+    <button class="tab" data-tab="details" role="tab" aria-selected="false">Details</button>
+  </div>
+  <!-- Chat tab: the conversation as its own scroll region, composer below. -->
+  <div class="tsec" id="tSec">
+    <div class="plabel" id="tTail"></div>
+    <div class="tscroll" id="tScroll"></div>
+  </div>
+  <!-- The composer. Hidden off the Chat tab, and for sessions the Claude CLI
+       can't resume (Codex). -->
+  <div class="pfoot" id="pFoot" hidden>
+    <div class="cstatus" id="cStatus"></div>
+    <div class="compose">
+      <textarea id="cInput" rows="1" placeholder="Message this session…"></textarea>
+      <button class="btn" id="cStop" title="Stop the current turn" hidden>Stop</button>
+      <button class="btn key" id="cSend">Send</button>
+    </div>
+    <div class="cctl">
+      <div class="seg" id="cPosture" role="group" aria-label="Permission posture">
+        <button data-posture="auto" aria-pressed="true" title="Run every tool without asking — Stop is the guard">Auto</button>
+        <button data-posture="read-only" aria-pressed="false" title="Explore and answer without changing anything on disk">Read-only</button>
+      </div>
+      <select id="cModel" title="Model for the next turn — Default uses your Claude Code default">
+        <option value="">Default</option>
+        <option value="sonnet">Sonnet</option>
+        <option value="opus">Opus</option>
+        <option value="haiku">Haiku</option>
+      </select>
+      <span class="chint"><span class="kc">&#9166;</span> send &nbsp;·&nbsp; <span class="kc">&#8679;&#9166;</span> newline</span>
+    </div>
+  </div>
+  <!-- Details tab: name, actions, tags, notes, move-to, facts, roster. -->
+  <div class="pbody" id="pBody" hidden></div>
 </aside>
 
 <div class="modal" id="modal" hidden>
@@ -642,6 +732,22 @@ const post = (p, body) => api(p, {
 const $ = (id) => document.getElementById(id);
 const esc = (t) => String(t ?? "").replace(/[&<>"']/g, c =>
   ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+
+// A slash command is stored in the transcript wrapped in Claude Code's own
+// tags (<command-name>/loop</command-name>, <command-args>…</command-args>,
+// <local-command-stdout>…</local-command-stdout>). Left raw they render as
+// escaped plumbing; fold them into a clean "/loop …" line before md() runs.
+function cleanSlash(raw) {
+  const t = String(raw ?? "");
+  if (t.indexOf("<command-") < 0 && t.indexOf("<local-command-") < 0) return t;
+  return t
+    .replace(/<command-message>[\s\S]*?<\/command-message>/g, "")
+    .replace(/<command-name>\s*([\s\S]*?)\s*<\/command-name>/g, "**$1** ")
+    .replace(/<command-args>\s*([\s\S]*?)\s*<\/command-args>/g, "$1")
+    .replace(/<local-command-std(?:out|err)>\s*([\s\S]*?)\s*<\/local-command-std(?:out|err)>/g, "$1")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
 
 const todayIso = () => {
   const d = new Date();
@@ -959,8 +1065,10 @@ function openSession(id) {
   // decided about this session, which outrank the transcript you already read.
   $("pBody").innerHTML =
     `<div id="pMeta"></div><div class="prow" id="pNotes"></div><div id="pMore"></div>` +
-    `<div id="pRoster" class="prow"></div>` +
-    `<div class="prow"><div class="plabel" id="tTail"></div><div class="tscroll" id="tScroll"></div></div>`;
+    `<div id="pRoster" class="prow"></div>`;
+  // the transcript is a static section below the metadata now; clear the last
+  // session's turns so they don't flash before this one's load resolves
+  $("tScroll").innerHTML = ""; $("tTail").textContent = "";
   $("panel").classList.add("on"); $("scrim").classList.add("on");
   const s = sessions.find(x => x.sessionId === id);
   if (s) {
@@ -969,12 +1077,246 @@ function openSession(id) {
     s.unread = false;
   }
   renderPanel(); refreshTranscript(); loadMentions(); render();
+  chatOpen(id, s ? s.engine : "");   // the panel is the chat: wire up the composer + live stream
+  setPanelTab("chat");               // open on the conversation; details are a tab away
 }
 
 function closePanel() {
   openId = null; openAgent = null;
+  chatClose();
   $("panel").classList.remove("on"); $("scrim").classList.remove("on");
   render();
+}
+
+/* --------------------------------------------------------- chat (in panel) */
+/* The session panel is the chat. Its transcript (from /api/transcript, polled)
+   is the persistent history — close and reopen re-reads it from disk, so a
+   conversation is never lost. This module opens one EventSource per open panel
+   and streams a live turn straight into #tScroll using the same .msg / .trace
+   shapes a saved turn uses; when the turn lands on disk the poll reconciles.
+   Sends go to /api/chat with posture + model, and enqueue while a turn runs
+   (queued count from /api/chat/state). Stop hits /api/chat/cancel. §6.3 only. */
+
+let chatSrc = null, chatRunning = false, chatQueued = 0;
+let panelTab = "chat", chatDisabled = false;   // Chat vs Details; codex = no composer
+let chatPosture = localStorage.getItem("agentgrid.chatPosture") || "auto";
+let chatModel = localStorage.getItem("agentgrid.chatModel") || "";   // "" = CLI default
+let chatDone = "";                 // the transient "Done · …" / "Stopped" line
+const chatTools = new Map();       // tool_use id -> its live trace element
+
+// called from openSession once the panel is showing this id
+function chatOpen(id, engine) {
+  chatClose();                     // drop any previous session's stream/state
+  chatDone = ""; chatRunning = false; chatQueued = 0; chatTools.clear();
+  // chat drives the Claude CLI; a Codex session can't be resumed by it — the
+  // Chat tab still shows its transcript, there's just no composer or live stream
+  chatDisabled = engine === "codex";
+  if (chatDisabled) return;
+  document.querySelectorAll("#cPosture button").forEach(b =>
+    b.setAttribute("aria-pressed", String(b.dataset.posture === chatPosture)));
+  $("cModel").value = chatModel;
+  const ta = $("cInput"); ta.value = ""; chatGrow(ta);
+  chatSetStatus();
+  chatConnect(id);
+  chatSyncState();
+}
+
+// Chat (default) shows the conversation + composer; Details shows the session's
+// name, tags, notes, move-to and facts. One pane at a time; the composer only
+// exists on Chat (and never for a Codex session).
+function setPanelTab(tab) {
+  panelTab = tab === "details" ? "details" : "chat";
+  const chat = panelTab === "chat";
+  document.querySelectorAll("#pTabs .tab").forEach(b =>
+    b.setAttribute("aria-selected", String(b.dataset.tab === panelTab)));
+  $("tSec").hidden = !chat;
+  $("pFoot").hidden = !chat || chatDisabled;
+  $("pBody").hidden = chat;
+  if (chat) {
+    const t = $("tScroll"); if (t) t.scrollTop = t.scrollHeight;   // land on the newest turn
+    if (!chatDisabled) { const ta = $("cInput"); if (ta) setTimeout(() => ta.focus(), 20); }
+  }
+}
+
+function chatClose() {
+  if (chatSrc) { chatSrc.close(); chatSrc = null; }
+  chatRunning = false; chatQueued = 0; chatDone = "";
+}
+
+function chatConnect(id) {
+  if (chatSrc) chatSrc.close();
+  // token rides in the query string — EventSource cannot set a header
+  const src = new EventSource(
+    `/api/chat/stream?session=${encodeURIComponent(id)}&t=${encodeURIComponent(TOKEN)}`);
+  chatSrc = src;
+  src.onmessage = (e) => {
+    if (id !== openId) return;       // a stale stream from a previous open
+    let ev; try { ev = JSON.parse(e.data); } catch (_) { return; }
+    chatOnEvent(ev);
+  };
+  // EventSource reconnects on its own; a transient error needs no handling.
+}
+
+// append a live node into the transcript, keeping the panel pinned to the tail
+// only if the reader is already there (#pBody is the scroll container)
+function chatAppend(html) {
+  const host = $("tScroll"); if (!host) return null;
+  // stay pinned to the newest turn only if the reader is already near it
+  const near = host.scrollHeight - host.scrollTop - host.clientHeight < 130;
+  host.insertAdjacentHTML("beforeend", html);
+  if (near) host.scrollTop = host.scrollHeight;
+  return host.lastElementChild;
+}
+
+function chatOnEvent(ev) {
+  switch (ev.type) {
+    case "turn_started":
+      chatRunning = true; chatDone = ""; chatTools.clear();
+      chatSetStatus();
+      break;
+    case "assistant_message":
+      if ((ev.text || "").trim())
+        chatAppend(`<div class="msg assistant"><div class="who">CLAUDE</div>` +
+          `<div class="body">${md(ev.text)}</div></div>`);
+      break;
+    case "thinking":
+      if ((ev.text || "").trim())
+        chatAppend(`<details class="cthink"><summary>thinking</summary>` +
+          `<div class="tthink">${esc(ev.text)}</div></details>`);
+      break;
+    case "tool_use": {
+      const g = chatToolGist(ev.name, ev.input);
+      // the transcript's own trace shape, so live and reconciled look identical
+      const el = chatAppend(`<div class="trace"><div class="tcall">` +
+        `<span class="tname">${esc(g.verb)}</span> ${esc(g.obj)}</div></div>`);
+      if (ev.id && el) chatTools.set(ev.id, el);
+      break;
+    }
+    case "tool_result": {
+      const el = ev.id && chatTools.get(ev.id);
+      if (el) {
+        const sum = ev.summary || (ev.ok ? "done" : "failed");
+        el.insertAdjacentHTML("beforeend",
+          `<div class="tres${ev.ok ? "" : " err"}">${esc(sum)}</div>`);
+        const sc = $("tScroll");
+        if (sc && sc.scrollHeight - sc.scrollTop - sc.clientHeight < 160)
+          sc.scrollTop = sc.scrollHeight;
+      }
+      break;
+    }
+    case "turn_done":
+      chatRunning = false;
+      chatDone = ev.cancelled ? "Stopped."
+        : ev.ok ? chatDoneLine(ev.stats)
+        : "Turn ended with an error.";
+      chatSyncState();     // the queued count may have just drained into a new turn
+      chatSetStatus();
+      // the turn is on disk now; let the resumed poll reconcile the live nodes
+      // with the canonical transcript (identical content, so no visible jump)
+      break;
+    case "error":
+      chatRunning = false; chatDone = "";
+      // state the cause in the stream where the reader is looking
+      chatAppend(`<div class="cerr">⚠ ${esc(ev.message || "Something went wrong.")}</div>`);
+      chatSetStatus();
+      break;
+  }
+}
+
+function chatDoneLine(stats) {
+  stats = stats || {};
+  const bits = ["Done"];
+  if (stats.durationMs) bits.push((stats.durationMs / 1000).toFixed(1) + "s");
+  if (stats.numTurns) bits.push(stats.numTurns + " turn" + (stats.numTurns > 1 ? "s" : ""));
+  // On a subscription this is an EQUIVALENT cost, never billed — so it is shown
+  // tiny and labelled "equiv", never as a headline dollar figure.
+  if (typeof stats.costUsd === "number") bits.push("equiv $" + stats.costUsd.toFixed(2));
+  return bits.join(" · ");
+}
+
+function chatSetStatus() {
+  const el = $("cStatus"); if (!el) return;
+  el.classList.toggle("err", /error/i.test(chatDone));
+  let html = "";
+  if (chatRunning) html = `<span class="cdot"></span>Working…`;
+  else if (chatDone) html = esc(chatDone);
+  if (chatQueued > 0)
+    html += `${html ? " · " : ""}<span class="cqueue">${chatQueued} queued</span>`;
+  el.innerHTML = html;
+  // Send always sends (it enqueues while running); Stop shows only mid-turn
+  $("cStop").hidden = !chatRunning;
+}
+
+async function chatSyncState() {
+  const id = openId; if (!id) return;
+  let st;
+  try { st = await api(`/api/chat/state?session=${encodeURIComponent(id)}`); }
+  catch (_) { return; }
+  if (id !== openId || !st) return;
+  chatQueued = st.queued || 0;
+  if (typeof st.running === "boolean" && !chatRunning) chatRunning = st.running;
+  chatSetStatus();
+}
+
+async function chatSend() {
+  const ta = $("cInput"); if (!ta) return;
+  const msg = ta.value.trim();
+  if (!msg || !openId) return;
+  const id = openId;
+  ta.value = ""; chatGrow(ta);
+  // show Working at once (also suspends the poll's disk refresh, so the live
+  // nodes below survive until the turn lands on disk and the poll reconciles)
+  chatRunning = true; chatSetStatus();
+  // optimistic echo: the CLI never streams the user's own message back
+  chatAppend(`<div class="msg user"><div class="who">YOU</div>` +
+    `<div class="body">${md(msg)}</div></div>`);
+  const r = await post("/api/chat",
+    {sessionId: id, message: msg, posture: chatPosture, model: chatModel});
+  if (id !== openId) return;
+  if (r && r.error) {
+    chatRunning = false;
+    chatAppend(`<div class="cerr">⚠ ${esc(r.error)}</div>`);
+    chatSetStatus();
+  } else chatSyncState();     // reflect running / queued from the backend
+  $("cInput").focus();
+}
+
+function chatStop() {
+  if (!openId) return;
+  post("/api/chat/cancel", {sessionId: openId}).then(() => chatSyncState());
+}
+
+// keep the composer one line until it needs more, capped so it never eats the list
+function chatGrow(ta) {
+  ta.style.height = "auto";
+  ta.style.height = Math.min(ta.scrollHeight, 150) + "px";
+}
+
+// a human verb + a short object for a tool call, e.g. "Edited web.py"
+function chatToolGist(name, input) {
+  input = input || {};
+  const base = p => String(p || "").split("/").pop() || String(p || "");
+  const clip = (t, n) => {
+    t = String(t || "").replace(/\s+/g, " ").trim();
+    return t.length > n ? t.slice(0, n) + "…" : t;
+  };
+  switch (name) {
+    case "Edit": case "MultiEdit": case "NotebookEdit":
+      return {verb: "Edited", obj: base(input.file_path || input.notebook_path)};
+    case "Write": return {verb: "Wrote", obj: base(input.file_path)};
+    case "Read": return {verb: "Read", obj: base(input.file_path)};
+    case "Bash": return {verb: "Ran", obj: clip(input.command, 60)};
+    case "Grep": return {verb: "Searched", obj: clip(input.pattern, 48)};
+    case "Glob": return {verb: "Globbed", obj: clip(input.pattern, 48)};
+    case "WebFetch": return {verb: "Fetched", obj: clip(input.url, 48)};
+    case "WebSearch": return {verb: "Searched web", obj: clip(input.query, 48)};
+    case "Task": return {verb: "Ran agent", obj: clip(input.description || input.subagent_type, 48)};
+    case "TodoWrite": return {verb: "Updated", obj: "todos"};
+    default: {
+      const v = Object.values(input).find(x => typeof x === "string");
+      return {verb: name || "Tool", obj: v ? clip(v, 52) : ""};
+    }
+  }
 }
 
 const TAG_VOCAB = ["PR review", "Bug fix", "Feature", "Spike", "Task", "Chore"];
@@ -1111,7 +1453,7 @@ async function refreshTranscript() {
   const host = $("tScroll");
   const nearBottom = host.scrollHeight - host.scrollTop - host.clientHeight < 60;
   $("tTail").textContent = blocks.length >= 600
-    ? "Transcript — showing the tail (last 600 blocks)" : "Transcript";
+    ? "Showing the tail — last 600 turns" : "";
   host.innerHTML = blocksHtml(blocks) ||
     `<div class="mvnote">Nothing here yet.</div>`;
   if (transFirst || nearBottom) host.scrollTop = host.scrollHeight;
@@ -1132,7 +1474,7 @@ function blocksHtml(blocks) {
       html += traceHtml(run);
     } else if (b.kind === "user" || b.kind === "assistant") {
       html += `<div class="msg ${b.kind}"><div class="who">${b.kind === "user" ? "YOU" : "CLAUDE"}</div>` +
-        `<div class="body">${md(b.text)}</div></div>`;
+        `<div class="body">${md(cleanSlash(b.text))}</div></div>`;
     }
   }
   return html;
@@ -1897,7 +2239,10 @@ async function poll() {
     (polledAt ? new Date(polledAt * 1000).toLocaleTimeString() : "");
   stamp.title = fleetError || "Last refresh";
   renderSelects(); render();
-  if (openId) { renderPanel(); refreshTranscript(); }
+  // While a live turn streams, the SSE owns #tScroll — skip the disk refresh so
+  // it can't clobber the in-flight nodes; once the turn lands the poll resumes
+  // and reconciles to the persistent, on-disk transcript.
+  if (openId) { renderPanel(); if (!chatRunning) refreshTranscript(); }
 }
 
 /* ------------------------------------------------------------------- events */
@@ -1977,6 +2322,32 @@ function bindEvents() {
   // panel
   $("pClose").addEventListener("click", closePanel);
   $("scrim").addEventListener("click", closePanel);
+  $("pTabs").addEventListener("click", e => {
+    const b = e.target.closest("button[data-tab]");
+    if (b) setPanelTab(b.dataset.tab);
+  });
+
+  // chat composer (inside the session panel)
+  $("cSend").addEventListener("click", chatSend);
+  $("cStop").addEventListener("click", chatStop);
+  $("cPosture").addEventListener("click", e => {
+    const b = e.target.closest("button[data-posture]"); if (!b) return;
+    chatPosture = b.dataset.posture;
+    localStorage.setItem("agentgrid.chatPosture", chatPosture);   // a view preference, remembered
+    document.querySelectorAll("#cPosture button").forEach(x =>
+      x.setAttribute("aria-pressed", String(x === b)));
+  });
+  $("cModel").addEventListener("change", e => {
+    chatModel = e.target.value;                                   // applies to the next turn sent
+    localStorage.setItem("agentgrid.chatModel", chatModel);       // a view preference, remembered
+  });
+  const cin = $("cInput");
+  cin.addEventListener("input", () => chatGrow(cin));
+  cin.addEventListener("keydown", e => {
+    // Enter sends; Shift+Enter is a newline (the textarea's default)
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); chatSend(); }
+  });
+
   $("panel").addEventListener("click", e => {
     const mv = e.target.closest("button.mv");
     if (mv) { moveSession(openId, mv.dataset.to); return; }

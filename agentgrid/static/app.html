@@ -292,7 +292,15 @@ body.split .notes{
 }
 .x{font-size:16px;color:var(--text-3);padding:2px 8px;border-radius:5px}
 .x:hover{background:var(--card-hover);color:var(--text)}
-.pbody{flex:1;min-height:0;overflow-y:auto;padding:12px 16px 20px}
+/* the metadata is capped so it can't push the conversation off screen — it
+   takes its natural height up to ~45% of the panel, scrolling within itself if
+   taller; the transcript below gets the rest and is its own scroll region */
+.pbody{flex:0 0 auto;max-height:45%;overflow-y:auto;padding:12px 16px 14px}
+/* the transcript owns the remaining height and scrolls independently, so it can
+   open on — and follow — the newest turn without the metadata in the way */
+.tsec{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;
+  padding:9px 16px 6px;border-top:1px solid var(--line)}
+.tsec .plabel{flex:0 0 auto}
 .prow{margin:0 0 14px}
 .plabel{font-size:11.5px;color:var(--text-3);margin:0 0 4px}
 .prow .facts{font-size:11.5px;color:var(--text-2);line-height:1.7}
@@ -323,7 +331,7 @@ body.split .notes{
 .rtype{flex:0 0 auto;font-size:10.5px;color:var(--text-3)}
 
 /* transcript: both speakers get the same shape; hue is the only difference */
-.tscroll{min-height:120px}
+.tscroll{flex:1 1 auto;min-height:0;overflow-y:auto}
 .tailnote{font-size:10.5px;color:var(--text-3);margin:0 0 8px}
 .msg{background:var(--card);border-radius:7px;padding:10px 13px;margin:0 0 12px}
 .msg.user{border-left:2px solid var(--you)}
@@ -577,8 +585,14 @@ details.cthink[open]>summary::before{transform:rotate(90deg)}
     <button class="x" id="pClose" title="Close">&#215;</button>
   </div>
   <div class="pbody" id="pBody"></div>
-  <!-- The composer: the panel's transcript is the conversation, this is where
-       you add to it. Hidden for sessions the Claude CLI can't resume (Codex). -->
+  <!-- The conversation is its own scroll region so it opens on, and follows,
+       the newest turn — the metadata above never pushes it out of reach. -->
+  <div class="tsec" id="tSec">
+    <div class="plabel" id="tTail"></div>
+    <div class="tscroll" id="tScroll"></div>
+  </div>
+  <!-- The composer: the transcript above is the conversation, this is where you
+       add to it. Hidden for sessions the Claude CLI can't resume (Codex). -->
   <div class="pfoot" id="pFoot" hidden>
     <div class="cstatus" id="cStatus"></div>
     <div class="compose">
@@ -708,6 +722,22 @@ const post = (p, body) => api(p, {
 const $ = (id) => document.getElementById(id);
 const esc = (t) => String(t ?? "").replace(/[&<>"']/g, c =>
   ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+
+// A slash command is stored in the transcript wrapped in Claude Code's own
+// tags (<command-name>/loop</command-name>, <command-args>…</command-args>,
+// <local-command-stdout>…</local-command-stdout>). Left raw they render as
+// escaped plumbing; fold them into a clean "/loop …" line before md() runs.
+function cleanSlash(raw) {
+  const t = String(raw ?? "");
+  if (t.indexOf("<command-") < 0 && t.indexOf("<local-command-") < 0) return t;
+  return t
+    .replace(/<command-message>[\s\S]*?<\/command-message>/g, "")
+    .replace(/<command-name>\s*([\s\S]*?)\s*<\/command-name>/g, "**$1** ")
+    .replace(/<command-args>\s*([\s\S]*?)\s*<\/command-args>/g, "$1")
+    .replace(/<local-command-std(?:out|err)>\s*([\s\S]*?)\s*<\/local-command-std(?:out|err)>/g, "$1")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
 
 const todayIso = () => {
   const d = new Date();
@@ -1025,8 +1055,10 @@ function openSession(id) {
   // decided about this session, which outrank the transcript you already read.
   $("pBody").innerHTML =
     `<div id="pMeta"></div><div class="prow" id="pNotes"></div><div id="pMore"></div>` +
-    `<div id="pRoster" class="prow"></div>` +
-    `<div class="prow"><div class="plabel" id="tTail"></div><div class="tscroll" id="tScroll"></div></div>`;
+    `<div id="pRoster" class="prow"></div>`;
+  // the transcript is a static section below the metadata now; clear the last
+  // session's turns so they don't flash before this one's load resolves
+  $("tScroll").innerHTML = ""; $("tTail").textContent = "";
   $("panel").classList.add("on"); $("scrim").classList.add("on");
   const s = sessions.find(x => x.sessionId === id);
   if (s) {
@@ -1100,10 +1132,10 @@ function chatConnect(id) {
 // only if the reader is already there (#pBody is the scroll container)
 function chatAppend(html) {
   const host = $("tScroll"); if (!host) return null;
-  const sc = $("pBody");
-  const near = sc.scrollHeight - sc.scrollTop - sc.clientHeight < 130;
+  // stay pinned to the newest turn only if the reader is already near it
+  const near = host.scrollHeight - host.scrollTop - host.clientHeight < 130;
   host.insertAdjacentHTML("beforeend", html);
-  if (near) sc.scrollTop = sc.scrollHeight;
+  if (near) host.scrollTop = host.scrollHeight;
   return host.lastElementChild;
 }
 
@@ -1137,7 +1169,7 @@ function chatOnEvent(ev) {
         const sum = ev.summary || (ev.ok ? "done" : "failed");
         el.insertAdjacentHTML("beforeend",
           `<div class="tres${ev.ok ? "" : " err"}">${esc(sum)}</div>`);
-        const sc = $("pBody");
+        const sc = $("tScroll");
         if (sc && sc.scrollHeight - sc.scrollTop - sc.clientHeight < 160)
           sc.scrollTop = sc.scrollHeight;
       }
@@ -1413,7 +1445,7 @@ function blocksHtml(blocks) {
       html += traceHtml(run);
     } else if (b.kind === "user" || b.kind === "assistant") {
       html += `<div class="msg ${b.kind}"><div class="who">${b.kind === "user" ? "YOU" : "CLAUDE"}</div>` +
-        `<div class="body">${md(b.text)}</div></div>`;
+        `<div class="body">${md(cleanSlash(b.text))}</div></div>`;
     }
   }
   return html;

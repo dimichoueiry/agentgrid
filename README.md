@@ -133,6 +133,17 @@ working-or-not; the fields above remain the fallback for interactive sessions,
 which have no job directory. `blocked`, `failed` and `stopped` are never
 overridden by tempo.
 
+None of those signals catches a *hung* agent — one whose `state`/`status`/
+`tempo` still claim it is working while its transcript has gone silent. So a
+card still reported working but silent past a threshold (15 min by default)
+carries an advisory **⚠ quiet 18m** badge. It is advisory on purpose: it never
+moves the card out of Working. Measured over real transcripts, P99.9 of the
+gaps between writes *during genuine work* is ~12.6 min, so 15 min sits just
+past it — but the tail is long (a slow build or a sleeping laptop can be
+legitimately silent for hours), and reclassifying a live agent as settled is
+the one mistake the board refuses to make. The badge flags the suspicion and
+leaves the verdict to you.
+
 A session's display name falls back through four sources, in order: a name you
 typed, the AI-generated title, the CLI's auto-generated name, the first eight
 characters of the session id.
@@ -195,6 +206,16 @@ session that is idle **with output you have not seen** therefore files under
 **Replied** (if you have opened it before, or it spoke within the last hour);
 reading it returns the card to Idle. Sessions that have sat unopened for ages
 stay honestly Idle.
+
+*Closing a terminal no longer deletes a card.* `claude agents` lists an
+interactive session only while its process is alive, so closing its tab used
+to make the card vanish from every column even though the whole conversation
+was still on disk. Its transcript is now read back the same way Codex sessions
+always have been: a recently-touched interactive transcript the live fleet no
+longer knows about is resurfaced as an ordinary card — filed by the same
+Replied/Idle rules — for 24 hours after its last activity, so a reply you had
+not read is still there to find and resume. Background jobs are left out of
+this, because the CLI keeps reporting finished background jobs itself.
 
 *Why Replied is not Done.* The CLI's `done` means *the agent's turn ended*,
 which is a weaker claim than *the work is finished* — an agent that asks
@@ -273,9 +294,9 @@ nothing is noise.
 
 ## Starting agents
 
-**New agent** (or `n`) opens a sheet with a **Library** row and five fields:
-**Name** (optional), **Project**, **Engine** (Claude or Codex), **Model**,
-**System prompt** (optional), **Task**.
+**New agent** (or `n`) opens a sheet with a **Library** row and these fields:
+**Name** (optional), **Project**, **Engine** (Claude or Codex), **Session**
+(Background or Interactive), **Model**, **System prompt** (optional), **Task**.
 
 The library holds reusable agent definitions — a name, an engine, a model
 and a system prompt, stored in `~/.agentgrid/agents.json`. Picking one fills
@@ -289,13 +310,22 @@ config decide". `Cmd/Ctrl+Enter` in the task field starts. `Enter` in the
 name field advances rather than submitting — the task is required, and
 submitting from the name box would start an agent with nothing to do.
 
-With Claude this runs `claude --bg [--model M] <prompt>` in the chosen
-directory, hands the session to the daemon and returns immediately. The agent
-appears on the board within a couple of seconds, carrying the name you typed,
-and outlives the browser. With Codex it runs `codex exec` detached in the
-same directory; Codex prints no job id to wait on, so the name is held
+With Claude and **Session: Background** (the default) this runs
+`claude --bg [--model M] <prompt>` in the chosen directory, hands the session
+to the daemon and returns immediately. The agent appears on the board within a
+couple of seconds, carrying the name you typed, and outlives the browser — and
+the terminal, since there isn't one. With Codex it runs `codex exec` detached
+in the same directory; Codex prints no job id to wait on, so the name is held
 against the directory and applied to the first Codex session that appears
 there.
+
+**Session: Interactive** (Claude only, macOS) instead opens a Terminal.app tab
+running an ordinary `claude <prompt>` you can watch and type into — the same
+session shape you would get from running `claude` yourself. Every part of the
+shell line is quoted, so a prompt full of quotes or shell metacharacters runs
+as one argument, not as commands. An interactive session lives and dies with
+its tab; when you close it the card does not vanish (see below), but the
+process is gone, so the board offers to resume it rather than reopen it.
 
 The project picker lists every directory containing `.git`, one level under
 each root, unioned with every directory the live fleet is already working in.
@@ -664,3 +694,10 @@ a screen.
 ## Further reading
 
 - [docs/USAGE.md](docs/USAGE.md) — a task-oriented walkthrough
+
+## License
+
+Apache License 2.0 — see [LICENSE](LICENSE). Copyright 2026 Dimitri
+El-Choueiry. In short: use, modify and redistribute freely, including
+commercially, provided you keep the license and attribution and note any
+changes; it also grants a patent license and comes with no warranty.

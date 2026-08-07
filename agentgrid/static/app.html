@@ -151,6 +151,10 @@ select.ctl{font-size:12.5px;padding:3px 6px;max-width:170px;color:var(--text-2)}
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
 }
 .age{flex:0 0 auto;font-size:11px;color:var(--text-3);font-variant-numeric:tabular-nums}
+/* advisory only: a working card gone silent past STALE_WORKING_SECONDS. The one
+   accent, used sparingly, for "look at this" without the red of a real failure */
+.stale{flex:0 0 auto;font-size:11px;font-weight:600;color:var(--accent);
+  font-variant-numeric:tabular-nums;white-space:nowrap;cursor:help}
 .sub{
   font-size:11.5px;color:var(--text-2);
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
@@ -558,6 +562,11 @@ details.tools .tfail{color:var(--failed)}
         <option value="claude">Claude</option>
         <option value="codex">Codex</option>
       </select></label>
+    <label>Session <span class="hint">background survives a closed terminal; interactive opens a tab you watch and type into</span>
+      <select id="naSession">
+        <option value="background">Background</option>
+        <option value="interactive">Interactive (macOS)</option>
+      </select></label>
     <label>Model
       <select id="naModel">
         <option value="">Default</option>
@@ -648,6 +657,16 @@ function ageStr(sec) {
   if (sec < 3600) return Math.floor(sec / 60) + "m ago";
   if (sec < 86400) return Math.floor(sec / 3600) + "h ago";
   return Math.floor(sec / 86400) + "d ago";
+}
+// A card still reported "working" but silent this long has probably stalled or
+// hung, not gone quiet mid-thought: P99.9 of real in-work transcript gaps is
+// ~12.6 min, so 15 min sits just past it. Advisory ONLY -- the card never
+// leaves Working, so a false positive on a genuinely slow tool costs a glance,
+// not a live agent misfiled as settled. Tune here.
+const STALE_WORKING_SECONDS = 900;
+function staleAge(s) {
+  if (s.status !== "working" || (s.idleSeconds || 0) < STALE_WORKING_SECONDS) return "";
+  return ageStr(s.idleSeconds).replace(" ago", "");   // "18m", "2h"
 }
 function isTyping() {
   const el = document.activeElement;
@@ -778,14 +797,18 @@ function cardFor(s) {
   const settled = s.status === "done" || s.status === "stopped";
   // rebuilding innerHTML every poll destroys hover and drags — a signature of
   // everything displayed guards it
+  const stale = staleAge(s);
   const sig = JSON.stringify([s.title, s.status, s.project, s.branch, s.idleSeconds,
                               s.attachable, s.openable, s.engine, s.overridden, s.tags,
-                              subs.length, running, s.unread]);
+                              subs.length, running, s.unread, stale]);
   if (el.dataset.sig !== sig) {
     el.dataset.sig = sig;
     el.innerHTML =
       `<div class="crow"><span class="name">${esc(s.title)}</span>` +
-      `<span class="age">${ageStr(s.idleSeconds)}</span></div>` +
+      (stale
+        ? `<span class="stale" title="Reported working, but its transcript has been silent for ${stale} — it may be stalled or hung. Still counted as working; check or stop it.">⚠ quiet ${stale}</span>`
+        : `<span class="age">${ageStr(s.idleSeconds)}</span>`) +
+      `</div>` +
       `<div class="sub">${esc(s.project)}${s.engine === "codex" ? " · codex" : ""}` +
       `${s.branch ? " · " + esc(s.branch) : ""}` +
       `${s.overridden ? ' <span class="moved">moved</span>' : ""}</div>` +
@@ -1702,6 +1725,7 @@ async function openNewAgent() {
   $("modal").hidden = false;
   $("naErr").textContent = "";
   $("naTask").value = ""; $("naName").value = ""; $("naSys").value = "";
+  $("naSession").value = "background";
   $("naAddRow").hidden = true;
   try {
     const data = await api("/api/projects");
@@ -1723,8 +1747,14 @@ const ENGINE_MODELS = {
   codex: [["", "Default"], ["gpt-5.5", "GPT-5.5"], ["gpt-5.5-codex", "GPT-5.5 Codex"]],
 };
 function syncEngineModels() {
-  const models = ENGINE_MODELS[$("naEngine").value] || ENGINE_MODELS.claude;
+  const engine = $("naEngine").value;
+  const models = ENGINE_MODELS[engine] || ENGINE_MODELS.claude;
   $("naModel").innerHTML = models.map(([v, l]) => `<option value="${v}">${l}</option>`).join("");
+  // Interactive start opens a real `claude` terminal; codex has no such mode
+  // here, so it falls back to a detached run regardless.
+  const sess = $("naSession"), codex = engine === "codex";
+  sess.querySelector('option[value="interactive"]').disabled = codex;
+  if (codex && sess.value === "interactive") sess.value = "background";
 }
 function closeNewAgent() { $("modal").hidden = true; }
 async function startAgent() {
@@ -1737,6 +1767,7 @@ async function startAgent() {
       cwd: $("naProject").value, prompt, engine: $("naEngine").value,
       model: $("naModel").value, name: $("naName").value.trim(),
       systemPrompt: $("naSys").value.trim(),
+      interactive: $("naSession").value === "interactive",
     });
   } finally { $("naStart").disabled = false; }
   if (r && r.error) { $("naErr").textContent = r.error; return; }

@@ -14,6 +14,7 @@ patches the module-level path constant to a temporary location first.
 from __future__ import annotations
 
 import json
+import shlex
 import tempfile
 import time
 import unittest
@@ -22,7 +23,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from agentgrid import discovery, terminal, ui
+from agentgrid import discovery, terminal, ui, web
 
 try:
     from agentgrid import notes
@@ -604,6 +605,138 @@ class TranscriptCacheTests(unittest.TestCase):
                 handle.write('"}\n')
             state = cache.parse(path)
             self.assertEqual(state["title"], "torn")
+
+    def test_captures_cwd_kind_and_start_for_recovery(self):
+        # The three facts recover_ended_interactive needs when the fleet list
+        # that would normally supply them is gone: where it ran, whether it was
+        # a background job, and when it began.
+        cache = discovery.TranscriptCache()
+        with tempfile.TemporaryDirectory() as base:
+            path = Path(base) / "session.jsonl"
+            with path.open("w", encoding="utf-8") as handle:
+                handle.write(json.dumps({
+                    "type": "user", "cwd": "/tmp/repo", "sessionKind": "bg",
+                    "timestamp": "2026-08-06T12:00:00Z"}) + "\n")
+                handle.write(json.dumps({
+                    "type": "assistant",
+                    "timestamp": "2026-08-06T12:05:00Z"}) + "\n")
+            state = cache.parse(path)
+            self.assertEqual(state["cwd"], "/tmp/repo")
+            self.assertEqual(state["session_kind"], "bg")
+            # started is the earliest stamp, last_activity the latest.
+            self.assertGreater(state["last_activity"], state["started"])
+            self.assertGreater(state["started"], 0.0)
+
+
+# ---------------------------------------------------------------------------
+# Recovering interactive sessions whose terminal was closed
+
+
+class RecoverEndedInteractiveTests(unittest.TestCase):
+    @staticmethod
+    def _write(base, session_id, *, kind=None, active=True):
+        proj = Path(base) / "-tmp-repo"
+        proj.mkdir(parents=True, exist_ok=True)
+        if active:
+            entry = {"type": "user", "cwd": "/tmp/repo",
+                     "timestamp": "2026-08-06T12:00:00Z",
+                     "message": {"role": "user", "content": "hello"}}
+            if kind:
+                entry["sessionKind"] = kind
+            line = json.dumps(entry)
+        else:
+            # A shell that opened and closed without a turn: no timestamped
+            # activity, so nothing worth a card.
+            line = json.dumps({"type": "mode", "sessionId": session_id})
+        (proj / f"{session_id}.jsonl").write_text(line + "\n", encoding="utf-8")
+
+    def _recover(self, base, live_ids=frozenset(), now=None):
+        cache = discovery.TranscriptCache()
+        with mock.patch.object(discovery, "PROJECTS_DIR", Path(base)):
+            return discovery.recover_ended_interactive(
+                cache, set(live_ids), time.time() if now is None else now)
+
+    def test_ended_interactive_session_comes_back(self):
+        with tempfile.TemporaryDirectory() as base:
+            self._write(base, "sid-ended")
+            got = self._recover(base)
+            self.assertEqual([s.session_id for s in got], ["sid-ended"])
+            self.assertEqual(got[0].kind, "interactive")
+            self.assertEqual(got[0].status, "idle")
+            self.assertEqual(got[0].cwd, "/tmp/repo")
+            self.assertGreater(got[0].last_activity, 0.0)
+
+    def test_background_transcripts_are_left_to_the_cli(self):
+        with tempfile.TemporaryDirectory() as base:
+            self._write(base, "sid-bg", kind="bg")
+            self.assertEqual(self._recover(base), [])
+
+    def test_a_session_still_in_the_fleet_is_not_duplicated(self):
+        with tempfile.TemporaryDirectory() as base:
+            self._write(base, "sid-live")
+            self.assertEqual(self._recover(base, live_ids={"sid-live"}), [])
+
+    def test_a_session_older_than_the_window_stays_gone(self):
+        with tempfile.TemporaryDirectory() as base:
+            self._write(base, "sid-old")
+            future = time.time() + discovery.ENDED_INTERACTIVE_WINDOW + 100
+            self.assertEqual(self._recover(base, now=future), [])
+
+    def test_an_empty_shell_is_not_resurrected(self):
+        with tempfile.TemporaryDirectory() as base:
+            self._write(base, "sid-empty", active=False)
+            self.assertEqual(self._recover(base), [])
+
+
+# ---------------------------------------------------------------------------
+# Starting a regular (interactive) session instead of a background one
+
+
+class InteractiveSpawnTests(unittest.TestCase):
+    ALLOWED = [{"path": "/tmp/repo"}]
+
+    def test_codex_cannot_start_interactive(self):
+        ok, message, job = web.spawn_agent(
+            "/tmp/repo", "do it", None, self.ALLOWED,
+            engine="codex", interactive=True)
+        self.assertFalse(ok)
+        self.assertIsNone(job)
+        self.assertIn("Claude", message)
+
+    def test_interactive_command_is_shell_quoted(self):
+        captured = {}
+
+        def fake_tab(command, title):
+            captured["command"] = command
+            return True, "ok"
+
+        prompt = 'rm -rf "$HOME"; echo pwned'
+        with mock.patch.object(web, "_open_terminal_tab", fake_tab), \
+                mock.patch.object(web.sys, "platform", "darwin"):
+            ok, message, job = web.spawn_agent(
+                "/tmp/re po", prompt, None,
+                [{"path": "/tmp/re po"}], interactive=True)
+        self.assertTrue(ok)
+        self.assertIsNone(job)
+        # The dangerous prompt survives as a single quoted argument to claude,
+        # never as shell for the terminal to interpret.
+        expected = ("cd " + shlex.quote("/tmp/re po")
+                    + " && claude " + shlex.quote(prompt))
+        self.assertEqual(captured["command"], expected)
+
+    def test_non_macos_prints_the_command_instead(self):
+        with mock.patch.object(web.sys, "platform", "linux"):
+            ok, message, job = web.spawn_agent(
+                "/tmp/repo", "do it", None, self.ALLOWED, interactive=True)
+        self.assertFalse(ok)
+        self.assertIn("Run this yourself", message)
+
+    def test_unknown_project_is_refused_before_opening_anything(self):
+        with mock.patch.object(web, "_open_terminal_tab") as tab:
+            ok, message, job = web.spawn_agent(
+                "/etc", "do it", None, self.ALLOWED, interactive=True)
+        self.assertFalse(ok)
+        tab.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

@@ -281,6 +281,92 @@ class StatusTests(unittest.TestCase):
         self.assertEqual(discovery.normalize_status({}), "unknown")
 
 
+class DismissTests(unittest.TestCase):
+    """Clearing a card off the board, and earning it back by speaking again."""
+
+    def test_dismissed_session_is_hidden_while_quiet(self):
+        quiet = make_session(session_id="s-1", last_activity=500.0)
+        # Dismissed at its last reply; nothing new since, so it stays hidden.
+        self.assertTrue(discovery.is_dismissed(quiet, {"s-1": 500.0}))
+
+    def test_new_activity_after_dismissal_brings_it_back(self):
+        spoke = make_session(session_id="s-1", last_activity=900.0)
+        self.assertFalse(discovery.is_dismissed(spoke, {"s-1": 500.0}))
+
+    def test_undismissed_session_is_never_hidden(self):
+        session = make_session(session_id="s-1", last_activity=500.0)
+        self.assertFalse(discovery.is_dismissed(session, {}))
+        self.assertFalse(discovery.is_dismissed(session, {"other": 500.0}))
+
+    def test_dismiss_and_restore_round_trip(self):
+        with tempfile.TemporaryDirectory() as base:
+            path = Path(base) / "dismissed.json"
+            with mock.patch.object(discovery, "DISMISSED_PATH", path):
+                discovery.dismiss_session("id-1", 1234.0)
+                self.assertEqual(discovery.load_dismissed(), {"id-1": 1234.0})
+                discovery.restore_session("id-1")
+                self.assertEqual(discovery.load_dismissed(), {})
+
+
+class DismissRouteTests(unittest.TestCase):
+    """The real /api/dismiss HTTP path, server and route dispatch included."""
+
+    def _server(self, session):
+        import threading
+        from http.server import ThreadingHTTPServer
+
+        fleet = SimpleNamespace(raw=lambda: [session] if session else [])
+        bound = type("BoundHandler", (web.Handler,),
+                     {"fleet": fleet, "token": "tok", "chat": None,
+                      "log_message": lambda *a, **k: None})
+        httpd = ThreadingHTTPServer(("127.0.0.1", 0), bound)
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(httpd.server_close)
+        self.addCleanup(httpd.shutdown)
+        return httpd.server_address[1]
+
+    @staticmethod
+    def _post(port, payload):
+        import urllib.error
+        import urllib.request
+
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/api/dismiss?t=tok",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"}, method="POST")
+        try:
+            resp = urllib.request.urlopen(req, timeout=5)
+            return resp.status, json.loads(resp.read())
+        except urllib.error.HTTPError as err:
+            return err.code, json.loads(err.read())
+
+    def test_dismiss_then_undo_over_http(self):
+        session = make_session(session_id="x", last_activity=42.0)
+        with tempfile.TemporaryDirectory() as base:
+            path = Path(base) / "dismissed.json"
+            with mock.patch.object(discovery, "DISMISSED_PATH", path):
+                port = self._server(session)
+
+                status, body = self._post(port, {"sessionId": "x"})
+                self.assertEqual(status, 200)
+                self.assertTrue(body["ok"])
+                self.assertEqual(discovery.load_dismissed(), {"x": 42.0})
+
+                status, _ = self._post(port, {"sessionId": "x", "undo": True})
+                self.assertEqual(status, 200)
+                self.assertEqual(discovery.load_dismissed(), {})
+
+    def test_unknown_session_is_a_404(self):
+        with tempfile.TemporaryDirectory() as base:
+            path = Path(base) / "dismissed.json"
+            with mock.patch.object(discovery, "DISMISSED_PATH", path):
+                port = self._server(None)
+                status, body = self._post(port, {"sessionId": "ghost"})
+                self.assertEqual(status, 404)
+                self.assertEqual(discovery.load_dismissed(), {})
+
+
 # ---------------------------------------------------------------------------
 # --cwd scoping
 

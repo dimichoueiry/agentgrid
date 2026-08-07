@@ -406,6 +406,21 @@ details.tools .tfail{color:var(--failed)}
 #cInput{flex:1;min-width:0;resize:none;height:38px;max-height:150px;padding:8px 10px;
   font:13.5px/1.5 var(--sans);border-color:var(--line-2)}
 #cInput:focus{border-color:var(--accent)}
+/* pasted-but-not-yet-sent images: a row of removable thumbnail chips that sits
+   above the composer. A chip is dimmed while its upload is still in flight. */
+.catt{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 7px}
+.catt[hidden]{display:none}
+.catt .chip{display:flex;align-items:center;gap:6px;max-width:190px;
+  padding:3px 4px 3px 5px;border:1px solid var(--line-2);border-radius:7px;
+  background:var(--card);font-size:11px;color:var(--text-2)}
+.catt .chip.pending{opacity:.55}
+.catt .chip img{width:26px;height:26px;object-fit:cover;border-radius:4px;flex:0 0 auto}
+.catt .chip .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-variant-numeric:tabular-nums}
+.catt .chip .x{flex:0 0 auto;font-size:14px;line-height:1;color:var(--text-3);padding:0 3px}
+.catt .chip .x:hover{color:var(--failed)}
+/* an attached image echoed inside the user's own message bubble */
+.msg .uimg{display:block;max-width:230px;max-height:230px;margin-top:6px;
+  border-radius:6px;border:1px solid var(--line)}
 /* secondary controls sit below the composer: posture, model, and the key hint */
 .cctl{display:flex;align-items:center;gap:8px;margin-top:8px}
 /* posture: the top bar's segmented control, reused verbatim */
@@ -612,6 +627,8 @@ details.cthink[open]>summary::before{transform:rotate(90deg)}
        can't resume (Codex). -->
   <div class="pfoot" id="pFoot" hidden>
     <div class="cstatus" id="cStatus"></div>
+    <!-- Pasted images waiting to be sent; each a removable thumbnail chip. -->
+    <div class="catt" id="cAtt" hidden></div>
     <div class="compose">
       <textarea id="cInput" rows="1" placeholder="Message this session…"></textarea>
       <button class="btn" id="cStop" title="Stop the current turn" hidden>Stop</button>
@@ -1118,11 +1135,17 @@ let chatPosture = localStorage.getItem("agentgrid.chatPosture") || "auto";
 let chatModel = localStorage.getItem("agentgrid.chatModel") || "";   // "" = CLI default
 let chatDone = "";                 // the transient "Done · …" / "Stopped" line
 const chatTools = new Map();       // tool_use id -> its live trace element
+// Pasted images waiting on the next send. Each: {id, path, name, url, pending}.
+// `path` is the absolute file the upload endpoint returned (null while it's
+// still uploading); `url` is a local object URL for the thumbnail preview.
+let chatAtt = [];
+let chatAttSeq = 0;
 
 // called from openSession once the panel is showing this id
 function chatOpen(id, engine) {
   chatClose();                     // drop any previous session's stream/state
   chatDone = ""; chatRunning = false; chatQueued = 0; chatTools.clear();
+  chatClearAtt();                  // pending pastes don't cross sessions
   // chat drives the Claude CLI; a Codex session can't be resumed by it — the
   // Chat tab still shows its transcript, there's just no composer or live stream
   chatDisabled = engine === "codex";
@@ -1282,17 +1305,31 @@ async function chatSyncState(adoptRunning = false) {
 async function chatSend() {
   const ta = $("cInput"); if (!ta) return;
   const msg = ta.value.trim();
-  if (!msg || !openId) return;
+  if (!openId) return;
+  // An image still uploading has no path yet; hold the send rather than drop it.
+  if (chatAtt.some(a => a.pending)) { toast("An image is still uploading…"); return; }
+  const ready = chatAtt.filter(a => a.path);
+  const paths = ready.map(a => a.path);
+  // An image with no words is a valid turn; only nothing-at-all is a no-op.
+  if (!msg && !paths.length) return;
   const id = openId;
+  const urls = ready.map(a => a.url);   // reuse the thumbnails for the echo
   ta.value = ""; chatGrow(ta); hideAtFiles();
+  // detach the chips but keep their object URLs alive for the echo below; a
+  // send never leaves a stale attachment behind for the next message
+  chatAtt = []; chatRenderAtt();
   // show Working at once (also suspends the poll's disk refresh, so the live
   // nodes below survive until the turn lands on disk and the poll reconciles)
   chatRunning = true; chatSetStatus();
   // optimistic echo: the CLI never streams the user's own message back
+  const imgs = urls.map(u => `<img class="uimg" src="${esc(u)}" alt="attached image">`).join("");
   chatAppend(`<div class="msg user"><div class="who">YOU</div>` +
-    `<div class="body">${md(msg)}</div></div>`);
+    `<div class="body">${msg ? md(msg) : ""}${imgs}</div></div>`);
+  // free the preview URLs once painted; the disk reconcile replaces the echo
+  if (urls.length) setTimeout(() => urls.forEach(u => URL.revokeObjectURL(u)), 60000);
   const r = await post("/api/chat",
-    {sessionId: id, message: msg, posture: chatPosture, model: chatModel});
+    {sessionId: id, message: msg, posture: chatPosture, model: chatModel,
+     attachments: paths});
   if (id !== openId) return;
   if (r && r.error) {
     chatRunning = false;
@@ -1300,6 +1337,87 @@ async function chatSend() {
     chatSetStatus();
   } else chatSyncState();     // reflect running / queued from the backend
   $("cInput").focus();
+}
+
+// --- pasted-image attachments ---------------------------------------------
+// Paste an image into the composer and it is uploaded to /api/chat/upload,
+// which saves it and returns an absolute path; that path is what the next send
+// hands to the CLI (Claude Code reads a local image file named in its prompt).
+
+function chatPaste(e) {
+  if (!openId || chatDisabled) return;
+  const items = (e.clipboardData && e.clipboardData.items) || [];
+  const blobs = [];
+  for (const it of items)
+    if (it.kind === "file" && /^image\//.test(it.type || "")) {
+      const blob = it.getAsFile();
+      if (blob) blobs.push(blob);
+    }
+  if (!blobs.length) return;         // a plain-text paste falls through untouched
+  e.preventDefault();
+  blobs.forEach(chatUpload);
+}
+
+async function chatUpload(blob) {
+  const id = ++chatAttSeq;
+  const url = URL.createObjectURL(blob);
+  const name = blob.name || `pasted-image.${(blob.type.split("/")[1] || "png")}`;
+  const sid = openId;
+  // a pending chip shows at once, so a slow upload never feels like nothing happened
+  chatAtt.push({id, path: null, name, url, pending: true});
+  chatRenderAtt();
+  let data;
+  try { data = await blobToDataUrl(blob); }
+  catch (_) { chatAttFail(id, "Could not read that image."); return; }
+  let r;
+  try { r = await post("/api/chat/upload", {sessionId: sid, data, name}); }
+  catch (_) { r = null; }
+  const slot = chatAtt.find(a => a.id === id);
+  if (!slot) return;                 // removed while it was uploading
+  if (!r || r.error || !r.path) {
+    chatAttFail(id, (r && r.error) || "Could not upload that image.");
+    return;
+  }
+  slot.path = r.path; slot.pending = false;
+  chatRenderAtt();
+}
+
+function chatAttFail(id, msg) {
+  chatRemoveAtt(id);
+  toast(msg);
+}
+
+function blobToDataUrl(blob) {
+  return new Promise((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onload = () => resolve(fr.result);
+    fr.onerror = () => reject(fr.error || new Error("read failed"));
+    fr.readAsDataURL(blob);
+  });
+}
+
+function chatRenderAtt() {
+  const host = $("cAtt"); if (!host) return;
+  host.hidden = chatAtt.length === 0;
+  host.innerHTML = chatAtt.map(a =>
+    `<span class="chip${a.pending ? " pending" : ""}" data-att="${a.id}">` +
+    `<img src="${esc(a.url)}" alt="">` +
+    `<span class="nm">${esc(a.name)}</span>` +
+    `<button class="x" data-att-rm="${a.id}" title="Remove" ` +
+    `aria-label="Remove attachment">&times;</button></span>`).join("");
+}
+
+function chatRemoveAtt(id) {
+  const slot = chatAtt.find(a => a.id === id);
+  if (slot && slot.url) URL.revokeObjectURL(slot.url);
+  chatAtt = chatAtt.filter(a => a.id !== id);
+  chatRenderAtt();
+}
+
+function chatClearAtt() {
+  chatAtt.forEach(a => a.url && URL.revokeObjectURL(a.url));
+  chatAtt = [];
+  chatRenderAtt();
 }
 
 function chatStop() {
@@ -2469,6 +2587,12 @@ function bindEvents() {
     e.preventDefault();                                 // keep the textarea focused
     const b = e.target.closest("button[data-af]");
     if (b) insertAtFile(Number(b.dataset.af));
+  });
+  cin.addEventListener("paste", chatPaste);
+  // the × on a pending-attachment chip
+  $("cAtt").addEventListener("click", e => {
+    const rm = e.target.closest("[data-att-rm]");
+    if (rm) chatRemoveAtt(Number(rm.dataset.attRm));
   });
 
   $("panel").addEventListener("click", e => {

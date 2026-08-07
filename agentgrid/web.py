@@ -28,6 +28,7 @@ import json
 import os
 import re
 import secrets
+import shlex
 import subprocess
 import sys
 import threading
@@ -134,8 +135,25 @@ class Fleet:
 
     def name_codex_when_seen(self, cwd: str, name: str) -> None:
         """Hold a name for the next codex session to appear in a directory."""
+        self._name_by_cwd_when_seen(cwd, name, "codex", None)
+
+    def name_interactive_when_seen(self, cwd: str, name: str) -> None:
+        """Hold a name for the next interactive claude session in a directory.
+
+        An interactive spawn prints no job id either -- the session id is minted
+        inside the terminal, never handed back -- so, exactly like codex, the
+        name waits on (cwd, spawn time) and lands on the first matching session.
+        """
+        self._name_by_cwd_when_seen(cwd, name, "claude", "interactive")
+
+    def _name_by_cwd_when_seen(
+        self, cwd: str, name: str, engine: str, kind: str | None
+    ) -> None:
         with self._lock:
-            self._pending_codex.append({"cwd": cwd, "name": name, "at": time.time()})
+            self._pending_codex.append(
+                {"cwd": cwd, "name": name, "at": time.time(),
+                 "engine": engine, "kind": kind}
+            )
 
     def _apply_pending_names(self, sessions: list) -> None:
         # Called with the lock held, after a successful collect.
@@ -153,9 +171,12 @@ class Fleet:
                 # matching some future session would mislabel it.
                 self._pending_codex.remove(pending)
                 continue
+            want_engine = pending.get("engine", "codex")
+            want_kind = pending.get("kind")
             for session in sessions:
                 if (
-                    getattr(session, "engine", "claude") == "codex"
+                    getattr(session, "engine", "claude") == want_engine
+                    and (want_kind is None or session.kind == want_kind)
                     and session.cwd == pending["cwd"]
                     and not session.custom_name
                     and session.started_at / 1000 >= pending["at"] - 5
@@ -422,13 +443,19 @@ def delete_saved_agent(name: str) -> list[dict]:
 
 def spawn_agent(cwd: str, prompt: str, model: str | None,
                 allowed: list[dict], engine: str = "claude",
-                system_prompt: str = "") -> tuple[bool, str, str | None]:
-    """Start an agent -- `claude --bg` or `codex exec` -- in a known project.
+                system_prompt: str = "", interactive: bool = False,
+                ) -> tuple[bool, str, str | None]:
+    """Start an agent in a known project.
+
+    Three shapes: a background `claude --bg` daemon (the default, and the only
+    one that survives a closed terminal), a detached `codex exec`, or -- when
+    `interactive` is set -- a regular `claude` opened in a Terminal tab you can
+    watch and type into.
 
     The prompt is unconstrained -- an agent that could only run vetted prompts
     would be useless -- but the directory must be one of the discovered
     projects. That is the security boundary keeping this endpoint from being
-    a general "execute anything anywhere" hole, and it holds for both engines.
+    a general "execute anything anywhere" hole, and it holds for every shape.
     """
     if not prompt.strip():
         return False, "Give the agent something to do.", None
@@ -442,6 +469,14 @@ def spawn_agent(cwd: str, prompt: str, model: str | None,
     if system_prompt.strip():
         prompt = (f"<system instructions>\n{system_prompt.strip()}\n"
                   f"</system instructions>\n\n{prompt}")
+
+    if interactive:
+        # Codex's non-interactive `exec` is a different tool from its TUI, so
+        # interactive is a Claude-only choice for now rather than a silent
+        # fall-through to a background codex run the user did not ask for.
+        if engine == "codex":
+            return False, "Interactive start is only available for Claude right now.", None
+        return spawn_interactive(cwd, prompt, model)
 
     if engine == "codex":
         # codex exec runs the whole task and only then exits, so it cannot be
@@ -543,6 +578,37 @@ end tell
 '''
 
 
+def _open_terminal_tab(command: str, title: str) -> tuple[bool, str]:
+    """Open a Terminal.app tab running `command`, titled `title`. macOS only.
+
+    The one place the open-tab AppleScript is actually driven, shared by the
+    attach path and the interactive-spawn path: both want "a new tab running
+    this shell line", and the only difference is the line. Returns "ok" as the
+    success message for the caller to replace with something specific.
+    """
+    if sys.platform != "darwin":
+        return False, f"Terminal.app is macOS-only. Run this yourself: {command}"
+    script = (OPEN_TAB_SCRIPT
+              .replace("__COMMAND__", _osa_str(command))
+              .replace("__TITLE__", _osa_str(title)))
+    try:
+        done = subprocess.run(["osascript", "-e", script],
+                              capture_output=True, text=True, timeout=20)
+    except FileNotFoundError:
+        return False, "osascript not found -- is this really macOS?"
+    except subprocess.TimeoutExpired:
+        return False, "Terminal.app did not respond within 20 seconds."
+    if done.returncode != 0:
+        stderr = (done.stderr or "").strip()
+        if "-1743" in stderr or "not authorized" in stderr.lower():
+            # macOS automation errors are opaque; point at the one switch
+            # that fixes this instead of echoing the raw error.
+            return False, ("macOS blocked the automation. Allow your terminal under "
+                           "System Settings → Privacy & Security → Automation, then retry.")
+        return False, f"Could not open Terminal: {stderr[:140]}"
+    return True, "ok"
+
+
 def open_in_terminal(session) -> tuple[bool, str]:
     """Get into a session: focus the existing attach, or open a new tab.
 
@@ -567,25 +633,35 @@ def open_in_terminal(session) -> tuple[bool, str]:
             return True, "Focused the tab already attached to this session."
         # The tab closed between listing and focusing: fall through and open
         # a fresh one rather than reporting failure.
-    script = (OPEN_TAB_SCRIPT
-              .replace("__COMMAND__", _osa_str(command))
-              .replace("__TITLE__", _osa_str(session.display_title)))
-    try:
-        done = subprocess.run(["osascript", "-e", script],
-                              capture_output=True, text=True, timeout=20)
-    except FileNotFoundError:
-        return False, "osascript not found -- is this really macOS?"
-    except subprocess.TimeoutExpired:
-        return False, "Terminal.app did not respond within 20 seconds."
-    if done.returncode != 0:
-        stderr = (done.stderr or "").strip()
-        if "-1743" in stderr or "not authorized" in stderr.lower():
-            # macOS automation errors are opaque; point at the one switch
-            # that fixes this instead of echoing the raw error.
-            return False, ("macOS blocked the automation. Allow your terminal under "
-                           "System Settings → Privacy & Security → Automation, then retry.")
-        return False, f"Could not open Terminal: {stderr[:140]}"
+    ok, message = _open_terminal_tab(command, session.display_title)
+    if not ok:
+        return False, message
     return True, f"Opened a Terminal tab attached to {session.job_id}."
+
+
+def spawn_interactive(cwd: str, prompt: str, model: str | None) -> tuple[bool, str, None]:
+    """Start a regular, watch-and-type-into `claude` in a fresh Terminal tab.
+
+    The counterpart to a background spawn: rather than detaching a daemon, this
+    opens a terminal running an ordinary interactive session, seeded with the
+    task. It lives and dies with its tab -- which is the whole reason to pick
+    interactive over background. There is no job id to hand back; the board
+    finds it the same way it finds any interactive session, from the fleet.
+
+    Every piece of the shell line is `shlex.quote`d before it is framed into
+    AppleScript, so a prompt full of quotes, `$`, or newlines runs as one
+    argument rather than as shell to be interpreted.
+    """
+    argv = ["claude"] + (["--model", model] if model else []) + [prompt]
+    command = f"cd {shlex.quote(cwd)} && " + " ".join(shlex.quote(part) for part in argv)
+    if sys.platform != "darwin":
+        return False, (f"Starting an interactive session needs Terminal.app (macOS "
+                       f"only). Run this yourself: {command}"), None
+    first_line = prompt.strip().splitlines()[0] if prompt.strip() else "claude"
+    ok, message = _open_terminal_tab(command, first_line[:40] or "claude")
+    if not ok:
+        return False, message, None
+    return True, f"Opened an interactive claude in {Path(cwd).name}.", None
 
 
 # --- the HTTP handler --------------------------------------------------------
@@ -959,6 +1035,7 @@ class Handler(BaseHTTPRequestHandler):
     def _spawn(self, body: dict) -> None:
         projects = discover_projects(self.fleet.raw())
         engine = "codex" if str(body.get("engine") or "") == "codex" else "claude"
+        interactive = bool(body.get("interactive"))
         cwd = str(body.get("cwd") or "")
         ok, message, job_id = spawn_agent(
             cwd,
@@ -967,6 +1044,7 @@ class Handler(BaseHTTPRequestHandler):
             projects,
             engine,
             str(body.get("systemPrompt") or ""),
+            interactive,
         )
         if not ok:
             self._send_json(400, {"error": message})
@@ -975,6 +1053,8 @@ class Handler(BaseHTTPRequestHandler):
         if name:
             if job_id:
                 self.fleet.name_when_seen(job_id, name)
+            elif interactive:
+                self.fleet.name_interactive_when_seen(cwd, name)
             elif engine == "codex":
                 self.fleet.name_codex_when_seen(cwd, name)
             else:

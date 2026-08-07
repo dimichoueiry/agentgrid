@@ -63,6 +63,12 @@ OVERRIDABLE = ("blocked", "done", "idle", COMPLETE)
 # output reads as "replied", not "idle" -- see collect().
 RECENT_REPLY_SECONDS = 3600
 
+# An interactive session drops off `claude agents` the instant its terminal
+# closes; its transcript is read back from disk for this long so a closed tab
+# lingers as a card you can still find and resume rather than vanishing. Held
+# to the same 24h window Codex uses, for one shared idea of "recently active".
+ENDED_INTERACTIVE_WINDOW = 24 * 3600
+
 # Grouped by how likely you are to act, then most-recent within the band.
 # A session blocked on a prompt for an hour outranks one you opened a minute
 # ago, so this is deliberately not a plain recently-active list.
@@ -371,6 +377,12 @@ class TranscriptCache:
             "agent_uses": {},
             "completed": set(),
             "last_activity": 0.0,
+            # For recovering an ended session from disk alone: the cwd it ran
+            # in, whether it was a background job (sessionKind "bg") and so the
+            # CLI's to report, and when it began.
+            "cwd": "",
+            "session_kind": None,
+            "started": 0.0,
         }
 
     def parse(self, path: Path) -> dict:
@@ -437,11 +449,23 @@ class TranscriptCache:
         if branch:
             state["git_branch"] = str(branch)
 
+        # cwd and sessionKind ride on ordinary message entries, and are what
+        # let an ended session be rebuilt from its transcript alone -- the
+        # fleet list that would otherwise supply them is gone by then.
+        cwd = entry.get("cwd")
+        if cwd:
+            state["cwd"] = str(cwd)
+        kind = entry.get("sessionKind")
+        if kind:
+            state["session_kind"] = str(kind)
+
         stamp = entry.get("timestamp")
         if stamp:
             moment = _epoch_of(stamp)
             if moment > state["last_activity"]:
                 state["last_activity"] = moment
+            if moment and (not state["started"] or moment < state["started"]):
+                state["started"] = moment
 
         message = entry.get("message")
         if not isinstance(message, dict):
@@ -999,6 +1023,72 @@ def save_tags(session_id: str, tags: object) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# Ended interactive sessions, read back from disk.
+
+
+def recover_ended_interactive(
+    cache: TranscriptCache, live_ids: set[str], now: float
+) -> list[Session]:
+    """Interactive sessions whose process has ended, rebuilt from their transcript.
+
+    `claude agents` lists a session only while its process is alive, so an
+    interactive (terminal) session drops off the fleet the instant its tab
+    closes -- and with no disk fallback its card simply vanished, unread reply
+    and all. The transcript is still on disk, so a recently-touched one the
+    fleet no longer knows about is resurfaced here as an ordinary Session and
+    filed by the same Idle/Replied rules as everything else. This is the same
+    second source Codex has always leaned on, extended to Claude.
+
+    Deliberately narrow, to bring back exactly the vanished cards and nothing
+    more. Background transcripts (`sessionKind: "bg"`) are skipped because the
+    CLI keeps reporting finished background jobs itself; a session still in the
+    live fleet is always the fleet's, never a stale disk copy; and only a
+    transcript with real activity inside the window earns a card, so an empty
+    shell is never resurrected.
+    """
+    if not PROJECTS_DIR.is_dir():
+        return []
+    try:
+        paths = list(PROJECTS_DIR.glob("*/*.jsonl"))
+    except OSError:
+        return []
+
+    recovered: list[Session] = []
+    for path in paths:
+        session_id = path.stem
+        if session_id in live_ids:
+            continue  # still running -- the fleet's copy is the source of truth
+        try:
+            if now - path.stat().st_mtime > ENDED_INTERACTIVE_WINDOW:
+                continue
+        except OSError:
+            continue
+        state = cache.parse(path)
+        if state["session_kind"] == "bg":
+            continue  # a background job -- the CLI still lists these itself
+        if not state["last_activity"]:
+            continue  # a shell with no real turn; nothing worth a card
+        started = state["started"] or state["last_activity"]
+        session = Session(
+            session_id=session_id,
+            kind="interactive",
+            status="idle",  # ended -> idle, then promoted to Replied in collect()
+            cwd=state["cwd"],
+            started_at=int(started * 1000),
+        )
+        session.transcript = path
+        session.title = state["title"]
+        session.last_prompt = state["last_prompt"]
+        session.git_branch = state["git_branch"]
+        session.model = state["model"]
+        session.tool_counts = dict(state["tool_counts"])
+        session.subagents = load_subagents(path, state)
+        session.last_activity = state["last_activity"]
+        recovered.append(session)
+    return recovered
+
+
+# ---------------------------------------------------------------------------
 # The full refresh.
 
 
@@ -1034,6 +1124,18 @@ def collect(cache: TranscriptCache | None = None) -> tuple[list[Session], str | 
         enriched.append(ready)
 
     now = time.time()
+
+    # An interactive session vanishes from the fleet the moment its terminal
+    # closes; read the recently-ended ones back from disk so a closed tab no
+    # longer deletes its card. They arrive already enriched, so they only need
+    # the human-judgement files here, then ride the same Idle/Replied + override
+    # + unread pass below as any fleet session.
+    live_ids = {session.session_id for session in sessions}
+    for recovered in recover_ended_interactive(cache, live_ids, now):
+        recovered.custom_name = names.get(recovered.session_id)
+        recovered.tags = normalize_tags(tags.get(recovered.session_id))
+        enriched.append(recovered)
+
     for index, ready in enumerate(enriched):
         # A turn ending is a reply, not idleness: a card would otherwise fall
         # straight from Working to a hidden column with its answer unread.

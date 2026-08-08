@@ -419,6 +419,21 @@ class CodeFileRouteTests(unittest.TestCase):
         status, _ = self._get(self._server(), "/no/such/dir/xyz123", "a.py")
         self.assertEqual(status, 400)
 
+    def test_tree_lists_every_file(self):
+        import urllib.parse
+        import urllib.request
+
+        with tempfile.TemporaryDirectory() as base:
+            (Path(base) / "pkg").mkdir()
+            (Path(base) / "pkg" / "a.py").write_text("a\n", "utf-8")
+            (Path(base) / "b.py").write_text("b\n", "utf-8")
+            port = self._server()
+            url = (f"http://127.0.0.1:{port}/api/tree?t=tok"
+                   f"&cwd={urllib.parse.quote(base)}")
+            body = json.loads(urllib.request.urlopen(url, timeout=5).read())
+            self.assertEqual(set(body["files"]), {"pkg/a.py", "b.py"})
+            self.assertFalse(body["truncated"])
+
 
 class ReplyPromotionTests(unittest.TestCase):
     """apply_reply_promotion: which idle sessions read as Replied ("done")."""

@@ -584,13 +584,30 @@ details.cthink[open]>summary::before{transform:rotate(90deg)}
    this project's files + a read-only viewer on the left, the chat on the
    right. Never its own window -- it is always the open session's project. */
 .chatcol{display:flex;flex-direction:column;flex:1 1 0;min-width:0;min-height:0}
-.panel.wide{width:min(1200px,96vw);flex-direction:row}
+/* expanded: the panel goes full-width to cover the board, split into the code
+   workspace (left, most of the width) and a fixed-width chat column (right). */
+.panel.wide{left:0;width:auto;flex-direction:row}
 .panel.wide .cvpane{display:flex}
+.panel.wide .chatcol{flex:0 0 440px;border-left:1px solid var(--line-2)}
 .x.sq{font-size:15px;line-height:1}
-.cvpane{flex:1.15 1 0;min-width:0;min-height:0;display:none;flex-direction:column;
-  border-right:1px solid var(--line-2);background:var(--bg)}
+.cvpane{flex:1 1 0;min-width:0;min-height:0;display:none;flex-direction:row;background:var(--bg)}
+/* file tree sidebar; ⌃B removes it via .notree for more code width */
+.cvtree{flex:0 0 250px;min-height:0;overflow:auto;padding:6px 0;font-size:12.5px;
+  border-right:1px solid var(--line);background:var(--bg)}
+.cvpane.notree .cvtree{display:none}
+.cvt-row{display:flex;align-items:center;gap:5px;padding:2px 8px;cursor:pointer;
+  white-space:nowrap;color:var(--text-2)}
+.cvt-row:hover{background:var(--card-hover)}
+.cvt-file.on{background:color-mix(in srgb,var(--claude) 16%,transparent);color:var(--text)}
+.cvt-caret{flex:0 0 auto;width:10px;color:var(--text-3);font-size:9px}
+.cvt-name{overflow:hidden;text-overflow:ellipsis}
+.cvt-dir .cvt-name{color:var(--text)}
+.cvmain{flex:1 1 0;min-width:0;min-height:0;display:flex;flex-direction:column}
 .cvp-bar{display:flex;align-items:center;gap:8px;padding:10px 12px;flex:0 0 auto;
   border-bottom:1px solid var(--line)}
+.cvp-tog{flex:0 0 auto;font-size:14px;line-height:1;padding:3px 6px;border-radius:5px;
+  border:1px solid var(--line-2);background:var(--card);color:var(--text-2);cursor:pointer}
+.cvp-tog:hover{background:var(--card-hover);color:var(--text)}
 #cvSearch{flex:1 1 auto;min-width:0;font-size:13px;padding:6px 9px;border-radius:6px;
   border:1px solid var(--line-2);background:var(--card);color:var(--text);outline:none}
 #cvSearch:focus{border-color:var(--accent)}
@@ -678,14 +695,18 @@ details.cthink[open]>summary::before{transform:rotate(90deg)}
        file finder over a read-only viewer. Click a line to reference it in the
        chat that sits in the right column. -->
   <div class="cvpane" id="cvPane" hidden>
-    <div class="cvp-bar">
-      <input id="cvSearch" placeholder="Search files…  (⌘P)" autocomplete="off" spellcheck="false">
-      <span class="cvp-proj" id="cvProj"></span>
+    <div class="cvtree" id="cvTree"></div>
+    <div class="cvmain">
+      <div class="cvp-bar">
+        <button class="cvp-tog" id="cvTreeToggle" title="Toggle the file tree  (⌃B)">☰</button>
+        <input id="cvSearch" placeholder="Search files…  (⌘P)" autocomplete="off" spellcheck="false">
+        <span class="cvp-proj" id="cvProj"></span>
+      </div>
+      <div class="cvp-results" id="cvResults" hidden></div>
+      <div class="cvp-open" id="cvOpen" hidden></div>
+      <div class="cvp-code" id="cvCode"></div>
+      <div class="cvp-foot" id="cvFoot"></div>
     </div>
-    <div class="cvp-results" id="cvResults" hidden></div>
-    <div class="cvp-open" id="cvOpen" hidden></div>
-    <div class="cvp-code" id="cvCode"></div>
-    <div class="cvp-foot" id="cvFoot"></div>
   </div>
   <div class="chatcol" id="chatCol">
   <div class="phead">
@@ -1672,17 +1693,26 @@ function hideAtFiles() {
 
 let cvFile = null, cvAnchor = null;       // open file {path}; last line for ranges
 let cvHits = [], cvSel = 0, cvSeq = 0;    // finder results
+let cvTree = null, cvTreeOpen = {}, cvTreeCwd = "";   // folder tree, per project
 
 function projName(cwd) { return String(cwd || "").split("/").pop() || cwd; }
 function paneWide() { return $("panel").classList.contains("wide"); }
+// project · branch, so you can always see which checkout you're browsing --
+// this is what answers "why don't I see my uncommitted files" (wrong worktree).
+function cvProjLabel() {
+  const s = sessions.find(x => x.sessionId === openId);
+  const cwd = openSessionCwd();
+  return projName(cwd) + (s && s.branch ? "  ·  " + s.branch : "");
+}
 
-// Expand the panel into the two-column workspace. Needs an open session: the
-// whole point is to browse THAT session's project, not the board at large.
+// Expand the panel into the workspace. Needs an open session: the whole point
+// is to browse THAT session's project, not the board at large.
 function expandPane() {
   if (!openId) { toast("Open a session first — the code pane follows its project."); return; }
   $("panel").classList.add("wide");
   $("cvPane").hidden = false;
-  $("cvProj").textContent = projName(openSessionCwd());
+  $("cvProj").textContent = cvProjLabel();
+  cvLoadTree();
   const inp = $("cvSearch"); inp.focus(); inp.select();
   if (cvFile) cvShowCode(); else cvSearchRun();
 }
@@ -1695,9 +1725,58 @@ function cvSyncSession() {
   if (!paneWide()) return;
   cvFile = null; cvAnchor = null;
   $("cvCode").innerHTML = ""; $("cvOpen").textContent = ""; $("cvFoot").textContent = "";
-  $("cvProj").textContent = projName(openSessionCwd());
+  $("cvProj").textContent = cvProjLabel();
   $("cvSearch").value = "";
+  cvLoadTree();
   cvSearchRun();
+}
+
+// The folder tree: full file list (untracked included, uncapped), cached per
+// project so switching back is instant.
+async function cvLoadTree() {
+  const cwd = openSessionCwd();
+  if (!cwd) return;
+  if (cvTreeCwd !== cwd) { cvTreeOpen = {}; cvTreeCwd = cwd; cvTree = null; }  // new project → collapse
+  if (!cvTree) $("cvTree").innerHTML = `<div class="cvp-empty">Loading…</div>`;
+  // always refetch: the agent may have created files since you last looked;
+  // expanded folders (cvTreeOpen) survive because they key off path, not nodes
+  const d = await api(`/api/tree?cwd=${encodeURIComponent(cwd)}`).catch(() => null);
+  if (openSessionCwd() !== cwd) return;               // switched away while loading
+  cvTree = cvBuildTree((d && d.files) || []);
+  cvPaintTree();
+}
+function cvBuildTree(paths) {
+  const root = {dirs: {}, files: []};
+  paths.forEach(p => {
+    const parts = p.split("/");
+    let node = root;
+    for (let i = 0; i < parts.length - 1; i++) {
+      node.dirs[parts[i]] = node.dirs[parts[i]] || {dirs: {}, files: []};
+      node = node.dirs[parts[i]];
+    }
+    node.files.push({name: parts[parts.length - 1], path: p});
+  });
+  return root;
+}
+function cvPaintTree() {
+  if (!cvTree) return;
+  const rows = [];
+  const walk = (node, prefix, depth) => {
+    Object.keys(node.dirs).sort((a, b) => a.localeCompare(b)).forEach(name => {
+      const dp = prefix ? prefix + "/" + name : name;
+      const open = !!cvTreeOpen[dp];
+      rows.push(`<div class="cvt-row cvt-dir" data-dir="${esc(dp)}" style="padding-left:${8 + depth * 12}px">` +
+        `<span class="cvt-caret">${open ? "▾" : "▸"}</span><span class="cvt-name">${esc(name)}</span></div>`);
+      if (open) walk(node.dirs[name], dp, depth + 1);
+    });
+    node.files.slice().sort((a, b) => a.name.localeCompare(b.name)).forEach(f => {
+      const on = cvFile && cvFile.path === f.path ? " on" : "";
+      rows.push(`<div class="cvt-row cvt-file${on}" data-file="${esc(f.path)}" style="padding-left:${8 + depth * 12 + 15}px">` +
+        `<span class="cvt-name">${esc(f.name)}</span></div>`);
+    });
+  };
+  walk(cvTree, "", 0);
+  $("cvTree").innerHTML = rows.join("") || `<div class="cvp-empty">No files.</div>`;
 }
 
 // results and the open file share the pane; show one, hide the other
@@ -1756,6 +1835,16 @@ async function cvOpen(path) {
   $("cvSearch").value = "";
   cvShowCode();
   $("cvCode").scrollTop = 0;
+  cvRevealInTree(path);
+}
+// open the file's ancestor folders and highlight it, so the tree tracks what
+// you're reading -- like clicking a result in VS Code reveals it in the sidebar
+function cvRevealInTree(path) {
+  const parts = path.split("/");
+  for (let i = 1; i < parts.length; i++) cvTreeOpen[parts.slice(0, i).join("/")] = true;
+  cvPaintTree();
+  const el = $("cvTree").querySelector(".cvt-file.on");
+  if (el) el.scrollIntoView({block: "nearest"});
 }
 
 // Click a line: build @path:line (or @path:a-b on shift-click) and drop it into
@@ -1810,13 +1899,22 @@ function wireCodeViewer() {
   $("cvCode").addEventListener("click", e => {
     const line = e.target.closest(".cvline"); if (line) cvRef(+line.dataset.ln, e.shiftKey);
   });
-  // ⌘P / Ctrl+P: expand this session's pane and jump straight to file search.
+  $("cvTree").addEventListener("click", e => {
+    const dir = e.target.closest("[data-dir]");
+    if (dir) { const p = dir.dataset.dir; cvTreeOpen[p] = !cvTreeOpen[p]; cvPaintTree(); return; }
+    const file = e.target.closest("[data-file]");
+    if (file) cvOpen(file.dataset.file);
+  });
+  $("cvTreeToggle").addEventListener("click", () => $("cvPane").classList.toggle("notree"));
+  // ⌘P / Ctrl+P: expand + jump to file search.  ⌃B / ⌘B: toggle the file tree.
   document.addEventListener("keydown", e => {
     if ((e.metaKey || e.ctrlKey) && !e.altKey && (e.key === "p" || e.key === "P")) {
       e.preventDefault();
       if (!openId) { toast("Open a session first — the code pane follows its project."); return; }
       if (paneWide()) { const s = $("cvSearch"); s.focus(); s.select(); cvShowResults(); }
       else expandPane();
+    } else if ((e.metaKey || e.ctrlKey) && !e.altKey && (e.key === "b" || e.key === "B") && paneWide()) {
+      e.preventDefault(); $("cvPane").classList.toggle("notree");
     }
   });
 }

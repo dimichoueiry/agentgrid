@@ -1039,6 +1039,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(200, self._sessions_snapshot())
         elif route == "/api/notes":
             self._get_notes(query)
+        elif route == "/api/todos":
+            self._get_todos(query)
         elif route == "/api/history":
             page = self._one(query, "page")
             self._send_json(200, {"page": page,
@@ -1080,6 +1082,28 @@ class Handler(BaseHTTPRequestHandler):
             self._get_tree(query)
         else:
             self._send_json(404, {"error": "No such route."})
+
+    def _get_todos(self, query: dict) -> None:
+        """Your open todos, for the composer's `[]` picker.
+
+        Same source as the rail (notes.collect): the current window's undone
+        checkbox lines plus unfinished ones carried over from before it. Only
+        the text and its page travel to the client -- enough to recognise a
+        todo and drop its words into a message as context for the agent.
+        """
+        day = self._one(query, "date") or date.today().isoformat()
+        if not _valid_day(day):
+            self._send_json(400, {"error": "Bad date."})
+            return
+        span = self._one(query, "span")
+        if span not in ("day", "week", "month"):
+            span = "week"
+        data = notes.collect(day, span)
+        chosen = [t for t in data.get("todos", []) if not t.get("done")]
+        chosen += data.get("carried", [])
+        todos = [{"text": t["text"], "page": t["page"]}
+                 for t in chosen if t.get("text", "").strip()]
+        self._send_json(200, {"todos": todos[:200]})
 
     def _get_notes(self, query: dict) -> None:
         day = self._one(query, "date") or date.today().isoformat()

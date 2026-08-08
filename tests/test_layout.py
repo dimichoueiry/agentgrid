@@ -435,6 +435,40 @@ class CodeFileRouteTests(unittest.TestCase):
             self.assertFalse(body["truncated"])
 
 
+@unittest.skipIf(notes is None, "notes module unavailable")
+class TodosRouteTests(unittest.TestCase):
+    """/api/todos: the composer's [] picker sees open todos, not done ones."""
+
+    def _server(self):
+        import threading
+        from http.server import ThreadingHTTPServer
+
+        fleet = SimpleNamespace(raw=lambda: [])
+        bound = type("BoundHandler", (web.Handler,),
+                     {"fleet": fleet, "token": "tok", "chat": None,
+                      "log_message": lambda *a, **k: None})
+        httpd = ThreadingHTTPServer(("127.0.0.1", 0), bound)
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        self.addCleanup(httpd.server_close)
+        self.addCleanup(httpd.shutdown)
+        return httpd.server_address[1]
+
+    def test_returns_open_todos_only(self):
+        import urllib.request
+
+        today = date.today().isoformat()
+        with tempfile.TemporaryDirectory() as base:
+            with mock.patch.object(notes, "NOTES_DIR", Path(base) / "notes"), \
+                 mock.patch.object(notes, "META_PATH", Path(base) / "meta.json"):
+                notes.write_day(today, "- [ ] ship it\n- [x] already done\n")
+                port = self._server()
+                body = json.loads(urllib.request.urlopen(
+                    f"http://127.0.0.1:{port}/api/todos?t=tok", timeout=5).read())
+                texts = [t["text"] for t in body["todos"]]
+                self.assertIn("ship it", texts)
+                self.assertNotIn("already done", texts)
+
+
 class ReplyPromotionTests(unittest.TestCase):
     """apply_reply_promotion: which idle sessions read as Replied ("done")."""
 

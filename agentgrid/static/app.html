@@ -1542,8 +1542,16 @@ async function chatUpload(blob) {
   try { data = await blobToDataUrl(blob); }
   catch (_) { chatAttFail(id, "Could not read that image."); return; }
   let r;
-  try { r = await post("/api/chat/upload", {sessionId: sid, data, name}); }
-  catch (_) { r = null; }
+  // NOT post(): that sets keepalive, and the Fetch spec caps a keepalive
+  // request body at 64 KB. An image is megabytes, so keepalive rejects the
+  // request outright -- which surfaced as the generic "Could not upload".
+  try {
+    r = await api("/api/chat/upload", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({sessionId: sid, data, name}),
+    });
+  } catch (_) { r = null; }
   const slot = chatAtt.find(a => a.id === id);
   if (!slot) return;                 // removed while it was uploading
   if (!r || r.error || !r.path) {

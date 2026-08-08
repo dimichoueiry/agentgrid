@@ -367,6 +367,74 @@ class DismissRouteTests(unittest.TestCase):
                 self.assertEqual(discovery.load_dismissed(), {})
 
 
+class CodeFileRouteTests(unittest.TestCase):
+    """The /api/file reader: serves a project's tracked files, refuses the rest."""
+
+    def _server(self):
+        import threading
+        from http.server import ThreadingHTTPServer
+
+        fleet = SimpleNamespace(raw=lambda: [])
+        bound = type("BoundHandler", (web.Handler,),
+                     {"fleet": fleet, "token": "tok", "chat": None,
+                      "log_message": lambda *a, **k: None})
+        httpd = ThreadingHTTPServer(("127.0.0.1", 0), bound)
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        self.addCleanup(httpd.server_close)
+        self.addCleanup(httpd.shutdown)
+        return httpd.server_address[1]
+
+    @staticmethod
+    def _get(port, cwd, path):
+        import urllib.error
+        import urllib.parse
+        import urllib.request
+
+        url = (f"http://127.0.0.1:{port}/api/file?t=tok"
+               f"&cwd={urllib.parse.quote(cwd)}&path={urllib.parse.quote(path)}")
+        try:
+            resp = urllib.request.urlopen(url, timeout=5)
+            return resp.status, json.loads(resp.read())
+        except urllib.error.HTTPError as err:
+            return err.code, json.loads(err.read())
+
+    def test_reads_a_tracked_file(self):
+        with tempfile.TemporaryDirectory() as base:
+            (Path(base) / "pkg").mkdir()
+            (Path(base) / "pkg" / "mod.py").write_text("a = 1\nb = 2\n", "utf-8")
+            status, body = self._get(self._server(), base, "pkg/mod.py")
+            self.assertEqual(status, 200)
+            self.assertEqual(body["text"], "a = 1\nb = 2\n")
+            self.assertFalse(body["truncated"])
+
+    def test_path_traversal_is_refused(self):
+        # `../../etc/passwd` is never in list_files(cwd), so it 404s before any
+        # path is built from the request -- the membership check is the guard.
+        with tempfile.TemporaryDirectory() as base:
+            (Path(base) / "in.py").write_text("x = 1\n", "utf-8")
+            status, _ = self._get(self._server(), base, "../../../etc/passwd")
+            self.assertEqual(status, 404)
+
+    def test_missing_cwd_is_a_400(self):
+        status, _ = self._get(self._server(), "/no/such/dir/xyz123", "a.py")
+        self.assertEqual(status, 400)
+
+    def test_tree_lists_every_file(self):
+        import urllib.parse
+        import urllib.request
+
+        with tempfile.TemporaryDirectory() as base:
+            (Path(base) / "pkg").mkdir()
+            (Path(base) / "pkg" / "a.py").write_text("a\n", "utf-8")
+            (Path(base) / "b.py").write_text("b\n", "utf-8")
+            port = self._server()
+            url = (f"http://127.0.0.1:{port}/api/tree?t=tok"
+                   f"&cwd={urllib.parse.quote(base)}")
+            body = json.loads(urllib.request.urlopen(url, timeout=5).read())
+            self.assertEqual(set(body["files"]), {"pkg/a.py", "b.py"})
+            self.assertFalse(body["truncated"])
+
+
 class ReplyPromotionTests(unittest.TestCase):
     """apply_reply_promotion: which idle sessions read as Replied ("done")."""
 

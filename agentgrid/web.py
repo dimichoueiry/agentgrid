@@ -840,6 +840,12 @@ def spawn_interactive(cwd: str, prompt: str, model: str | None) -> tuple[bool, s
 # match is never missed for being past an arbitrary cut-off in the raw list.
 
 MAX_FILE_RESULTS = 50
+# A source file past this is not something you read in a side panel; the reader
+# caps the bytes it will decode so a stray multi-megabyte blob cannot wedge it.
+MAX_FILE_BYTES = 2_000_000
+# The file tree renders one DOM row per path; past this a repo is too big to
+# draw as a tree, so it is truncated (and the pane says so) rather than hung.
+MAX_TREE_FILES = 6000
 # The repo path (git ls-files) is unbounded; this bounds only the os.walk
 # fallback so a non-repo home directory cannot turn one keystroke into a walk of
 # the whole disk. High enough that any ordinary project is listed in full.
@@ -1068,6 +1074,10 @@ class Handler(BaseHTTPRequestHandler):
             self._get_transcript(query)
         elif route == "/api/files":
             self._get_files(query)
+        elif route == "/api/file":
+            self._get_file(query)
+        elif route == "/api/tree":
+            self._get_tree(query)
         else:
             self._send_json(404, {"error": "No such route."})
 
@@ -1140,6 +1150,52 @@ class Handler(BaseHTTPRequestHandler):
         q = self._one(query, "q")
         ranked = rank_files(list_files(cwd), q)
         self._send_json(200, {"cwd": cwd, "q": q, "files": ranked[:MAX_FILE_RESULTS]})
+
+    def _get_file(self, query: dict) -> None:
+        """One file's text for the read-only code viewer, scoped to a project.
+
+        The path is trusted only when it is a member of list_files(cwd): a
+        git ls-files / bounded-walk entry is by construction inside the repo,
+        so a crafted `../../etc/passwd` is simply absent from the set and 404s
+        -- no separate traversal check needed, and no path built from the
+        request ever reaches the filesystem unvalidated. Bytes are capped and
+        decoded leniently so a binary that slipped into the set cannot wedge
+        the reader.
+        """
+        cwd = self._one(query, "cwd")
+        if not cwd or not os.path.isdir(cwd):
+            self._send_json(400, {"error": "cwd must be an existing directory."})
+            return
+        rel = self._one(query, "path")
+        if rel not in set(list_files(cwd)):
+            self._send_json(404, {"error": "No such file in this project."})
+            return
+        try:
+            with (Path(cwd) / rel).open("rb") as handle:
+                data = handle.read(MAX_FILE_BYTES + 1)
+        except OSError:
+            self._send_json(404, {"error": "File could not be read."})
+            return
+        truncated = len(data) > MAX_FILE_BYTES
+        text = data[:MAX_FILE_BYTES].decode("utf-8", "replace")
+        self._send_json(200, {"cwd": cwd, "path": rel, "text": text,
+                              "truncated": truncated})
+
+    def _get_tree(self, query: dict) -> None:
+        """The whole project's file paths, for the code pane's folder tree.
+
+        Same source as the finder (list_files: git ls-files plus
+        untracked-but-not-ignored, or a bounded walk), but uncapped by the
+        ranking limit so a tree shows every file -- including the new,
+        uncommitted ones that a 50-result search would push off the end.
+        """
+        cwd = self._one(query, "cwd")
+        if not cwd or not os.path.isdir(cwd):
+            self._send_json(400, {"error": "cwd must be an existing directory."})
+            return
+        files = list_files(cwd)
+        self._send_json(200, {"cwd": cwd, "files": files[:MAX_TREE_FILES],
+                              "truncated": len(files) > MAX_TREE_FILES})
 
     # -- POST ----------------------------------------------------------------
 

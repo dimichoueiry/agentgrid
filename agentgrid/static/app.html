@@ -66,9 +66,6 @@ summary{cursor:pointer}
    every such element needs this companion or [hidden] silently does nothing */
 .board[hidden],.notes[hidden],.col[hidden],.pmenu[hidden],.modal[hidden],
 .rail[hidden],.toast[hidden],.panel[hidden],.pages[hidden]{display:none!important}
-/* .finder / .codeview set display:flex, which beats the UA [hidden] rule, so
-   they must opt back into hiding explicitly or they never close. */
-.finder[hidden],.codeview[hidden]{display:none!important}
 
 /* ---------- top bar ---------- */
 .bar{
@@ -582,41 +579,36 @@ details.cthink[open]>summary::before{transform:rotate(90deg)}
 }
 .toast-undo:hover{text-decoration:underline}
 
-/* ⌘P file finder */
-.finder{position:fixed;inset:0;z-index:90;display:flex;justify-content:center;
-  align-items:flex-start;padding-top:12vh;background:rgba(0,0,0,.28)}
-.finder-box{width:min(560px,92vw);background:var(--card);border:1px solid var(--line-2);
-  border-radius:10px;box-shadow:0 16px 48px rgba(0,0,0,.28);overflow:hidden}
-#finderIn{width:100%;box-sizing:border-box;font-size:14px;padding:12px 14px;border:0;
-  border-bottom:1px solid var(--line);background:transparent;color:var(--text);outline:none}
-.finder-proj{padding:5px 14px;font-size:11px;color:var(--text-3);
+/* In-session code pane. The panel is normally one column (the chat, in
+   #chatCol). Expanding widens it and turns it into a two-column workspace:
+   this project's files + a read-only viewer on the left, the chat on the
+   right. Never its own window -- it is always the open session's project. */
+.chatcol{display:flex;flex-direction:column;flex:1 1 0;min-width:0;min-height:0}
+.panel.wide{width:min(1200px,96vw);flex-direction:row}
+.panel.wide .cvpane{display:flex}
+.x.sq{font-size:15px;line-height:1}
+.cvpane{flex:1.15 1 0;min-width:0;min-height:0;display:none;flex-direction:column;
+  border-right:1px solid var(--line-2);background:var(--bg)}
+.cvp-bar{display:flex;align-items:center;gap:8px;padding:10px 12px;flex:0 0 auto;
   border-bottom:1px solid var(--line)}
-.finder-list{max-height:46vh;overflow-y:auto}
-.finder-list button{display:flex;gap:8px;align-items:baseline;width:100%;text-align:left;
-  background:transparent;border:0;padding:7px 14px;cursor:pointer;font-size:12.5px}
-.finder-list button.on,.finder-list button:hover{background:var(--card-hover)}
-.finder-list .fn{font-weight:550;color:var(--text);flex:0 0 auto}
-.finder-list .fp{color:var(--text-3);font-size:11px;white-space:nowrap;overflow:hidden;
+#cvSearch{flex:1 1 auto;min-width:0;font-size:13px;padding:6px 9px;border-radius:6px;
+  border:1px solid var(--line-2);background:var(--card);color:var(--text);outline:none}
+#cvSearch:focus{border-color:var(--accent)}
+.cvp-proj{flex:0 0 auto;font-size:11px;color:var(--text-3);max-width:34%;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cvp-results{flex:1 1 auto;min-height:0;overflow-y:auto;padding:4px 0}
+.cvp-results button{display:flex;gap:8px;align-items:baseline;width:100%;text-align:left;
+  background:transparent;border:0;padding:6px 12px;cursor:pointer;font-size:12.5px}
+.cvp-results button.on,.cvp-results button:hover{background:var(--card-hover)}
+.cvp-results .fn{font-weight:550;color:var(--text);flex:0 0 auto}
+.cvp-results .fp{color:var(--text-3);font-size:11px;white-space:nowrap;overflow:hidden;
   text-overflow:ellipsis}
-.finder-empty{padding:12px 14px;font-size:12px;color:var(--text-3)}
-
-/* read-only code viewer */
-.codeview{position:fixed;inset:0;z-index:88;display:flex;justify-content:center;
-  align-items:center;background:rgba(0,0,0,.32)}
-.cv-card{width:min(1000px,94vw);height:min(84vh,900px);display:flex;flex-direction:column;
-  background:var(--card);border:1px solid var(--line-2);border-radius:10px;
-  box-shadow:0 16px 48px rgba(0,0,0,.3);overflow:hidden}
-.cv-head{display:flex;align-items:center;gap:9px;padding:9px 12px;flex:0 0 auto;
-  border-bottom:1px solid var(--line)}
-.cv-path{font-weight:600;font-size:13px;color:var(--text);white-space:nowrap;
-  overflow:hidden;text-overflow:ellipsis}
-.cv-proj{font-size:11px;color:var(--text-3);flex:0 0 auto}
-.cv-spacer{flex:1 1 auto}
-.cv-btn{font-size:11.5px;padding:3px 8px;border:1px solid var(--line-2);border-radius:5px;
-  background:var(--card);color:var(--text-2);cursor:pointer;flex:0 0 auto}
-.cv-btn:hover{background:var(--card-hover);color:var(--text)}
-.cv-body{flex:1 1 auto;overflow:auto;padding:6px 0;
+.cvp-empty{padding:12px;font-size:12px;color:var(--text-3)}
+.cvp-open{flex:0 0 auto;padding:6px 12px;font-size:11px;color:var(--text-2);
+  border-bottom:1px solid var(--line);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cvp-code{flex:1 1 auto;min-height:0;overflow:auto;padding:6px 0;
   font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.cvp-hollow{padding:16px 12px;font-size:12px;color:var(--text-3)}
 .cvline{display:flex;white-space:pre;cursor:pointer}
 .cvline:hover{background:var(--card-hover)}
 .cvline.refd{background:color-mix(in srgb,var(--claude) 16%,transparent)}
@@ -624,7 +616,7 @@ details.cthink[open]>summary::before{transform:rotate(90deg)}
   user-select:none}
 .cvline:hover .cvn{color:var(--accent)}
 .cvc{flex:1 1 auto;padding-right:16px;color:var(--text)}
-.cv-foot{flex:0 0 auto;padding:6px 12px;border-top:1px solid var(--line);
+.cvp-foot{flex:0 0 auto;padding:6px 12px;border-top:1px solid var(--line);
   font-size:11px;color:var(--text-3)}
 </style>
 </head>
@@ -643,7 +635,6 @@ details.cthink[open]>summary::before{transform:rotate(90deg)}
   <div class="toggles"><button id="alertsBtn" aria-pressed="false"
     title="Notify when an agent needs you or replies (while this tab is open)">Alerts</button></div>
   <div class="spacer"></div>
-  <button class="btn" id="filesBtn" title="Search and read this project's files  (⌘P / Ctrl+P)">⌘P Files</button>
   <button class="btn" id="promptsBtn" title="Reusable prompts — expand them in the composer with /name">/ Prompts</button>
   <button class="btn" id="syncBtn" title="Sync your notes to a GitHub repo">⟳ Sync</button>
   <button class="btn key" id="newBtn" title="Start a new agent  (n)">New agent</button>
@@ -683,8 +674,23 @@ details.cthink[open]>summary::before{transform:rotate(90deg)}
 
 <div class="scrim" id="scrim"></div>
 <aside class="panel" id="panel">
+  <!-- Left column, only in expanded mode: this session's own project, as a
+       file finder over a read-only viewer. Click a line to reference it in the
+       chat that sits in the right column. -->
+  <div class="cvpane" id="cvPane" hidden>
+    <div class="cvp-bar">
+      <input id="cvSearch" placeholder="Search files…  (⌘P)" autocomplete="off" spellcheck="false">
+      <span class="cvp-proj" id="cvProj"></span>
+    </div>
+    <div class="cvp-results" id="cvResults" hidden></div>
+    <div class="cvp-open" id="cvOpen" hidden></div>
+    <div class="cvp-code" id="cvCode"></div>
+    <div class="cvp-foot" id="cvFoot"></div>
+  </div>
+  <div class="chatcol" id="chatCol">
   <div class="phead">
     <div class="ptitle" id="pTitle"></div>
+    <button class="x sq" id="pExpand" title="Expand into a code + chat workspace">⤢</button>
     <button class="x" id="pClose" title="Close">&#215;</button>
   </div>
   <!-- Chat first; the session's details sit behind a second tab, so opening a
@@ -725,6 +731,7 @@ details.cthink[open]>summary::before{transform:rotate(90deg)}
   </div>
   <!-- Details tab: name, actions, tags, notes, move-to, facts, roster. -->
   <div class="pbody" id="pBody" hidden></div>
+  </div><!-- /chatCol -->
 </aside>
 
 <div class="modal" id="modal" hidden>
@@ -845,30 +852,6 @@ details.cthink[open]>summary::before{transform:rotate(90deg)}
 
 <div class="modal" id="gridModal" hidden>
   <div class="sheet wide" id="gmSheet"></div>
-</div>
-
-<!-- ⌘P file finder + read-only code viewer. Both are scoped to one project's
-     tracked file set, so browsing across a multi-project board is never mixed. -->
-<div class="finder" id="finder" hidden>
-  <div class="finder-box">
-    <input id="finderIn" placeholder="Search files by name…" autocomplete="off" spellcheck="false">
-    <div class="finder-proj" id="finderProj"></div>
-    <div class="finder-list" id="finderList"></div>
-  </div>
-</div>
-<div class="codeview" id="codeview" hidden>
-  <div class="cv-card">
-    <div class="cv-head">
-      <span class="cv-path" id="cvPath"></span>
-      <span class="cv-proj" id="cvProj"></span>
-      <span class="cv-spacer"></span>
-      <button class="cv-btn" id="cvFind" title="Find another file (⌘P)">⌘P Files</button>
-      <button class="cv-btn" id="cvCopy" title="Copy this path">Copy path</button>
-      <button class="cv-btn" id="cvClose" title="Close (Esc)">✕</button>
-    </div>
-    <div class="cv-body" id="cvBody"></div>
-    <div class="cv-foot" id="cvFoot"></div>
-  </div>
 </div>
 
 <div class="toast" id="toast" hidden></div>
@@ -1259,11 +1242,13 @@ function openSession(id) {
   renderPanel(); refreshTranscript(); loadMentions(); render();
   chatOpen(id, s ? s.engine : "");   // the panel is the chat: wire up the composer + live stream
   setPanelTab("chat");               // open on the conversation; details are a tab away
+  cvSyncSession();                   // if the code pane is open, re-scope it to this project
 }
 
 function closePanel() {
   openId = null; openAgent = null;
   hideAtFiles();
+  collapsePane();                    // leave narrow, so the next session opens on its chat
   chatClose();
   $("panel").classList.remove("on"); $("scrim").classList.remove("on");
   render();
@@ -1678,94 +1663,104 @@ function hideAtFiles() {
   clearTimeout(atFileTimer);
 }
 
-/* ------------------------------------------------- ⌘P finder + code viewer */
-/* Read-only: you browse a project's files, read one, and click a line to drop
-   a @path:line reference into the message you're writing to that agent. The
-   file set and its cwd are the same ones the @-mention picker already trusts,
-   so nothing new can be read that the composer could not already reach. */
+/* ------------------------------------------- in-session code pane (Expand) */
+/* The open session's OWN project, as a file finder over a read-only viewer, in
+   the left column of the expanded panel. Click a line to drop @path:line into
+   the message you're writing to THIS session's agent. Everything is scoped to
+   openSessionCwd() -- the same file set the @-mention picker already trusts --
+   so the pane always follows the project you're actually in, never the board. */
 
-let finderHits = [], finderSel = 0, finderCwd = "", finderSeq = 0;
-let cvFile = null, cvAnchor = null;   // open file {cwd,path}; last-clicked line
+let cvFile = null, cvAnchor = null;       // open file {path}; last line for ranges
+let cvHits = [], cvSel = 0, cvSeq = 0;    // finder results
 
-// The project to browse: the open session's, else the board's project filter,
-// else the most recently active session. One project at a time, always named.
-function viewerCwd() {
-  return openSessionCwd() || project || (sessions[0] && sessions[0].cwd) || "";
-}
 function projName(cwd) { return String(cwd || "").split("/").pop() || cwd; }
+function paneWide() { return $("panel").classList.contains("wide"); }
 
-function openFinder(cwd) {
-  cwd = cwd || viewerCwd();
-  if (!cwd) { toast("Open a session or pick a project first."); return; }
-  finderCwd = cwd;
-  $("finderProj").textContent = projName(cwd);
-  $("finder").hidden = false;
-  const inp = $("finderIn"); inp.value = ""; inp.focus();
-  finderSearch();
+// Expand the panel into the two-column workspace. Needs an open session: the
+// whole point is to browse THAT session's project, not the board at large.
+function expandPane() {
+  if (!openId) { toast("Open a session first — the code pane follows its project."); return; }
+  $("panel").classList.add("wide");
+  $("cvPane").hidden = false;
+  $("cvProj").textContent = projName(openSessionCwd());
+  const inp = $("cvSearch"); inp.focus(); inp.select();
+  if (cvFile) cvShowCode(); else cvSearchRun();
 }
-function closeFinder() { $("finder").hidden = true; finderHits = []; finderSel = 0; }
+function collapsePane() { $("panel").classList.remove("wide"); $("cvPane").hidden = true; }
+function togglePane() { paneWide() ? collapsePane() : expandPane(); }
 
-async function finderSearch() {
-  const q = $("finderIn").value.trim();
-  const seq = ++finderSeq;
-  const d = await api(`/api/files?cwd=${encodeURIComponent(finderCwd)}&q=${encodeURIComponent(q)}`)
+// Re-scope the pane when you switch sessions while it's open, so it never shows
+// one project's files next to another's chat.
+function cvSyncSession() {
+  if (!paneWide()) return;
+  cvFile = null; cvAnchor = null;
+  $("cvCode").innerHTML = ""; $("cvOpen").textContent = ""; $("cvFoot").textContent = "";
+  $("cvProj").textContent = projName(openSessionCwd());
+  $("cvSearch").value = "";
+  cvSearchRun();
+}
+
+// results and the open file share the pane; show one, hide the other
+function cvShowResults() { $("cvResults").hidden = false; $("cvOpen").hidden = true; $("cvCode").hidden = true; }
+function cvShowCode() { $("cvResults").hidden = true; $("cvOpen").hidden = !cvFile; $("cvCode").hidden = false; }
+
+// Search THIS session's project. Empty query lists everything (like ⌘P does).
+async function cvSearchRun() {
+  const cwd = openSessionCwd();
+  if (!cwd) return;
+  const q = $("cvSearch").value.trim();
+  const seq = ++cvSeq;
+  const d = await api(`/api/files?cwd=${encodeURIComponent(cwd)}&q=${encodeURIComponent(q)}`)
     .catch(() => null);
-  if (seq !== finderSeq || $("finder").hidden) return;   // a later keystroke wins
-  finderHits = (d && d.files) || [];
-  finderSel = 0;
-  paintFinder();
+  if (seq !== cvSeq || $("cvPane").hidden) return;   // a later keystroke wins
+  cvHits = (d && d.files) || [];
+  cvSel = 0;
+  cvPaintResults();
+  cvShowResults();
 }
-
-function paintFinder() {
-  const list = $("finderList");
-  if (!finderHits.length) { list.innerHTML = `<div class="finder-empty">No files match.</div>`; return; }
-  list.innerHTML = finderHits.map((p, i) => {
+function cvPaintResults() {
+  const list = $("cvResults");
+  if (!cvHits.length) { list.innerHTML = `<div class="cvp-empty">No files match.</div>`; return; }
+  list.innerHTML = cvHits.map((p, i) => {
     const name = p.split("/").pop(), dir = p.slice(0, p.length - name.length);
-    return `<button data-fi="${i}"${i === finderSel ? ' class="on"' : ""}>` +
+    return `<button data-ci="${i}"${i === cvSel ? ' class="on"' : ""}>` +
            `<span class="fn">${esc(name)}</span><span class="fp">${esc(dir)}</span></button>`;
   }).join("");
   const on = list.querySelector("button.on");
   if (on) on.scrollIntoView({block: "nearest"});
 }
-
-function finderMove(d) {
-  if (!finderHits.length) return;
-  finderSel = (finderSel + d + finderHits.length) % finderHits.length;
-  paintFinder();
+function cvMove(d) {
+  if (!cvHits.length) return;
+  cvSel = (cvSel + d + cvHits.length) % cvHits.length;
+  cvPaintResults();
 }
-function finderPick(i) {
-  const p = finderHits[i]; if (!p) return;
-  const cwd = finderCwd;
-  closeFinder();
-  openViewer(cwd, p);
-}
+function cvPick(i) { const p = cvHits[i]; if (p) cvOpen(p); }
 
-async function openViewer(cwd, path) {
+async function cvOpen(path) {
+  const cwd = openSessionCwd();
   const d = await api(`/api/file?cwd=${encodeURIComponent(cwd)}&path=${encodeURIComponent(path)}`)
     .catch(() => null);
   if (!d || d.error) { toast((d && d.error) || "Could not open file."); return; }
-  cvFile = {cwd, path}; cvAnchor = null;
-  $("cvPath").textContent = path;
-  $("cvProj").textContent = projName(cwd);
+  cvFile = {path}; cvAnchor = null;
   const lines = d.text.split("\n");
-  const CAP = 5000;                                   // a wall of DOM rows is the only real lag source
-  const shown = lines.slice(0, CAP);
-  $("cvBody").innerHTML = shown.map((ln, i) =>
+  const CAP = 5000;                          // a wall of DOM rows is the only real lag source
+  $("cvCode").innerHTML = lines.slice(0, CAP).map((ln, i) =>
     `<div class="cvline" data-ln="${i + 1}"><span class="cvn">${i + 1}</span>` +
     `<span class="cvc">${esc(ln) || " "}</span></div>`).join("");
+  $("cvOpen").textContent = path;
   const foot = [];
   if (d.truncated) foot.push("over 2 MB — shown up to 2 MB");
   if (lines.length > CAP) foot.push(`first ${CAP} of ${lines.length} lines`);
-  foot.push("click a line to reference it · shift-click for a range");
+  foot.push("click a line → @ref into your message · shift-click for a range");
   $("cvFoot").textContent = foot.join(" · ");
-  $("codeview").hidden = false;
-  $("cvBody").scrollTop = 0;
+  $("cvSearch").value = "";
+  cvShowCode();
+  $("cvCode").scrollTop = 0;
 }
-function closeViewer() { $("codeview").hidden = true; cvFile = null; cvAnchor = null; }
 
-// Click a line: build @path:line (or @path:a-b on shift-click) and either drop
-// it into the open composer or, if there is none, copy path:line to clipboard.
-function refLine(n, isShift) {
+// Click a line: build @path:line (or @path:a-b on shift-click) and drop it into
+// THIS session's composer. Codex has no composer, so it copies instead.
+function cvRef(n, isShift) {
   if (!cvFile) return;
   let lo = n, hi = n;
   if (isShift && cvAnchor != null && cvAnchor !== n) {
@@ -1785,10 +1780,10 @@ function refLine(n, isShift) {
     if (navigator.clipboard) navigator.clipboard.writeText(ref.slice(1));
     toast(`Copied ${ref.slice(1)}`);
   }
-  flashRange(lo, hi);
+  cvFlash(lo, hi);
 }
-function flashRange(lo, hi) {
-  const body = $("cvBody");
+function cvFlash(lo, hi) {
+  const body = $("cvCode");
   body.querySelectorAll(".cvline.refd").forEach(el => el.classList.remove("refd"));
   for (let n = lo; n <= hi; n++) {
     const el = body.querySelector(`.cvline[data-ln="${n}"]`);
@@ -1797,37 +1792,31 @@ function flashRange(lo, hi) {
 }
 
 function wireCodeViewer() {
-  $("finderIn").addEventListener("input", finderSearch);
-  $("finderIn").addEventListener("keydown", e => {
-    if (e.key === "ArrowDown") { e.preventDefault(); finderMove(1); }
-    else if (e.key === "ArrowUp") { e.preventDefault(); finderMove(-1); }
-    else if (e.key === "Enter") { e.preventDefault(); finderPick(finderSel); }
-    else if (e.key === "Escape") { e.preventDefault(); closeFinder(); }
+  $("pExpand").addEventListener("click", togglePane);
+  $("cvSearch").addEventListener("input", cvSearchRun);
+  $("cvSearch").addEventListener("focus", () => { if ($("cvSearch").value.trim() || !cvFile) cvShowResults(); });
+  $("cvSearch").addEventListener("keydown", e => {
+    if (e.key === "ArrowDown") { e.preventDefault(); cvMove(1); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); cvMove(-1); }
+    else if (e.key === "Enter") { e.preventDefault(); cvPick(cvSel); }
+    else if (e.key === "Escape") {
+      e.preventDefault(); e.stopPropagation();
+      if (cvFile) cvShowCode(); else collapsePane();
+    }
   });
-  $("finderList").addEventListener("click", e => {
-    const b = e.target.closest("[data-fi]"); if (b) finderPick(+b.dataset.fi);
+  $("cvResults").addEventListener("click", e => {
+    const b = e.target.closest("[data-ci]"); if (b) cvPick(+b.dataset.ci);
   });
-  $("finder").addEventListener("mousedown", e => { if (e.target.id === "finder") closeFinder(); });
-  $("cvBody").addEventListener("click", e => {
-    const line = e.target.closest(".cvline"); if (line) refLine(+line.dataset.ln, e.shiftKey);
+  $("cvCode").addEventListener("click", e => {
+    const line = e.target.closest(".cvline"); if (line) cvRef(+line.dataset.ln, e.shiftKey);
   });
-  $("cvFind").addEventListener("click", () => openFinder(cvFile ? cvFile.cwd : null));
-  $("cvCopy").addEventListener("click", () => {
-    if (!cvFile) return;
-    if (navigator.clipboard) navigator.clipboard.writeText(cvFile.path);
-    toast(`Copied ${cvFile.path}`);
-  });
-  $("cvClose").addEventListener("click", closeViewer);
-  $("codeview").addEventListener("mousedown", e => { if (e.target.id === "codeview") closeViewer(); });
-  $("filesBtn").addEventListener("click", () => openFinder());
-  // ⌘P / Ctrl+P opens the finder from anywhere; Esc backs out finder then viewer.
+  // ⌘P / Ctrl+P: expand this session's pane and jump straight to file search.
   document.addEventListener("keydown", e => {
     if ((e.metaKey || e.ctrlKey) && !e.altKey && (e.key === "p" || e.key === "P")) {
-      e.preventDefault(); openFinder(); return;
-    }
-    if (e.key === "Escape") {
-      if (!$("finder").hidden) { e.preventDefault(); closeFinder(); }
-      else if (!$("codeview").hidden) { e.preventDefault(); closeViewer(); }
+      e.preventDefault();
+      if (!openId) { toast("Open a session first — the code pane follows its project."); return; }
+      if (paneWide()) { const s = $("cvSearch"); s.focus(); s.select(); cvShowResults(); }
+      else expandPane();
     }
   });
 }

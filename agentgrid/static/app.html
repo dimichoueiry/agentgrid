@@ -561,6 +561,13 @@ details.cthink[open]>summary::before{transform:rotate(90deg)}
 .slashmenu button.on{background:var(--card-hover);color:var(--text)}
 .slashmenu .slname{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
   font-family:var(--sans);font-size:11px;color:var(--text-3)}
+/* the composer's [] todo picker — same popup, wider, one todo per row */
+.todomenu{width:340px;max-height:260px;overflow-y:auto}
+.todomenu button.on{background:var(--card-hover);color:var(--text)}
+.todomenu .tdm-box{flex:0 0 auto;color:var(--text-3);font-size:11px}
+.todomenu .tdm-text{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.todomenu .tdm-page{flex:0 0 auto;font-size:10px;color:var(--text-3)}
+.todomenu .tdm-empty{padding:7px 9px;font-size:12px;color:var(--text-3)}
 /* prompt-library list inside the sheet: the manage-panel rows, capped so a long
    library scrolls rather than pushing the form off-screen */
 .plist{max-height:42vh;overflow-y:auto;margin:8px 0 4px;border-top:1px solid var(--line)}
@@ -861,6 +868,8 @@ details.cthink[open]>summary::before{transform:rotate(90deg)}
      pad's @session menu), so typing @ in each never drives the other. -->
 <div class="pmenu atfiles" id="atFiles" hidden></div>
 <div class="pmenu slashmenu" id="slashMenu" hidden></div>
+<!-- Type [] in the composer to drop one of your open todos in as context. -->
+<div class="pmenu todomenu" id="todoMenu" hidden></div>
 
 <div class="scrim" id="scrim2"></div>
 <aside class="panel" id="managePanel">
@@ -1039,6 +1048,8 @@ let atFrom = -1, atSel = 0, atHits = [];
 // prompt / skills library + the composer's /slash palette over it
 let promptLibrary = [], plEditing = null;
 let slashFrom = -1, slashSel = 0, slashHits = [];
+// the composer's [] todo picker: your open todos, loaded when a chat opens
+let todoFrom = -1, todoSel = 0, todoHits = [], todoCache = null;
 
 // columns are data, not markup; they are built once and only cards move
 const COLUMNS = [
@@ -1322,6 +1333,7 @@ function chatOpen(id, engine) {
   // Chat tab still shows its transcript, there's just no composer or live stream
   chatDisabled = engine === "codex";
   if (chatDisabled) return;
+  todoCache = null; loadTodos();     // fresh open-todo list for this session's [] picker
   document.querySelectorAll("#cPosture button").forEach(b =>
     b.setAttribute("aria-pressed", String(b.dataset.posture === chatPosture)));
   $("cModel").value = chatModel;
@@ -2723,6 +2735,67 @@ function insertSlash(i) {
 }
 function hideSlash() { $("slashMenu").hidden = true; slashHits = []; slashFrom = -1; }
 
+/* ------------------------------------------------- [] todo picker (composer) */
+/* Jot ideas as todos in the pad, then pull them into a message as context: type
+   [] and pick one. Filtering is local against todoCache (loaded when the chat
+   opens), so it's instant like the /slash palette. Inserting drops the todo's
+   text as a "- " bullet on its own line, so stacking several reads as a list. */
+
+async function loadTodos() {
+  const d = await api(`/api/todos?date=${encodeURIComponent(todayIso())}&span=week`).catch(() => null);
+  todoCache = (d && d.todos) || [];
+  if (todoFrom >= 0) checkTodoMenu();     // the menu is already open — refresh it
+}
+
+function checkTodoMenu() {
+  const el = $("cInput"); if (!el) { hideTodo(); return; }
+  // [] opens the picker at the start of the message or right after whitespace,
+  // so a literal bracket pair mid-word never triggers it. Everything after []
+  // up to the caret is the filter (todo text has spaces, so no word boundary).
+  const m = /(?:^|\s)\[\]([^\n]*)$/.exec(el.value.slice(0, el.selectionStart));
+  if (!m) { hideTodo(); return; }
+  todoFrom = el.selectionStart - m[1].length - 2;     // index of the "["
+  const q = m[1].trim().toLowerCase();
+  const menu = $("todoMenu");
+  if (todoCache === null) {                            // still loading — say so, load lands via loadTodos
+    menu.innerHTML = `<div class="tdm-empty">Loading todos…</div>`;
+    menu.hidden = false; positionTodo(); return;
+  }
+  todoHits = todoCache.filter(t => !q || t.text.toLowerCase().includes(q)).slice(0, 10);
+  todoSel = 0;
+  if (!todoHits.length) {
+    menu.innerHTML = `<div class="tdm-empty">${todoCache.length ? "No todo matches." : "No open todos — jot some in Notes."}</div>`;
+    menu.hidden = false; positionTodo(); return;
+  }
+  menu.innerHTML = todoHits.map((t, i) =>
+    `<button data-todo="${i}"${i === todoSel ? ' class="on"' : ""}><span class="tdm-box">☐</span>` +
+    `<span class="tdm-text">${esc(t.text)}</span>` +
+    (t.page && t.page !== "notes" ? `<span class="tdm-page">${esc(t.page)}</span>` : "") +
+    `</button>`).join("");
+  menu.hidden = false; positionTodo();
+}
+function positionTodo() {
+  const el = $("cInput"); if (!el) return;
+  const r = el.getBoundingClientRect(), menu = $("todoMenu");
+  menu.style.left = `${Math.max(8, r.left)}px`;
+  menu.style.top = `${Math.max(8, r.top - menu.offsetHeight - 6)}px`;
+}
+function paintTodo() {
+  $("todoMenu").querySelectorAll("button").forEach((b, i) => b.classList.toggle("on", i === todoSel));
+}
+function insertTodo(i) {
+  const t = todoHits[i], el = $("cInput");
+  if (!t) { hideTodo(); return; }
+  const end = el.selectionStart;
+  const before = el.value.slice(0, todoFrom);
+  const nl = (before === "" || before.endsWith("\n")) ? "" : "\n";   // own line, so a list stacks cleanly
+  el.setRangeText(`${nl}- ${t.text}\n`, todoFrom, end, "end");
+  hideTodo();
+  el.focus();
+  chatGrow(el);
+}
+function hideTodo() { $("todoMenu").hidden = true; todoHits = []; todoFrom = -1; }
+
 /* ----------------------------------------------------------- page grid modal */
 
 async function openPageGrid() {
@@ -3137,9 +3210,9 @@ function bindEvents() {
     localStorage.setItem("agentgrid.chatModel", chatModel);       // a view preference, remembered
   });
   const cin = $("cInput");
-  cin.addEventListener("input", () => { chatGrow(cin); checkAtFiles(); checkSlashMenu(); });
-  cin.addEventListener("click", () => { checkAtFiles(); checkSlashMenu(); });   // caret moved into/out of a token
-  cin.addEventListener("blur", () => { hideAtFiles(); hideSlash(); });          // menu picks use mousedown, so focus survives
+  cin.addEventListener("input", () => { chatGrow(cin); checkAtFiles(); checkSlashMenu(); checkTodoMenu(); });
+  cin.addEventListener("click", () => { checkAtFiles(); checkSlashMenu(); checkTodoMenu(); });   // caret moved into/out of a token
+  cin.addEventListener("blur", () => { hideAtFiles(); hideSlash(); hideTodo(); });               // menu picks use mousedown, so focus survives
   cin.addEventListener("keydown", e => {
     // the @ file menu grabs nav keys while it is open; stopPropagation keeps the
     // document-level Escape from closing the whole panel out from under it
@@ -3165,6 +3238,16 @@ function bindEvents() {
       }
       if (e.key === "Enter" || e.key === "Tab") { e.preventDefault(); insertSlash(slashSel); return; }
     }
+    // the [] todo picker intercepts navigation keys while it is open
+    if (!$("todoMenu").hidden && todoHits.length) {
+      if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); hideTodo(); return; }
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        e.preventDefault(); e.stopPropagation();
+        todoSel = (todoSel + (e.key === "ArrowDown" ? 1 : todoHits.length - 1)) % todoHits.length;
+        paintTodo(); return;
+      }
+      if (e.key === "Enter" || e.key === "Tab") { e.preventDefault(); e.stopPropagation(); insertTodo(todoSel); return; }
+    }
     // Enter sends; Shift+Enter is a newline (the textarea's default)
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); chatSend(); }
   });
@@ -3179,6 +3262,12 @@ function bindEvents() {
     e.preventDefault();
     const b = e.target.closest("button[data-slash]");
     if (b) insertSlash(Number(b.dataset.slash));
+  });
+  // mousedown, not click: keep the textarea focused when a todo row is picked
+  $("todoMenu").addEventListener("mousedown", e => {
+    e.preventDefault();
+    const b = e.target.closest("button[data-todo]");
+    if (b) insertTodo(Number(b.dataset.todo));
   });
   cin.addEventListener("paste", chatPaste);
   // the × on a pending-attachment chip

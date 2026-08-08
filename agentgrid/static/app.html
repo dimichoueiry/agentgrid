@@ -66,6 +66,9 @@ summary{cursor:pointer}
    every such element needs this companion or [hidden] silently does nothing */
 .board[hidden],.notes[hidden],.col[hidden],.pmenu[hidden],.modal[hidden],
 .rail[hidden],.toast[hidden],.panel[hidden],.pages[hidden]{display:none!important}
+/* .finder / .codeview set display:flex, which beats the UA [hidden] rule, so
+   they must opt back into hiding explicitly or they never close. */
+.finder[hidden],.codeview[hidden]{display:none!important}
 
 /* ---------- top bar ---------- */
 .bar{

@@ -428,6 +428,32 @@ details.tools .tfail{color:var(--failed)}
 .catt .chip .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-variant-numeric:tabular-nums}
 .catt .chip .x{flex:0 0 auto;font-size:14px;line-height:1;color:var(--text-3);padding:0 3px}
 .catt .chip .x:hover{color:var(--failed)}
+/* prompt/skill reference chips: a compact pill per /slash, edit + remove */
+.crefs{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 7px}
+.crefs[hidden]{display:none}
+.crefs .chip{display:flex;align-items:center;gap:5px;max-width:230px;font-size:11.5px;
+  padding:3px 5px 3px 10px;border:1px solid var(--line-2);border-radius:20px;
+  background:var(--card);color:var(--text-2)}
+.crefs .chip.edited{border-color:var(--accent);color:var(--text)}
+.crefs .chip .rn{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--mono)}
+.crefs .chip .dot{flex:0 0 auto;color:var(--accent);font-size:8px}
+.crefs .chip button{flex:0 0 auto;font-size:12px;line-height:1;color:var(--text-3);
+  background:transparent;border:0;padding:0 2px;cursor:pointer}
+.crefs .chip button:hover{color:var(--text)}
+.crefs .chip .rx:hover{color:var(--failed)}
+.crefedit{margin:0 0 7px}
+.crefedit[hidden]{display:none}
+#cRefText{width:100%;box-sizing:border-box;font:12px/1.5 var(--mono,ui-monospace,monospace);
+  padding:8px 10px;border:1px solid var(--line-2);border-radius:8px;background:var(--card);
+  color:var(--text);resize:vertical;outline:none}
+#cRefText:focus{border-color:var(--accent)}
+.crefedit-bar{display:flex;align-items:center;gap:8px;margin-top:6px}
+.crefedit-name{flex:1;min-width:0;font-size:11px;color:var(--text-3);font-family:var(--mono);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* the compact echo of references on a sent user turn */
+.refpills{display:flex;flex-wrap:wrap;gap:5px;margin:0 0 5px}
+.refpills .refpill{font-size:11px;font-family:var(--mono);color:var(--text-2);
+  padding:2px 8px;border:1px solid var(--line-2);border-radius:20px}
 /* an attached image echoed inside the user's own message bubble */
 .msg .uimg{display:block;max-width:230px;max-height:230px;margin-top:6px;
   border-radius:6px;border:1px solid var(--line)}
@@ -659,7 +685,7 @@ details.cthink[open]>summary::before{transform:rotate(90deg)}
   <div class="toggles"><button id="alertsBtn" aria-pressed="false"
     title="Notify when an agent needs you or replies (while this tab is open)">Alerts</button></div>
   <div class="spacer"></div>
-  <button class="btn" id="promptsBtn" title="Reusable prompts — expand them in the composer with /name">/ Prompts</button>
+  <button class="btn" id="promptsBtn" title="Reusable prompts — reference them in a chat with /name">/ Prompts</button>
   <button class="btn" id="syncBtn" title="Sync your notes to a GitHub repo">⟳ Sync</button>
   <button class="btn key" id="newBtn" title="Start a new agent  (n)">New agent</button>
   <input id="search" type="search" placeholder="Search  /" autocomplete="off">
@@ -736,6 +762,18 @@ details.cthink[open]>summary::before{transform:rotate(90deg)}
        can't resume (Codex). -->
   <div class="pfoot" id="pFoot" hidden>
     <div class="cstatus" id="cStatus"></div>
+    <!-- Prompt/skill references waiting to be sent: a /slash drops a compact
+         chip here instead of pasting the whole body into the box. Edit tweaks
+         it for this message only; the saved prompt is untouched. -->
+    <div class="crefs" id="cRefs" hidden></div>
+    <div class="crefedit" id="cRefEdit" hidden>
+      <textarea id="cRefText" rows="5" spellcheck="false"></textarea>
+      <div class="crefedit-bar">
+        <span class="crefedit-name" id="cRefEditName"></span>
+        <button class="btn sm" id="cRefCancel">Cancel</button>
+        <button class="btn sm key" id="cRefSave">Save for this message</button>
+      </div>
+    </div>
     <!-- Pasted images waiting to be sent; each a removable thumbnail chip. -->
     <div class="catt" id="cAtt" hidden></div>
     <div class="compose">
@@ -837,8 +875,9 @@ details.cthink[open]>summary::before{transform:rotate(90deg)}
 <div class="modal" id="promptModal" hidden>
   <div class="sheet wide">
     <div class="stitle">Prompt library</div>
-    <p class="hint" style="margin:0 0 12px">Reusable prompts you expand in the composer by typing
-      <b>/name</b> — expanding fills the box, it never sends, so you can edit first.
+    <p class="hint" style="margin:0 0 12px">Reusable prompts you reference in a chat by typing
+      <b>/name</b> — it drops a compact chip, not a wall of text; edit the chip to tweak it for
+      one message without changing the saved prompt.
       <b>Export to Claude Code</b> writes one to <code>~/.claude/commands/name.md</code>
       so <b>/name</b> works in the terminal too.</p>
     <!-- add / edit share one form; Save upserts by name (the slug is the key) -->
@@ -1323,12 +1362,17 @@ const chatTools = new Map();       // tool_use id -> its live trace element
 // still uploading); `url` is a local object URL for the thumbnail preview.
 let chatAtt = [];
 let chatAttSeq = 0;
+// Prompt/skill references staged for the next send. Each: {id, name, body, orig}.
+// `body` is what gets expanded into the outgoing message (editable per message);
+// `orig` is the saved prompt's body, so we can show when a chip was tweaked.
+let chatRefs = [], chatRefSeq = 0, cRefEditIdx = -1;
 
 // called from openSession once the panel is showing this id
 function chatOpen(id, engine) {
   chatClose();                     // drop any previous session's stream/state
   chatDone = ""; chatRunning = false; chatQueued = 0; chatTools.clear();
   chatClearAtt();                  // pending pastes don't cross sessions
+  chatClearRefs();                 // nor staged prompt references
   // chat drives the Claude CLI; a Codex session can't be resumed by it — the
   // Chat tab still shows its transcript, there's just no composer or live stream
   chatDisabled = engine === "codex";
@@ -1494,25 +1538,33 @@ async function chatSend() {
   if (chatAtt.some(a => a.pending)) { toast("An image is still uploading…"); return; }
   const ready = chatAtt.filter(a => a.path);
   const paths = ready.map(a => a.path);
-  // An image with no words is a valid turn; only nothing-at-all is a no-op.
-  if (!msg && !paths.length) return;
+  // Referenced prompts expand into the message the agent actually receives, in
+  // chip order, ahead of your typed words -- the chat echo stays compact, but
+  // the model gets the full instructions.
+  const refBodies = chatRefs.map(r => r.body).filter(b => b && b.trim());
+  const outgoing = [...refBodies, msg].filter(Boolean).join("\n\n");
+  // An image or a reference with no words is a valid turn; only truly nothing is a no-op.
+  if (!outgoing && !paths.length) return;
   const id = openId;
   const urls = ready.map(a => a.url);   // reuse the thumbnails for the echo
+  const refEcho = chatRefs.map(r =>
+    `<span class="refpill">/${esc(r.name)}${r.body !== r.orig ? " ✎" : ""}</span>`).join(" ");
   ta.value = ""; chatGrow(ta); hideAtFiles();
   // detach the chips but keep their object URLs alive for the echo below; a
-  // send never leaves a stale attachment behind for the next message
+  // send never leaves a stale attachment or reference behind for the next message
   chatAtt = []; chatRenderAtt();
+  chatClearRefs();
   // show Working at once (also suspends the poll's disk refresh, so the live
   // nodes below survive until the turn lands on disk and the poll reconciles)
   chatRunning = true; chatSetStatus();
   // optimistic echo: the CLI never streams the user's own message back
   const imgs = urls.map(u => `<img class="uimg" src="${esc(u)}" alt="attached image">`).join("");
   chatAppend(`<div class="msg user"><div class="who">YOU</div>` +
-    `<div class="body">${msg ? md(msg) : ""}${imgs}</div></div>`);
+    `<div class="body">${refEcho ? `<div class="refpills">${refEcho}</div>` : ""}${msg ? md(msg) : ""}${imgs}</div></div>`);
   // free the preview URLs once painted; the disk reconcile replaces the echo
   if (urls.length) setTimeout(() => urls.forEach(u => URL.revokeObjectURL(u)), 60000);
   const r = await post("/api/chat",
-    {sessionId: id, message: msg, posture: chatPosture, model: chatModel,
+    {sessionId: id, message: outgoing, posture: chatPosture, model: chatModel,
      attachments: paths});
   if (id !== openId) return;
   if (r && r.error) {
@@ -2727,12 +2779,51 @@ function insertSlash(i) {
   const p = slashHits[i];
   const el = $("cInput");
   if (!p) { hideSlash(); return; }
-  const end = el.selectionStart;            // capture before the caret moves
-  el.setRangeText(p.body, slashFrom, end, "end");
+  const end = el.selectionStart;
+  el.setRangeText("", slashFrom, end, "end");   // drop the /query token; the body is NOT pasted
   hideSlash();
+  // a compact reference chip instead of a wall of text; the body rides along
+  // on send and stays editable for this one message
+  chatRefs.push({id: ++chatRefSeq, name: p.name, body: p.body || "", orig: p.body || ""});
+  chatRenderRefs();
   el.focus();
-  chatGrow(el);                             // the body may be several lines
+  chatGrow(el);
 }
+
+function chatRenderRefs() {
+  const host = $("cRefs"); if (!host) return;
+  host.hidden = chatRefs.length === 0;
+  host.innerHTML = chatRefs.map(r => {
+    const edited = r.body !== r.orig;
+    return `<span class="chip${edited ? " edited" : ""}" data-ref="${r.id}">` +
+      `<span class="rn">/${esc(r.name)}</span>` +
+      (edited ? `<span class="dot" title="Edited for this message">●</span>` : "") +
+      `<button class="re" data-ref-edit="${r.id}" title="Edit for this message" aria-label="Edit">✎</button>` +
+      `<button class="rx" data-ref-rm="${r.id}" title="Remove" aria-label="Remove">&times;</button></span>`;
+  }).join("");
+}
+function chatRemoveRef(id) {
+  if (cRefEditIdx >= 0 && chatRefs[cRefEditIdx] && chatRefs[cRefEditIdx].id === id) chatCancelRef();
+  chatRefs = chatRefs.filter(r => r.id !== id);
+  chatRenderRefs();
+}
+function chatClearRefs() { chatRefs = []; cRefEditIdx = -1; $("cRefEdit").hidden = true; chatRenderRefs(); }
+
+function chatEditRef(id) {
+  const idx = chatRefs.findIndex(r => r.id === id); if (idx < 0) return;
+  cRefEditIdx = idx;
+  $("cRefEditName").textContent = "/" + chatRefs[idx].name;
+  $("cRefText").value = chatRefs[idx].body;
+  $("cRefEdit").hidden = false;
+  const t = $("cRefText"); t.focus(); t.setSelectionRange(t.value.length, t.value.length);
+}
+function chatSaveRef() {
+  if (cRefEditIdx < 0 || !chatRefs[cRefEditIdx]) return chatCancelRef();
+  chatRefs[cRefEditIdx].body = $("cRefText").value;
+  cRefEditIdx = -1; $("cRefEdit").hidden = true;
+  chatRenderRefs(); $("cInput").focus();
+}
+function chatCancelRef() { cRefEditIdx = -1; $("cRefEdit").hidden = true; $("cInput").focus(); }
 function hideSlash() { $("slashMenu").hidden = true; slashHits = []; slashFrom = -1; }
 
 /* ------------------------------------------------- [] todo picker (composer) */
@@ -3274,6 +3365,19 @@ function bindEvents() {
   $("cAtt").addEventListener("click", e => {
     const rm = e.target.closest("[data-att-rm]");
     if (rm) chatRemoveAtt(Number(rm.dataset.attRm));
+  });
+  // prompt-reference chips: edit (✎) opens the per-message editor, × removes
+  $("cRefs").addEventListener("click", e => {
+    const ed = e.target.closest("[data-ref-edit]");
+    if (ed) { chatEditRef(Number(ed.dataset.refEdit)); return; }
+    const rm = e.target.closest("[data-ref-rm]");
+    if (rm) chatRemoveRef(Number(rm.dataset.refRm));
+  });
+  $("cRefSave").addEventListener("click", chatSaveRef);
+  $("cRefCancel").addEventListener("click", chatCancelRef);
+  $("cRefText").addEventListener("keydown", e => {
+    if (e.key === "Escape") { e.preventDefault(); chatCancelRef(); }
+    else if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); chatSaveRef(); }
   });
 
   $("panel").addEventListener("click", e => {

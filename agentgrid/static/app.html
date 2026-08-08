@@ -623,7 +623,7 @@ details.cthink[open]>summary::before{transform:rotate(90deg)}
 .cvp-empty{padding:12px;font-size:12px;color:var(--text-3)}
 .cvp-open{flex:0 0 auto;padding:6px 12px;font-size:11px;color:var(--text-2);
   border-bottom:1px solid var(--line);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.cvp-code{flex:1 1 auto;min-height:0;overflow:auto;padding:6px 0;
+.cvp-code{flex:1 1 auto;min-height:0;overflow:auto;padding:6px 0;user-select:none;
   font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
 .cvp-hollow{padding:16px 12px;font-size:12px;color:var(--text-3)}
 .cvline{display:flex;white-space:pre;cursor:pointer}
@@ -1691,7 +1691,7 @@ function hideAtFiles() {
    openSessionCwd() -- the same file set the @-mention picker already trusts --
    so the pane always follows the project you're actually in, never the board. */
 
-let cvFile = null, cvAnchor = null;       // open file {path}; last line for ranges
+let cvFile = null, cvAnchor = null, cvDragFrom = null;   // open file; shift-anchor; drag start
 let cvHits = [], cvSel = 0, cvSeq = 0;    // finder results
 let cvTree = null, cvTreeOpen = {}, cvTreeCwd = "";   // folder tree, per project
 
@@ -1830,7 +1830,7 @@ async function cvOpen(path) {
   const foot = [];
   if (d.truncated) foot.push("over 2 MB — shown up to 2 MB");
   if (lines.length > CAP) foot.push(`first ${CAP} of ${lines.length} lines`);
-  foot.push("click a line → @ref into your message · shift-click for a range");
+  foot.push("click a line, or drag over a function, to @ref it into your message");
   $("cvFoot").textContent = foot.join(" · ");
   $("cvSearch").value = "";
   cvShowCode();
@@ -1847,16 +1847,12 @@ function cvRevealInTree(path) {
   if (el) el.scrollIntoView({block: "nearest"});
 }
 
-// Click a line: build @path:line (or @path:a-b on shift-click) and drop it into
-// THIS session's composer. Codex has no composer, so it copies instead.
-function cvRef(n, isShift) {
+// Reference lines lo..hi: build @path:line (or @path:a-b for a span) and drop it
+// into THIS session's composer. Codex has no composer, so it copies instead.
+// Single click, click-drag over a chunk (a whole function), or shift-click to
+// extend all land here -- the interaction is wired in wireCodeViewer.
+function cvCommitRef(lo, hi) {
   if (!cvFile) return;
-  let lo = n, hi = n;
-  if (isShift && cvAnchor != null && cvAnchor !== n) {
-    lo = Math.min(cvAnchor, n); hi = Math.max(cvAnchor, n);
-  } else {
-    cvAnchor = n;
-  }
   const ref = `@${cvFile.path}:${lo === hi ? lo : lo + "-" + hi}`;
   const ta = (!chatDisabled && openId) ? $("cInput") : null;
   if (ta) {
@@ -1864,14 +1860,16 @@ function cvRef(n, isShift) {
     const pad = (at > 0 && !/\s$/.test(ta.value.slice(0, at))) ? " " : "";
     ta.setRangeText(pad + ref + " ", at, ta.selectionEnd ?? at, "end");
     chatGrow(ta);
-    toast(`Added ${ref} to your message`);
+    toast(lo === hi ? `Added ${ref} to your message` : `Added ${ref} (${hi - lo + 1} lines)`);
   } else {
     if (navigator.clipboard) navigator.clipboard.writeText(ref.slice(1));
     toast(`Copied ${ref.slice(1)}`);
   }
-  cvFlash(lo, hi);
+  cvAnchor = hi;         // where a following shift-click extends from
+  cvHighlight(lo, hi);
 }
-function cvFlash(lo, hi) {
+// paint lo..hi as the referenced span; used live while dragging and on commit
+function cvHighlight(lo, hi) {
   const body = $("cvCode");
   body.querySelectorAll(".cvline.refd").forEach(el => el.classList.remove("refd"));
   for (let n = lo; n <= hi; n++) {
@@ -1896,8 +1894,26 @@ function wireCodeViewer() {
   $("cvResults").addEventListener("click", e => {
     const b = e.target.closest("[data-ci]"); if (b) cvPick(+b.dataset.ci);
   });
-  $("cvCode").addEventListener("click", e => {
-    const line = e.target.closest(".cvline"); if (line) cvRef(+line.dataset.ln, e.shiftKey);
+  // Reference lines by pointer: a plain click is one line; press and drag over
+  // a chunk (a whole function) selects the span; shift-click extends the last.
+  // Live-highlights while dragging, commits the @ref on release.
+  const lineAt = e => { const el = e.target.closest && e.target.closest(".cvline"); return el ? +el.dataset.ln : null; };
+  $("cvCode").addEventListener("mousedown", e => {
+    const n = lineAt(e); if (n == null) return;
+    e.preventDefault();                       // select lines, not text
+    if (e.shiftKey && cvAnchor != null) { cvCommitRef(Math.min(cvAnchor, n), Math.max(cvAnchor, n)); return; }
+    cvDragFrom = n; cvHighlight(n, n);
+  });
+  $("cvCode").addEventListener("mousemove", e => {
+    if (cvDragFrom == null) return;
+    const n = lineAt(e); if (n == null) return;
+    cvHighlight(Math.min(cvDragFrom, n), Math.max(cvDragFrom, n));
+  });
+  document.addEventListener("mouseup", e => {
+    if (cvDragFrom == null) return;
+    const n = lineAt(e), end = n == null ? cvDragFrom : n;
+    cvCommitRef(Math.min(cvDragFrom, end), Math.max(cvDragFrom, end));
+    cvDragFrom = null;
   });
   $("cvTree").addEventListener("click", e => {
     const dir = e.target.closest("[data-dir]");

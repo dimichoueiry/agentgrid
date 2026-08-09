@@ -819,9 +819,11 @@ details.cthink[open]>summary::before{transform:rotate(90deg)}
         <button class="btn sm" id="naAddProj">+ Add path</button>
       </div>
       <div class="librow" id="naAddRow" hidden>
-        <input id="naAddPath" placeholder="~/Desktop/drawcal" autocomplete="off">
+        <input id="naAddPath" placeholder="~/Desktop/new-project" autocomplete="off">
         <button class="btn sm" id="naAddGo">Add</button>
-      </div></label>
+        <button class="btn sm key" id="naAddCreate" hidden>Create folder</button>
+      </div>
+      <div class="hint" id="naAddHint" hidden>Type any folder — a new one gets created and added.</div></label>
     <label>Engine
       <select id="naEngine">
         <option value="claude">Claude</option>
@@ -3709,22 +3711,33 @@ function bindEvents() {
     fillProjectSelect(p.hidden ? p.path : "");
   });
   $("naAddProj").addEventListener("click", () => {
-    $("naAddRow").hidden = !$("naAddRow").hidden;
-    if (!$("naAddRow").hidden) $("naAddPath").focus();
+    const show = $("naAddRow").hidden;
+    $("naAddRow").hidden = !show; $("naAddHint").hidden = !show;
+    $("naAddCreate").hidden = true;
+    if (show) $("naAddPath").focus();
   });
-  async function addProjectPath() {
+  // create=false first; if the folder just doesn't exist yet, the backend says
+  // so and we reveal "Create folder", which retries with create=true (mkdir).
+  async function addProjectPath(create) {
     const path = $("naAddPath").value.trim(); if (!path) return;
-    const r = await post("/api/projects/add", {path});
-    if (r && r.error) { $("naErr").textContent = r.error; return; }
-    $("naErr").textContent = "";
+    const r = await post("/api/projects/add", {path, create: !!create});
+    if (r && r.error) {
+      $("naErr").textContent = r.error;
+      $("naAddCreate").hidden = !(r.canCreate);   // offer to make a brand-new folder
+      return;
+    }
+    $("naErr").textContent = ""; $("naAddCreate").hidden = true;
     projectsCache = (r && r.projects) || projectsCache;
     fillProjectSelect(r.path);
-    $("naAddPath").value = ""; $("naAddRow").hidden = true;
-    toast(`Added ${r.path.split("/").pop()}.`);
+    $("naAddPath").value = ""; $("naAddRow").hidden = true; $("naAddHint").hidden = true;
+    toast(`${create ? "Created " : "Added "}${r.path.split("/").pop()}.`);
   }
-  $("naAddGo").addEventListener("click", addProjectPath);
+  $("naAddGo").addEventListener("click", () => addProjectPath(false));
+  $("naAddCreate").addEventListener("click", () => addProjectPath(true));
+  // a fresh path invalidates a stale "Create folder" offer
+  $("naAddPath").addEventListener("input", () => { $("naAddCreate").hidden = true; $("naErr").textContent = ""; });
   $("naAddPath").addEventListener("keydown", e => {
-    if (e.key === "Enter") { e.preventDefault(); addProjectPath(); }
+    if (e.key === "Enter") { e.preventDefault(); addProjectPath(false); }
   });
   // the library: picking a saved agent fills the sheet; Save stores the
   // sheet under the Name; a definition is just a saved way of launching

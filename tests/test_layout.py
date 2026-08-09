@@ -469,6 +469,49 @@ class TodosRouteTests(unittest.TestCase):
                 self.assertNotIn("already done", texts)
 
 
+class AddProjectTests(unittest.TestCase):
+    """add_project: existing dirs add; a new folder is created on request."""
+
+    def _prefs(self, base):
+        return mock.patch.object(web, "PROJECT_PREFS_PATH", Path(base) / "projects.json")
+
+    def test_existing_dir_is_added(self):
+        with tempfile.TemporaryDirectory() as base:
+            proj = Path(base) / "proj"
+            proj.mkdir()
+            with self._prefs(base):
+                ok, message, can_create = web.add_project(str(proj))
+                self.assertTrue(ok)
+                self.assertFalse(can_create)
+                self.assertEqual(message, str(proj.resolve()))
+                self.assertIn(str(proj.resolve()), web.load_project_prefs()["added"])
+
+    def test_missing_dir_offers_to_create(self):
+        with tempfile.TemporaryDirectory() as base:
+            with self._prefs(base):
+                ok, _message, can_create = web.add_project(str(Path(base) / "nope"))
+                self.assertFalse(ok)
+                self.assertTrue(can_create)   # the caller can offer "Create folder"
+
+    def test_create_makes_the_folder_and_adds_it(self):
+        with tempfile.TemporaryDirectory() as base:
+            target = Path(base) / "desktop" / "trial-agent"
+            with self._prefs(base):
+                ok, message, _ = web.add_project(str(target), create=True)
+                self.assertTrue(ok)
+                self.assertTrue(target.is_dir())
+                self.assertIn(str(target.resolve()), web.load_project_prefs()["added"])
+
+    def test_a_file_is_not_a_project(self):
+        with tempfile.TemporaryDirectory() as base:
+            handle = Path(base) / "note.txt"
+            handle.write_text("x", "utf-8")
+            with self._prefs(base):
+                ok, _message, can_create = web.add_project(str(handle))
+                self.assertFalse(ok)
+                self.assertFalse(can_create)   # a file is not a "make the folder" case
+
+
 class ReplyPromotionTests(unittest.TestCase):
     """apply_reply_promotion: which idle sessions read as Replied ("done")."""
 

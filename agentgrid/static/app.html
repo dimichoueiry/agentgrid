@@ -357,6 +357,14 @@ body.split .notes{
 .msg.user .body{color:var(--text)}   /* short, worth reading exactly */
 .msg .body .t-h{display:block;margin:6px 0 2px;font-weight:600}
 .msg .body .t-li{display:list-item;margin-left:18px}
+/* markdown tables; display:block + overflow lets a wide one scroll rather than
+   burst the narrow chat column */
+.msg .body .t-tbl{display:block;overflow-x:auto;max-width:100%;border-collapse:collapse;
+  margin:8px 0;font-size:12.5px}
+.msg .body .t-tbl th,.msg .body .t-tbl td{border:1px solid var(--line-2);
+  padding:5px 9px;text-align:left;vertical-align:top}
+.msg .body .t-tbl th{font-weight:600;background:var(--card-2);color:var(--text);white-space:nowrap}
+.msg .body .t-tbl td{color:var(--text-2)}
 pre.t-code{
   font-family:var(--mono);font-size:11px;line-height:1.55;background:var(--bg);
   border:1px solid var(--line);border-radius:6px;padding:8px 10px;overflow-x:auto;
@@ -1014,6 +1022,41 @@ function isTyping() {
    sentinels so nothing inside a code block gets inline formatting, the text is
    escaped, THEN inline rules run over the escaped text, and the fences are
    restored last. Deliberately not a full parser. */
+// GFM tables: a header row, a |---|---| delimiter, then body rows. Runs on the
+// already-inline-formatted text (cells keep their bold/code/links) but BEFORE
+// fenced code is put back, so a table inside a code block is never eaten. A
+// wide table scrolls; ragged rows are padded/truncated to the header width.
+function mdTables(text) {
+  if (text.indexOf("|") < 0) return text;            // fast path: no pipes, no tables
+  const isDelim = s => /\|/.test(s) && /-/.test(s) && /^[\s|:-]+$/.test(s);
+  const cells = s => s.trim().replace(/^\|/, "").replace(/\|$/, "")
+    .replace(/\\\|/g, "").split("|").map(c => c.replace(//g, "|").trim());
+  const align = c => {
+    const l = c.startsWith(":"), r = c.endsWith(":");
+    return l && r ? "center" : r ? "right" : l ? "left" : "";
+  };
+  const lines = text.split("\n"), out = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].indexOf("|") >= 0 && i + 1 < lines.length && isDelim(lines[i + 1])) {
+      const head = cells(lines[i]);
+      const aligns = cells(lines[i + 1]).map(align);
+      const rows = [];
+      let j = i + 2;
+      for (; j < lines.length && lines[j].trim() && lines[j].indexOf("|") >= 0 && !isDelim(lines[j]); j++)
+        rows.push(cells(lines[j]));
+      const cell = (tag, c, k) => `<${tag}${aligns[k] ? ` style="text-align:${aligns[k]}"` : ""}>${c || ""}</${tag}>`;
+      out.push('<table class="t-tbl"><thead><tr>' +
+        head.map((c, k) => cell("th", c, k)).join("") + "</tr></thead><tbody>" +
+        rows.map(r => "<tr>" + head.map((_, k) => cell("td", r[k], k)).join("") + "</tr>").join("") +
+        "</tbody></table>");
+      i = j - 1;
+    } else {
+      out.push(lines[i]);
+    }
+  }
+  return out.join("\n");
+}
+
 function md(raw) {
   const fences = [];
   let text = String(raw ?? "").replace(/```[\w-]*\n?([\s\S]*?)```/g,
@@ -1026,6 +1069,7 @@ function md(raw) {
     .replace(/^\s*[-*]\s+(?!\[[ xX]\])(.*)$/gm, "<span class='t-li'>$1</span>")
     .replace(/\b(https?:\/\/[^\s<)]+)/g, '<a href="$1" target="_blank" rel="noreferrer">$1</a>')
     .replace(/@([a-z0-9][a-z0-9._-]*)/gi, '<a href="#" class="mention" data-slug="$1">@$1</a>');
+  text = mdTables(text);
   return text.replace(/(\d+)/g,
     (_, i) => `<pre class="t-code">${esc(fences[Number(i)])}</pre>`);
 }

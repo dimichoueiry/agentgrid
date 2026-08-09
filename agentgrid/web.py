@@ -411,20 +411,36 @@ def save_project_prefs(prefs: dict) -> None:
     os.replace(temporary, PROJECT_PREFS_PATH)
 
 
-def add_project(raw_path: str) -> tuple[bool, str]:
-    """Add a directory to the picker by hand. Resolved so it compares sanely."""
-    candidate = Path(raw_path).expanduser()
+def add_project(raw_path: str, create: bool = False) -> tuple[bool, str, bool]:
+    """Add a directory to the picker by hand, optionally creating it.
+
+    Returns (ok, message, can_create). `can_create` is True on the one failure
+    worth offering a fix for -- a well-formed path that simply does not exist
+    yet -- so the caller can offer to make the folder and start a fresh project
+    in it. The path is ~-expanded and resolved so it compares sanely.
+    """
+    raw = str(raw_path or "").strip()
+    if not raw:
+        return False, "Type a folder path.", False
+    candidate = Path(raw).expanduser()
     try:
         candidate = candidate.resolve()
     except OSError:
-        return False, "That path could not be resolved."
-    if not candidate.is_dir():
-        return False, f"{candidate} is not a directory."
+        return False, "That path could not be resolved.", False
+    if not candidate.exists():
+        if not create:
+            return False, f"{candidate} does not exist yet.", True
+        try:
+            candidate.mkdir(parents=True, exist_ok=True)
+        except OSError as error:
+            return False, f"Could not create {candidate}: {error}", False
+    elif not candidate.is_dir():
+        return False, f"{candidate} is a file, not a directory.", False
     prefs = load_project_prefs()
     if str(candidate) not in prefs["added"]:
         prefs["added"].append(str(candidate))
         save_project_prefs(prefs)
-    return True, str(candidate)
+    return True, str(candidate), False
 
 
 def set_project_pref(path: str, kind: str, on: bool) -> None:
@@ -1277,12 +1293,13 @@ class Handler(BaseHTTPRequestHandler):
         elif route == "/api/spawn":
             self._spawn(body)
         elif route == "/api/projects/add":
-            ok, message = add_project(str(body.get("path") or ""))
+            ok, message, can_create = add_project(
+                str(body.get("path") or ""), bool(body.get("create")))
             if ok:
                 self._send_json(200, {"ok": True, "path": message,
                                       "projects": discover_projects(self.fleet.raw())})
             else:
-                self._send_json(400, {"error": message})
+                self._send_json(400, {"error": message, "canCreate": can_create})
         elif route == "/api/projects/pref":
             path = str(body.get("path") or "")
             if "fav" in body:

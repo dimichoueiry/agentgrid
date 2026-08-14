@@ -1,0 +1,355 @@
+"""Agent teams: wire Claude Code sessions into a pipeline with loops.
+
+A "team" is the authoring layer AgentGrid was missing. It lets you compose real
+Claude Code sessions -- a researcher, a writer, a reviewer -- into a pipeline
+where one node's output feeds the next node's input, with loops ("send the draft
+back to the writer until the reviewer approves"). It is deliberately NOT a new
+agent framework: every node is a real `claude -p` turn on the user's own login,
+driven through the same `chat.ChatSession` engine the chat panel uses. No SDK,
+no API key, no LangGraph -- Claude Code already is the agent; this only decides
+who runs, in what order, and what each one is told.
+
+The design in three ideas:
+
+- **Nodes are sessions.** Each node owns one persistent `ChatSession`. Running a
+  node a second time (on a loop) *resumes* that session, so the writer still has
+  its draft and genuinely revises it rather than starting from scratch.
+- **Wiring is templating.** A node's prompt is a template; `{input}` is the
+  team's input and `{node_id}` is that node's latest output. That is the
+  "output of one into the input of the next", written plainly.
+- **Loops are explicit.** A loop watches one node's output for a token (e.g.
+  `NEEDS_WORK`) and, while it is present and under a cap, jumps back to an
+  earlier node with a feedback message. Bounded, so a stubborn reviewer can't
+  spin forever.
+
+Everything fails soft and streams: the run emits the same shape of events the
+chat panel already understands, tagged by node, so the board can draw the
+pipeline live.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import queue
+import re
+import threading
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from agentgrid import chat
+
+TEAMS_DIR = Path.home() / ".agentgrid" / "teams"
+
+_PLACEHOLDER = re.compile(r"\{([A-Za-z0-9_-]+)\}")
+
+
+# ---------------------------------------------------------------------------
+# The team definition -- plain data, so a team is authored, not coded.
+
+
+@dataclass
+class Node:
+    id: str
+    role: str            # the human label shown on the board ("researcher")
+    prompt: str          # template over {input} and {node_id}
+    posture: str = "auto"
+    model: str = ""
+
+
+@dataclass
+class Loop:
+    at: str              # node whose output is tested
+    back_to: str         # node to jump back to when the test passes
+    when: str            # token that, if present in `at`'s output, triggers the loop
+    max: int = 3
+    # What the `back_to` node is told on a loop. {at} is the tested node's output.
+    feedback: str = "Please revise based on this feedback:\n\n{at}"
+
+
+@dataclass
+class Team:
+    name: str
+    cwd: str
+    nodes: list[Node]
+    loops: list[Loop] = field(default_factory=list)
+
+    def node(self, node_id: str) -> Node | None:
+        return next((n for n in self.nodes if n.id == node_id), None)
+
+    def index_of(self, node_id: str) -> int:
+        return next(i for i, n in enumerate(self.nodes) if n.id == node_id)
+
+
+# ---------------------------------------------------------------------------
+# Load / validate / store. A malformed team raises ValueError with the reason;
+# every file read tolerates absence and corruption like the rest of the app.
+
+
+def load_team(data: object) -> Team:
+    if not isinstance(data, dict):
+        raise ValueError("a team must be a JSON object")
+    name = str(data.get("name") or "").strip()
+    cwd = str(data.get("cwd") or "").strip()
+    if not name:
+        raise ValueError("the team needs a name")
+    raw_nodes = data.get("nodes")
+    if not isinstance(raw_nodes, list) or not raw_nodes:
+        raise ValueError("the team needs at least one node")
+
+    nodes: list[Node] = []
+    seen: set[str] = set()
+    for raw in raw_nodes:
+        if not isinstance(raw, dict):
+            raise ValueError("each node must be an object")
+        node_id = str(raw.get("id") or "").strip()
+        prompt = str(raw.get("prompt") or "")
+        if not node_id or not prompt.strip():
+            raise ValueError("each node needs an id and a prompt")
+        if node_id in seen:
+            raise ValueError(f"duplicate node id: {node_id}")
+        seen.add(node_id)
+        posture = raw.get("posture") if raw.get("posture") in chat.POSTURES else chat.DEFAULT_POSTURE
+        nodes.append(Node(
+            id=node_id,
+            role=str(raw.get("role") or node_id),
+            prompt=prompt,
+            posture=posture,
+            model=str(raw.get("model") or ""),
+        ))
+
+    loops: list[Loop] = []
+    for raw in data.get("loops") or []:
+        if not isinstance(raw, dict):
+            raise ValueError("each loop must be an object")
+        at = str(raw.get("at") or "")
+        back_to = str(raw.get("back_to") or "")
+        when = str(raw.get("when") or "")
+        if at not in seen or back_to not in seen:
+            raise ValueError("a loop's 'at' and 'back_to' must be node ids")
+        if not when:
+            raise ValueError("a loop needs a 'when' token to watch for")
+        try:
+            cap = max(1, int(raw.get("max", 3)))
+        except (TypeError, ValueError):
+            cap = 3
+        loops.append(Loop(
+            at=at, back_to=back_to, when=when, max=cap,
+            feedback=str(raw.get("feedback") or Loop.feedback),
+        ))
+    return Team(name=name, cwd=cwd, nodes=nodes, loops=loops)
+
+
+def team_to_dict(team: Team) -> dict:
+    return {
+        "name": team.name,
+        "cwd": team.cwd,
+        "nodes": [
+            {"id": n.id, "role": n.role, "prompt": n.prompt,
+             "posture": n.posture, "model": n.model}
+            for n in team.nodes
+        ],
+        "loops": [
+            {"at": l.at, "back_to": l.back_to, "when": l.when,
+             "max": l.max, "feedback": l.feedback}
+            for l in team.loops
+        ],
+    }
+
+
+def _slug(name: str) -> str:
+    return re.sub(r"[^a-z0-9._-]+", "-", name.strip().lower()).strip("-") or "team"
+
+
+def list_teams() -> list[Team]:
+    teams: list[Team] = []
+    try:
+        paths = sorted(TEAMS_DIR.glob("*.json"))
+    except OSError:
+        return []
+    for path in paths:
+        try:
+            teams.append(load_team(json.loads(path.read_text(encoding="utf-8"))))
+        except (OSError, ValueError):
+            continue
+    return teams
+
+
+def save_team(team: Team) -> Path:
+    TEAMS_DIR.mkdir(parents=True, exist_ok=True)
+    path = TEAMS_DIR / f"{_slug(team.name)}.json"
+    temp = path.with_suffix(".json.tmp")
+    temp.write_text(json.dumps(team_to_dict(team), indent=2), encoding="utf-8")
+    os.replace(temp, path)
+    return path
+
+
+# ---------------------------------------------------------------------------
+# Templating: {input} and {node_id} -> values. Unknown braces are left as-is,
+# so a prompt full of literal { } (JSON, code) is not mangled.
+
+
+def render(template: str, values: dict) -> str:
+    return _PLACEHOLDER.sub(
+        lambda m: str(values[m.group(1)]) if m.group(1) in values else m.group(0),
+        template,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Running a team.
+
+
+class TeamRun:
+    """One execution of a team: nodes in order, wired by templating, with loops.
+
+    Each node runs to completion before the next starts (the CLI is one turn at a
+    time). A node's `ChatSession` persists for the whole run, so a loop back to
+    it resumes -- the writer keeps its draft. Events stream to subscribers tagged
+    by node, in the chat panel's own vocabulary.
+    """
+
+    def __init__(self, team: Team, team_input: str) -> None:
+        self.team = team
+        self.outputs: dict[str, str] = {"input": team_input}
+        # Every node id starts empty, so a prompt referencing {review} before the
+        # reviewer has run renders blank rather than a literal "{review}".
+        for node in team.nodes:
+            self.outputs.setdefault(node.id, "")
+        self._sessions: dict[str, chat.ChatSession] = {}
+        self._subscribers: list[queue.Queue] = []
+        self._lock = threading.Lock()
+        self._cancelled = False
+        self._worker: threading.Thread | None = None
+        self.done = False
+        self.ok = False
+
+    # -- fan-out (same shape as ChatSession, so the UI reuses its plumbing) --
+
+    def subscribe(self) -> queue.Queue:
+        channel: queue.Queue = queue.Queue()
+        with self._lock:
+            self._subscribers.append(channel)
+        return channel
+
+    def unsubscribe(self, channel: queue.Queue) -> None:
+        with self._lock:
+            if channel in self._subscribers:
+                self._subscribers.remove(channel)
+
+    def _emit(self, event: dict) -> None:
+        with self._lock:
+            channels = list(self._subscribers)
+        for channel in channels:
+            channel.put(event)
+
+    # -- lifecycle ----------------------------------------------------------
+
+    def start(self) -> None:
+        with self._lock:
+            if self._worker is None:
+                self._worker = threading.Thread(target=self._run, daemon=True)
+                self._worker.start()
+
+    def cancel(self) -> None:
+        self._cancelled = True
+        for session in list(self._sessions.values()):
+            session.cancel()
+
+    def _run(self) -> None:
+        self._emit({
+            "type": "team_started",
+            "name": self.team.name,
+            "nodes": [{"id": n.id, "role": n.role} for n in self.team.nodes],
+        })
+        loop_counts: dict[str, int] = {}
+        override: str | None = None      # a one-shot prompt for a loop-back node
+        idx = 0
+        try:
+            while idx < len(self.team.nodes) and not self._cancelled:
+                node = self.team.nodes[idx]
+                prompt = override if override is not None else render(node.prompt, self.outputs)
+                override = None
+                result, failed = self._run_node(node, prompt)
+                self.outputs[node.id] = result
+                if failed or self._cancelled:
+                    break
+
+                loop = self._loop_at(node.id)
+                if loop and loop.when.upper() in result.upper() \
+                        and loop_counts.get(loop.at, 0) < loop.max:
+                    loop_counts[loop.at] = loop_counts.get(loop.at, 0) + 1
+                    self._emit({"type": "loop", "at": loop.at, "backTo": loop.back_to,
+                                "iter": loop_counts[loop.at], "max": loop.max})
+                    # {at} is a convenience alias for the tested node's output, so a
+                    # generic feedback template needn't hard-code the reviewer's id.
+                    override = render(loop.feedback, {**self.outputs, "at": result})
+                    idx = self.team.index_of(loop.back_to)
+                    continue
+                idx += 1
+            else:
+                self.ok = not self._cancelled
+        finally:
+            self.done = True
+            self._emit({"type": "team_done", "ok": self.ok,
+                        "cancelled": self._cancelled, "outputs": self.outputs})
+
+    def _loop_at(self, node_id: str) -> Loop | None:
+        return next((l for l in self.team.loops if l.at == node_id), None)
+
+    def _run_node(self, node: Node, prompt: str) -> tuple[str, bool]:
+        """Run one node to completion. Returns (output_text, failed)."""
+        session = self._sessions.get(node.id)
+        if session is None:
+            session = chat.ChatSession(None, self.team.cwd)
+            self._sessions[node.id] = session
+        channel = session.subscribe()
+        self._emit({"type": "node_started", "id": node.id, "role": node.role})
+        session.send(prompt, node.posture, node.model)
+
+        result, failed = "", False
+        try:
+            while True:
+                event = channel.get()
+                kind = event.get("type")
+                # Forward the node's activity so the board can show it live.
+                self._emit({"type": "node_event", "id": node.id, "event": event})
+                if kind == "turn_started" and not session.session_id:
+                    # Belt-and-suspenders: make the session resumable for loops.
+                    session.session_id = event.get("sessionId")
+                if kind == "turn_done":
+                    result = event.get("result") or ""
+                    failed = not event.get("ok", True)
+                    break
+                if kind == "error":
+                    failed = True
+                    break
+        finally:
+            session.unsubscribe(channel)
+        self._emit({"type": "node_done", "id": node.id, "output": result, "ok": not failed})
+        return result, failed
+
+
+class TeamManager:
+    """Holds running team executions, keyed by team name (one run per team)."""
+
+    def __init__(self) -> None:
+        self._runs: dict[str, TeamRun] = {}
+        self._lock = threading.Lock()
+
+    def start(self, team: Team, team_input: str) -> TeamRun:
+        run = TeamRun(team, team_input)
+        with self._lock:
+            self._runs[team.name] = run
+        run.start()
+        return run
+
+    def get(self, name: str) -> TeamRun | None:
+        with self._lock:
+            return self._runs.get(name)
+
+    def cancel(self, name: str) -> None:
+        with self._lock:
+            run = self._runs.get(name)
+        if run:
+            run.cancel()

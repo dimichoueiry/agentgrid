@@ -1,0 +1,27 @@
+{
+  "name": "writing-team",
+  "cwd": "REPLACE/WITH/AN/ABSOLUTE/REPO/PATH",
+  "nodes": [
+    {
+      "id": "research",
+      "role": "researcher",
+      "posture": "read-only",
+      "prompt": "Research the topic and gather the key facts, angles, and sources. Be thorough but concise.\n\nTopic:\n{input}"
+    },
+    {
+      "id": "write",
+      "role": "writer",
+      "posture": "auto",
+      "prompt": "Write a clear, engaging article on the topic, grounded in the research below. If the reviewer left feedback on an earlier draft, address every point.\n\nTopic:\n{input}\n\nResearch:\n{research}\n\nReviewer feedback (if any):\n{review}"
+    },
+    {
+      "id": "review",
+      "role": "reviewer",
+      "posture": "read-only",
+      "prompt": "You are a demanding editor. Audit the draft for accuracy, clarity, structure, and flow. If it is publishable, reply with only the word APPROVED. Otherwise reply 'NEEDS_WORK' followed by a numbered list of concrete fixes.\n\nDraft:\n{write}"
+    }
+  ],
+  "loops": [
+    { "at": "review", "back_to": "write", "when": "NEEDS_WORK", "max": 3 }
+  ]
+}

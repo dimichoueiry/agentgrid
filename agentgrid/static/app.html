@@ -676,6 +676,22 @@ details.cthink[open]>summary::before{transform:rotate(90deg)}
 .cvc{flex:1 1 auto;padding-right:16px;color:var(--text)}
 .cvp-foot{flex:0 0 auto;padding:6px 12px;border-top:1px solid var(--line);
   font-size:11px;color:var(--text-3)}
+/* teams builder */
+.trow2{display:flex;gap:10px}.trow2>label{flex:1}
+.trow4{display:flex;gap:8px;align-items:flex-end}.trow4>label{flex:1;font-size:11px}
+.trow4 #tmLoopMax{max-width:70px}
+.thead{font-size:12px;font-weight:600;margin:14px 0 6px;color:var(--text)}
+#tmNodes{display:flex;flex-direction:column;gap:8px}
+.tmnode{border:1px solid var(--line-2);border-radius:8px;padding:8px;background:var(--card)}
+.tmnrow{display:flex;gap:6px;margin-bottom:6px}
+.tmnrow>input{flex:1;min-width:0}.tmnrow .tmid{flex:0 0 130px}
+.tmnode .tmprompt{width:100%;box-sizing:border-box}
+.tmlog{margin-top:12px;max-height:38vh;overflow:auto;border-top:1px solid var(--line-2);padding-top:8px;font-size:12px}
+.tmlog .ev{padding:2px 0}
+.tmlog .node{font-weight:600}
+.tmlog .run{color:var(--accent)}
+.tmlog .out{color:var(--text-2);white-space:pre-wrap;margin:2px 0 6px 14px}
+.tmlog .loop{color:var(--accent);font-weight:600}
 </style>
 </head>
 <body>
@@ -694,6 +710,7 @@ details.cthink[open]>summary::before{transform:rotate(90deg)}
     title="Notify when an agent needs you or replies (while this tab is open)">Alerts</button></div>
   <div class="spacer"></div>
   <button class="btn" id="promptsBtn" title="Reusable prompts — reference them in a chat with /name">/ Prompts</button>
+  <button class="btn" id="teamsBtn" title="Build and run agent workflows">⛓ Teams</button>
   <button class="btn" id="syncBtn" title="Sync your notes to a GitHub repo">⟳ Sync</button>
   <button class="btn key" id="newBtn" title="Start a new agent  (n)">New agent</button>
   <input id="search" type="search" placeholder="Search  /" autocomplete="off">
@@ -931,6 +948,45 @@ details.cthink[open]>summary::before{transform:rotate(90deg)}
 
 <div class="modal" id="gridModal" hidden>
   <div class="sheet wide" id="gmSheet"></div>
+</div>
+
+<div class="modal" id="teamsModal" hidden>
+  <div class="sheet wide">
+    <div class="stitle">Teams — build a workflow</div>
+    <label>Team
+      <div class="librow">
+        <select id="tmPick"><option value="">— new team —</option></select>
+        <button class="btn sm" id="tmDel" hidden>Delete</button>
+      </div></label>
+    <div class="trow2">
+      <label>Name <input id="tmName" autocomplete="off"></label>
+      <label>Working directory <span class="hint">where the agents run</span>
+        <input id="tmCwd" placeholder="/absolute/path/to/repo" autocomplete="off" spellcheck="false"></label>
+    </div>
+    <div class="thead">Agents <span class="hint">a prompt can pull another's output with {node_id}; {input} is the team's input</span></div>
+    <div id="tmNodes"></div>
+    <button class="btn sm" id="tmAddNode">+ Add agent</button>
+    <div class="thead">Loop <span class="hint">optional — send work back until a token stops appearing</span></div>
+    <div class="trow4">
+      <label>when <select id="tmLoopAt"><option value="">—</option></select></label>
+      <label>outputs <input id="tmLoopWhen" placeholder="NEEDS_WORK" autocomplete="off"></label>
+      <label>go back to <select id="tmLoopBack"><option value="">—</option></select></label>
+      <label>max <input id="tmLoopMax" type="number" min="1" value="3"></label>
+    </div>
+    <div class="srow">
+      <span class="hint err" id="tmErr"></span><span class="spacer"></span>
+      <button class="btn" id="tmCancel">Close</button>
+      <button class="btn" id="tmSave">Save</button>
+    </div>
+    <div class="thead">Run <span class="hint">feeds {input} to the first agent</span></div>
+    <textarea id="tmInput" rows="2" placeholder="What should the team work on?"></textarea>
+    <div class="srow">
+      <span class="hint" id="tmStatus"></span><span class="spacer"></span>
+      <button class="btn" id="tmStop" hidden>Stop</button>
+      <button class="btn key" id="tmRun">Save &amp; Run</button>
+    </div>
+    <div id="tmLog" class="tmlog"></div>
+  </div>
 </div>
 
 <div class="toast" id="toast" hidden></div>
@@ -3132,6 +3188,151 @@ function syncedAgo(ts) {
   if (!ts) return "never synced";
   return "last synced " + ageStr(Math.max(0, Date.now() / 1000 - ts));
 }
+/* --------------------------------------------------------------- teams */
+// Build and run agent workflows from the board. A team is agents (nodes) wired
+// by templating ({node_id}) with an optional loop; a run streams over SSE, and
+// the log replays from the server so opening the panel mid-run still shows it all.
+let teamsPostures = ["auto", "read-only"];
+let teamsCache = [];
+let tmSrc = null;
+
+const WRITING_TEMPLATE = {
+  name: "", cwd: "",
+  nodes: [
+    {id: "research", role: "researcher", posture: "read-only",
+     prompt: "Research this topic and gather the key facts and angles:\n{input}"},
+    {id: "write", role: "writer", posture: "auto",
+     prompt: "Write a clear, engaging article grounded in the research. If the reviewer left feedback, address every point.\n\nResearch:\n{research}\n\nReviewer feedback (if any):\n{review}"},
+    {id: "review", role: "reviewer", posture: "read-only",
+     prompt: "You are a demanding editor. Reply with only APPROVED if it is publishable; otherwise reply NEEDS_WORK and a numbered list of concrete fixes.\n\nDraft:\n{write}"},
+  ],
+  loops: [{at: "review", back_to: "write", when: "NEEDS_WORK", max: 3}],
+};
+
+function tmFillPicker(selected) {
+  $("tmPick").innerHTML = `<option value="">— new team —</option>` +
+    teamsCache.map(t => `<option value="${esc(t.name)}"${t.name === selected ? " selected" : ""}>${esc(t.name)}</option>`).join("");
+}
+async function openTeams() {
+  $("tmErr").textContent = ""; $("tmStatus").textContent = ""; $("tmLog").innerHTML = "";
+  let data = {};
+  try { data = await api("/api/teams"); } catch (e) { data = {}; }
+  teamsCache = data.teams || [];
+  teamsPostures = data.postures || teamsPostures;
+  tmFillPicker(teamsCache[0] ? teamsCache[0].name : "");
+  loadTeamIntoEditor(teamsCache[0] || WRITING_TEMPLATE);
+  $("teamsModal").hidden = false;
+}
+function closeTeams() { if (tmSrc) { tmSrc.close(); tmSrc = null; } $("teamsModal").hidden = true; }
+
+function nodeEditorHTML(n) {
+  n = n || {};
+  const opts = teamsPostures.map(p =>
+    `<option value="${p}"${n.posture === p ? " selected" : ""}>${p}</option>`).join("");
+  return `<div class="tmnode">
+    <div class="tmnrow">
+      <input class="tmid" placeholder="id (e.g. writer)" value="${esc(n.id || "")}">
+      <input class="tmrole" placeholder="role label" value="${esc(n.role || "")}">
+      <select class="tmposture">${opts}</select>
+      <button class="btn sm tmrm" title="remove agent">✕</button>
+    </div>
+    <textarea class="tmprompt" rows="3" placeholder="what to tell this agent — use {input} and {other_id}">${esc(n.prompt || "")}</textarea>
+  </div>`;
+}
+function renderTeamNodes(nodes) {
+  $("tmNodes").innerHTML = (nodes.length ? nodes : [{}]).map(nodeEditorHTML).join("");
+  $("tmNodes").querySelectorAll(".tmrm").forEach(b => b.addEventListener("click", () => {
+    b.closest(".tmnode").remove(); refreshLoopSelects();
+  }));
+  $("tmNodes").querySelectorAll(".tmid").forEach(i => i.addEventListener("input", refreshLoopSelects));
+}
+function loadTeamIntoEditor(t) {
+  $("tmName").value = t.name || "";
+  $("tmCwd").value = t.cwd || "";
+  renderTeamNodes(t.nodes || []);
+  refreshLoopSelects();
+  const loop = (t.loops || [])[0] || {};
+  $("tmLoopWhen").value = loop.when || "";
+  $("tmLoopMax").value = loop.max || 3;
+  $("tmLoopAt").value = loop.at || "";
+  $("tmLoopBack").value = loop.back_to || "";
+  $("tmDel").hidden = !teamsCache.some(x => x.name === t.name);
+}
+function collectNodesRaw() {
+  return [...$("tmNodes").querySelectorAll(".tmnode")].map(el => ({
+    id: el.querySelector(".tmid").value.trim(),
+    role: el.querySelector(".tmrole").value.trim(),
+    posture: el.querySelector(".tmposture").value,
+    prompt: el.querySelector(".tmprompt").value,
+  }));
+}
+function refreshLoopSelects() {
+  const ids = collectNodesRaw().map(n => n.id).filter(Boolean);
+  for (const sel of ["tmLoopAt", "tmLoopBack"]) {
+    const cur = $(sel).value;
+    $(sel).innerHTML = `<option value="">—</option>` +
+      ids.map(id => `<option value="${esc(id)}">${esc(id)}</option>`).join("");
+    if (ids.includes(cur)) $(sel).value = cur;
+  }
+}
+function collectTeam() {
+  const team = {name: $("tmName").value.trim(), cwd: $("tmCwd").value.trim(),
+                nodes: collectNodesRaw().filter(n => n.id && n.prompt.trim()), loops: []};
+  const at = $("tmLoopAt").value, back = $("tmLoopBack").value, when = $("tmLoopWhen").value.trim();
+  if (at && back && when)
+    team.loops.push({at, back_to: back, when, max: parseInt($("tmLoopMax").value, 10) || 3});
+  return team;
+}
+async function saveTeam() {
+  const team = collectTeam();
+  if (!team.name) { $("tmErr").textContent = "Give the team a name."; return false; }
+  if (!team.nodes.length) { $("tmErr").textContent = "Add at least one agent (id + prompt)."; return false; }
+  const r = await post("/api/teams", team);
+  if (r && r.error) { $("tmErr").textContent = r.error; return false; }
+  $("tmErr").textContent = "";
+  try { teamsCache = (await api("/api/teams")).teams || []; } catch (e) {}
+  tmFillPicker(team.name);
+  $("tmDel").hidden = false;
+  return true;
+}
+async function runTeam() {
+  if (!(await saveTeam())) return;
+  const name = $("tmName").value.trim();
+  $("tmLog").innerHTML = ""; $("tmStatus").textContent = "starting…";
+  const r = await post("/api/teams/run", {name, input: $("tmInput").value});
+  if (r && r.error) { $("tmStatus").textContent = ""; $("tmErr").textContent = r.error; return; }
+  $("tmStop").hidden = false; $("tmRun").disabled = true;
+  if (tmSrc) tmSrc.close();
+  tmSrc = new EventSource(
+    `/api/teams/stream?name=${encodeURIComponent(name)}&t=${encodeURIComponent(TOKEN)}`);
+  tmSrc.onmessage = (e) => { let ev; try { ev = JSON.parse(e.data); } catch (_) { return; } renderTeamEvent(ev); };
+}
+function tmLogLine(html, cls) {
+  const div = document.createElement("div");
+  div.className = "ev" + (cls ? " " + cls : "");
+  div.innerHTML = html;
+  const log = $("tmLog"); log.appendChild(div); log.scrollTop = log.scrollHeight;
+}
+function renderTeamEvent(ev) {
+  if (ev.type === "team_started") {
+    $("tmStatus").textContent = "running";
+    tmLogLine(`▶ <span class="node">${esc(ev.name)}</span>: ` +
+      (ev.nodes || []).map(n => esc(n.role)).join(" → "));
+  } else if (ev.type === "node_started") {
+    tmLogLine(`● <span class="node run">${esc(ev.role)}</span> (${esc(ev.id)}) running…`, "run");
+  } else if (ev.type === "node_done") {
+    tmLogLine(`✓ <span class="node">${esc(ev.id)}</span>` +
+      `<div class="out">${esc((ev.output || "").slice(0, 800))}</div>`);
+  } else if (ev.type === "loop") {
+    tmLogLine(`↻ loop ${ev.iter}/${ev.max}: ${esc(ev.at)} → back to ${esc(ev.backTo)}`, "loop");
+  } else if (ev.type === "team_done") {
+    tmLogLine(`■ done ${ev.ok ? "✓" : (ev.cancelled ? "(stopped)" : "✗")}`);
+    $("tmStatus").textContent = ev.ok ? "done" : (ev.cancelled ? "stopped" : "failed");
+    $("tmStop").hidden = true; $("tmRun").disabled = false;
+    if (tmSrc) { tmSrc.close(); tmSrc = null; }
+  }
+}
+
 async function openSync() {
   $("syncStatus").textContent = "";
   $("syncStatus").classList.remove("err");
@@ -3252,6 +3453,27 @@ function bindEvents() {
   $("syncBtn").addEventListener("click", openSync);
   $("syncCancel").addEventListener("click", closeSync);
   $("syncGo").addEventListener("click", doSync);
+
+  // teams (agent workflows)
+  $("teamsBtn").addEventListener("click", openTeams);
+  $("tmCancel").addEventListener("click", closeTeams);
+  $("teamsModal").addEventListener("click", e => { if (e.target === $("teamsModal")) closeTeams(); });
+  $("tmAddNode").addEventListener("click", () => {
+    renderTeamNodes(collectNodesRaw().concat([{posture: teamsPostures[0]}]));
+    refreshLoopSelects();
+  });
+  $("tmSave").addEventListener("click", saveTeam);
+  $("tmRun").addEventListener("click", runTeam);
+  $("tmStop").addEventListener("click", () => post("/api/teams/cancel", {name: $("tmName").value.trim()}));
+  $("tmPick").addEventListener("change", () => {
+    const t = teamsCache.find(x => x.name === $("tmPick").value);
+    loadTeamIntoEditor(t || {name: "", cwd: $("tmCwd").value, nodes: [], loops: []});
+  });
+  $("tmDel").addEventListener("click", async () => {
+    const name = $("tmPick").value; if (!name) return;
+    await post("/api/teams/delete", {name});
+    await openTeams();
+  });
 
   // prompt / skills library
   $("promptsBtn").addEventListener("click", openPrompts);

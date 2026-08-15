@@ -42,7 +42,7 @@ from datetime import date, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from agentgrid import chat, discovery, notes, sync, terminal, transcript
+from agentgrid import chat, discovery, notes, sync, teams, terminal, transcript
 
 STATIC = Path(__file__).resolve().parent / "static"
 POLL_SECONDS = 2.0
@@ -1088,6 +1088,11 @@ class Handler(BaseHTTPRequestHandler):
             self._chat_stream(query)
         elif route == "/api/chat/state":
             self._send_json(200, self.chat.state(self._one(query, "session")))
+        elif route == "/api/teams":
+            self._send_json(200, {"teams": [teams.team_to_dict(t) for t in teams.list_teams()],
+                                  "postures": list(chat.POSTURES)})
+        elif route == "/api/teams/stream":
+            self._teams_stream(query)
         elif route == "/api/transcript":
             self._get_transcript(query)
         elif route == "/api/files":
@@ -1357,8 +1362,73 @@ class Handler(BaseHTTPRequestHandler):
         elif route == "/api/chat/cancel":
             self.chat.cancel(str(body.get("sessionId") or ""))
             self._send_json(200, {"ok": True})
+        elif route == "/api/teams":
+            self._teams_save(body)
+        elif route == "/api/teams/delete":
+            self._send_json(200, {"ok": teams.delete_team(str(body.get("name") or ""))})
+        elif route == "/api/teams/run":
+            self._teams_run(body)
+        elif route == "/api/teams/cancel":
+            self.teams.cancel(str(body.get("name") or ""))
+            self._send_json(200, {"ok": True})
         else:
             self._send_json(404, {"error": "No such route."})
+
+    # -- team routes ---------------------------------------------------------
+
+    def _teams_save(self, body: dict) -> None:
+        # Validate through the same loader the engine uses, so a team saved from
+        # the builder is always a team the runner can run.
+        try:
+            team = teams.load_team(body)
+        except ValueError as error:
+            self._send_json(400, {"error": str(error)})
+            return
+        teams.save_team(team)
+        self._send_json(200, {"ok": True})
+
+    def _teams_run(self, body: dict) -> None:
+        name = str(body.get("name") or "")
+        team = next((t for t in teams.list_teams() if t.name == name), None)
+        if team is None:
+            self._send_json(404, {"error": "Unknown team. Save it first."})
+            return
+        if not team.cwd:
+            self._send_json(400, {"error": "This team has no working directory set."})
+            return
+        self.teams.start(team, str(body.get("input") or ""))
+        self._send_json(200, {"ok": True})
+
+    def _teams_stream(self, query: dict) -> None:
+        """SSE for one team run. Replays the run's log, then streams live events."""
+        run = self.teams.get(self._one(query, "name"))
+        if run is None:
+            self._send_json(404, {"error": "No run for that team yet."})
+            return
+        channel = run.subscribe()
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "keep-alive")
+            self.send_header("X-Accel-Buffering", "no")
+            self.end_headers()
+            self.wfile.write(b": connected\n\n")
+            self.wfile.flush()
+            while True:
+                try:
+                    event = channel.get(timeout=15)
+                except queue.Empty:
+                    self.wfile.write(b": ping\n\n")
+                    self.wfile.flush()
+                    continue
+                payload = json.dumps(event).encode("utf-8")
+                self.wfile.write(b"data: " + payload + b"\n\n")
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass
+        finally:
+            run.unsubscribe(channel)
 
     def _sessions_snapshot(self) -> dict:
         """The board's fleet, with the chat's own live signal overlaid.
@@ -1808,7 +1878,8 @@ def serve(port: int = 8787, open_browser: bool = True,
     # Bind fleet, token and the chat manager onto a per-server subclass rather
     # than globals, so two servers in one process cannot share state by accident.
     handler = type("BoundHandler", (Handler,),
-                   {"fleet": fleet, "token": token, "chat": chat.ChatManager()})
+                   {"fleet": fleet, "token": token, "chat": chat.ChatManager(),
+                    "teams": teams.TeamManager()})
     try:
         httpd = ThreadingHTTPServer(("127.0.0.1", port), handler)
     except OSError:

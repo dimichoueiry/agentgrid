@@ -184,6 +184,14 @@ def save_team(team: Team) -> Path:
     return path
 
 
+def delete_team(name: str) -> bool:
+    try:
+        (TEAMS_DIR / f"{_slug(name)}.json").unlink()
+        return True
+    except OSError:
+        return False
+
+
 # ---------------------------------------------------------------------------
 # Templating: {input} and {node_id} -> values. Unknown braces are left as-is,
 # so a prompt full of literal { } (JSON, code) is not mangled.
@@ -218,6 +226,7 @@ class TeamRun:
             self.outputs.setdefault(node.id, "")
         self._sessions: dict[str, chat.ChatSession] = {}
         self._subscribers: list[queue.Queue] = []
+        self._log: list[dict] = []       # every event, so a late viewer sees the whole run
         self._lock = threading.Lock()
         self._cancelled = False
         self._worker: threading.Thread | None = None
@@ -229,6 +238,8 @@ class TeamRun:
     def subscribe(self) -> queue.Queue:
         channel: queue.Queue = queue.Queue()
         with self._lock:
+            for event in self._log:      # replay: open the panel late, still see it all
+                channel.put(event)
             self._subscribers.append(channel)
         return channel
 
@@ -239,6 +250,7 @@ class TeamRun:
 
     def _emit(self, event: dict) -> None:
         with self._lock:
+            self._log.append(event)
             channels = list(self._subscribers)
         for channel in channels:
             channel.put(event)

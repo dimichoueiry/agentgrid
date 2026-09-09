@@ -1,11 +1,12 @@
-"""Drive a Claude Code session headlessly and stream it to the browser.
+"""Drive Claude Code and Codex sessions headlessly and stream to the browser.
 
 This is the chat panel's engine. It runs the real `claude` CLI in print mode
 (`claude -p ... --output-format stream-json`) as a local subprocess in the
 session's own repo, so every turn uses the same binary, the same tools, and --
 crucially -- the *user's own Claude Code login*, exactly like the terminal. No
 API key, no SDK, no framework: the CLI already is the agent, so we only drive it
-and normalize what it prints.
+and normalize what it prints. Codex sessions use `codex exec resume --json`
+with their own login, native image attachments, and an explicit sandbox mode.
 
 Two things it guarantees:
 
@@ -33,6 +34,7 @@ import subprocess
 import threading
 
 CLAUDE_BIN = "claude"
+CODEX_BIN = "codex"
 
 # The permission postures the UI offers, mapped to the CLI's --permission-mode.
 # "auto" runs every tool without asking (the Stop button is the guard);
@@ -112,6 +114,42 @@ def normalize(raw: dict) -> list[dict]:
     return []
 
 
+def normalize_codex(raw: dict) -> list[dict]:
+    """Translate documented `codex exec --json` events to the chat vocabulary."""
+    kind = raw.get("type")
+    if kind == "turn.started":
+        return [{"type": "turn_started"}]
+    if kind == "turn.completed":
+        return [{"type": "turn_done", "ok": True, "stats": {"usage": raw.get("usage")}}]
+    if kind in ("turn.failed", "error"):
+        error = raw.get("error")
+        message = error.get("message") if isinstance(error, dict) else raw.get("message")
+        return [{"type": "error", "message": message or "Codex turn failed."}]
+    item = raw.get("item")
+    if not isinstance(item, dict):
+        return []
+    item_type = item.get("type")
+    if kind == "item.completed" and item_type in ("agent_message", "reasoning"):
+        text = item.get("text")
+        return [{"type": "assistant_message" if item_type == "agent_message" else "thinking",
+                 "text": text}] if isinstance(text, str) and text else []
+    if item_type not in ("command_execution", "file_change", "mcp_tool_call", "web_search"):
+        return []
+    if kind not in ("item.started", "item.completed"):
+        return []
+    name = {"command_execution": "Bash", "file_change": "Edit",
+            "mcp_tool_call": item.get("tool") or "MCP", "web_search": "WebSearch"}[item_type]
+    inputs = {"command": item.get("command")} if item_type == "command_execution" else item
+    start = {"type": "tool_use", "id": item.get("id"), "name": name, "input": inputs}
+    if kind == "item.started":
+        return [start]
+    result = {"type": "tool_result", "id": item.get("id"),
+              "ok": item.get("status") != "failed" and item.get("exit_code") in (None, 0),
+              "summary": _summarize(item.get("aggregated_output") or item.get("status") or "done")}
+    # Changes and searches can arrive only as completed items.
+    return [start, result] if item_type in ("file_change", "web_search") else [result]
+
+
 def _assistant_blocks(message: object) -> list[dict]:
     if not isinstance(message, dict):
         return []
@@ -174,16 +212,17 @@ def _summarize(content: object) -> str:
 
 
 class ChatSession:
-    """Serial turns over one Claude Code session, streamed to N browser tabs.
+    """Serial turns over one Claude Code or Codex session, streamed to N browser tabs.
 
     `session_id` is the id the CLI resumes with. It may start as None for a
     brand-new chat and is filled from the first `init` event, so the very next
     message resumes the conversation the CLI just created.
     """
 
-    def __init__(self, session_id: str | None, cwd: str) -> None:
+    def __init__(self, session_id: str | None, cwd: str, engine: str = "claude") -> None:
         self.session_id = session_id
         self.cwd = cwd
+        self.engine = engine
         self._pending: queue.Queue = queue.Queue()
         self._subscribers: list[queue.Queue] = []
         self._lock = threading.Lock()
@@ -231,21 +270,30 @@ class ChatSession:
 
     def _run_turn(self, message: str, posture: str, model: str = "",
                   attachments: list[str] | None = None) -> None:
-        # Pasted images ride in as absolute paths folded into the prompt text,
-        # so the CLI reads them the same way it reads any file named in a prompt.
-        prompt = with_attachments(message, attachments)
-        argv = [
-            CLAUDE_BIN, "-p", prompt,
-            "--output-format", "stream-json", "--verbose",
-            "--permission-mode", permission_mode(posture),
-        ]
-        # An explicit model overrides the CLI default for this turn only; empty
-        # means "whatever your Claude Code is configured to use". Passed as its
-        # own argv element (never a shell string), so it cannot inject.
-        if model:
-            argv += ["--model", model]
-        if self.session_id:
-            argv += ["--resume", self.session_id]
+        if self.engine == "codex":
+            argv = [CODEX_BIN, "exec", "-s",
+                    "read-only" if posture == "read-only" else "workspace-write",
+                    "-c", 'approval_policy="never"']
+            if self.session_id:
+                argv += ["resume"]
+            argv += ["--json", "--skip-git-repo-check"]
+            if model:
+                argv += ["--model", model]
+            for path in attachments or []:
+                argv += ["--image", path]
+            argv += ["--"]
+            if self.session_id:
+                argv += [self.session_id]
+            argv += [message or "Please look at the attached image(s)."]
+        else:
+            prompt = with_attachments(message, attachments)
+            argv = [CLAUDE_BIN, "-p", prompt,
+                    "--output-format", "stream-json", "--verbose",
+                    "--permission-mode", permission_mode(posture)]
+            if model:
+                argv += ["--model", model]
+            if self.session_id:
+                argv += ["--resume", self.session_id]
         try:
             proc = subprocess.Popen(
                 argv,
@@ -258,7 +306,7 @@ class ChatSession:
                 start_new_session=True,             # own process group, for a clean cancel
             )
         except (OSError, ValueError) as error:
-            self._emit({"type": "error", "message": f"could not start claude: {error}"})
+            self._emit({"type": "error", "message": f"could not start {self.engine}: {error}"})
             return
 
         with self._lock:
@@ -266,6 +314,7 @@ class ChatSession:
             self._running = True
 
         last_noise = ""
+        finished = False
         try:
             for line in proc.stdout:                # blocks in this worker thread only
                 line = line.strip()
@@ -284,7 +333,13 @@ class ChatSession:
                     minted = raw.get("session_id")
                     if minted and not self.session_id:
                         self.session_id = minted
-                for event in normalize(raw):
+                if self.engine == "codex" and raw.get("type") == "thread.started":
+                    if not self.session_id:
+                        self.session_id = raw.get("thread_id")
+                events = normalize_codex(raw) if self.engine == "codex" else normalize(raw)
+                for event in events:
+                    if event["type"] in ("turn_done", "error"):
+                        finished = True
                     self._emit(event)
         except (OSError, ValueError):
             pass
@@ -297,9 +352,11 @@ class ChatSession:
             with self._lock:
                 self._proc = None
                 self._running = False
-            if code not in (0, None):
+            if code not in (0, None) and not finished:
                 self._emit({"type": "error",
-                            "message": last_noise[:200] or f"claude exited {code}"})
+                            "message": last_noise[:200] or f"{self.engine} exited {code}"})
+            elif self.engine == "codex" and not finished:
+                self._emit({"type": "error", "message": "Codex exited without completing the turn."})
 
     def cancel(self) -> None:
         """Stop the current turn and drop anything queued behind it."""
@@ -332,19 +389,20 @@ class ChatManager:
         self._sessions: dict[str, ChatSession] = {}
         self._lock = threading.Lock()
 
-    def session(self, session_id: str, cwd: str) -> ChatSession:
+    def session(self, session_id: str, cwd: str, engine: str = "claude") -> ChatSession:
         with self._lock:
             existing = self._sessions.get(session_id)
             if existing is None:
-                existing = ChatSession(session_id, cwd)
+                existing = ChatSession(session_id, cwd, engine)
                 self._sessions[session_id] = existing
             elif cwd and not existing.cwd:
                 existing.cwd = cwd
             return existing
 
     def send(self, session_id: str, cwd: str, message: str, posture: str,
-             model: str = "", attachments: list[str] | None = None) -> None:
-        self.session(session_id, cwd).send(message, posture, model, attachments)
+             model: str = "", attachments: list[str] | None = None,
+             engine: str = "claude") -> None:
+        self.session(session_id, cwd, engine).send(message, posture, model, attachments)
 
     def cancel(self, session_id: str) -> None:
         with self._lock:

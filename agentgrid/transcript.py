@@ -154,6 +154,31 @@ def _is_codex_transcript(path: Path) -> bool:
     return ".codex" in path.parts
 
 
+def _codex_completed_item(item: object) -> list[dict]:
+    """Desktop rollouts put display messages inside item_completed events.
+
+    Use these display items rather than raw response messages, which include
+    developer instructions and duplicate copies of the conversation.
+    """
+    if not isinstance(item, dict):
+        return []
+    kind = item.get("type")
+    if kind in ("UserMessage", "AgentMessage"):
+        content = item.get("content")
+        if not isinstance(content, list):
+            return []
+        text = "\n".join(str(block.get("text") or "") for block in content
+                         if isinstance(block, dict) and str(block.get("type")).lower() == "text").strip()
+        if text:
+            return [{"kind": "user" if kind == "UserMessage" else "assistant", "text": text}]
+    if kind == "CommandExecution":
+        output = item.get("aggregated_output") or item.get("stdout") or item.get("stderr") or ""
+        return [{"kind": "tool", "name": "Bash", "gist": _clip(item.get("command") or "", GIST_LIMIT)},
+                {"kind": "result", "text": _clip(output, RESULT_LIMIT_WEB),
+                 "error": item.get("exit_code") not in (None, 0) or item.get("status") == "failed"}]
+    return []
+
+
 def _codex_entry_blocks(entry: dict) -> list[dict]:
     """Turn one codex rollout entry into zero or more display blocks.
 
@@ -171,24 +196,24 @@ def _codex_entry_blocks(entry: dict) -> list[dict]:
 
     if entry_type == "event_msg":
         event = payload.get("type")
+        if event == "item_completed":
+            return _codex_completed_item(payload.get("item"))
         if event == "user_message":
             text = str(payload.get("message") or "").strip()
             return [{"kind": "user", "text": text}] if text else []
         if event == "agent_message":
-            # Intermediate phases are progress narration; the final answer is
-            # the reply worth reading in a dashboard.
-            if payload.get("phase") in (None, "", "final_answer"):
-                text = str(payload.get("message") or "").strip()
-                return [{"kind": "assistant", "text": text}] if text else []
+            text = str(payload.get("message") or "").strip()
+            return [{"kind": "assistant", "text": text}] if text else []
         return []
 
     if entry_type == "response_item":
         item = payload.get("type")
-        if item == "function_call":
+        if item in ("function_call", "custom_tool_call"):
+            raw_input = payload.get("arguments") if item == "function_call" else payload.get("input")
             try:
-                arguments = json.loads(payload.get("arguments") or "{}")
-            except ValueError:
-                arguments = payload.get("arguments")
+                arguments = json.loads(raw_input or "{}")
+            except (ValueError, TypeError):
+                arguments = raw_input
             return [
                 {
                     "kind": "tool",
@@ -196,7 +221,7 @@ def _codex_entry_blocks(entry: dict) -> list[dict]:
                     "gist": _summarize_tool_input(arguments),
                 }
             ]
-        if item == "function_call_output":
+        if item in ("function_call_output", "custom_tool_call_output"):
             return [
                 {
                     "kind": "result",
@@ -205,7 +230,14 @@ def _codex_entry_blocks(entry: dict) -> list[dict]:
                 }
             ]
         if item == "reasoning":
-            return [{"kind": "thinking"}]
+            # Encrypted reasoning has no displayable text. Repeating a generic
+            # placeholder for each internal item buries the actual conversation.
+            summary = payload.get("summary")
+            if isinstance(summary, list):
+                text = "\n".join(str(part.get("text") or "") for part in summary
+                                 if isinstance(part, dict) and part.get("type") == "summary_text").strip()
+                if text:
+                    return [{"kind": "thinking", "text": text}]
     return []
 
 

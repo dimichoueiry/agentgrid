@@ -1456,6 +1456,10 @@ class Handler(BaseHTTPRequestHandler):
         if session is None:
             self._send_json(404, {"error": "Unknown session."})
             return
+        if (session.engine == "codex" and session.status == "working"
+                and not self.chat.state(session.session_id).get("running")):
+            self._send_json(409, {"error": "Codex is still running outside this chat. Wait for it to finish, then send your message."})
+            return
         message = str(body.get("message") or "").strip()
         # Attachments are absolute paths this server minted at /api/chat/upload
         # and are validated back to that directory below, so a message can be an
@@ -1469,7 +1473,7 @@ class Handler(BaseHTTPRequestHandler):
         # keeps the CLI's configured default. cwd still comes from the session.
         model = str(body.get("model") or "")
         self.chat.send(session.session_id, session.cwd, message, posture, model,
-                       attachments)
+                       attachments, engine=session.engine)
         self._send_json(200, {"ok": True})
 
     def _valid_attachments(self, raw: object, session) -> list[str]:
@@ -1565,7 +1569,7 @@ class Handler(BaseHTTPRequestHandler):
         if session is None:
             self._send_json(404, {"error": "Unknown session."})
             return
-        room = self.chat.session(session.session_id, session.cwd)
+        room = self.chat.session(session.session_id, session.cwd, session.engine)
         channel = room.subscribe()
         try:
             self.send_response(200)

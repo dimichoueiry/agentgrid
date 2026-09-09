@@ -1457,7 +1457,7 @@ function deleteSession(id) {
    (queued count from /api/chat/state). Stop hits /api/chat/cancel. §6.3 only. */
 
 let chatSrc = null, chatRunning = false, chatQueued = 0;
-let panelTab = "chat", chatDisabled = false;   // Chat vs Details; codex = no composer
+let panelTab = "chat", chatDisabled = false, chatEngine = "claude";
 let chatPosture = localStorage.getItem("agentgrid.chatPosture") || "auto";
 let chatModel = localStorage.getItem("agentgrid.chatModel") || "";   // "" = CLI default
 let chatDone = "";                 // the transient "Done · …" / "Stopped" line
@@ -1478,17 +1478,21 @@ function chatOpen(id, engine) {
   chatDone = ""; chatRunning = false; chatQueued = 0; chatTools.clear();
   chatClearAtt();                  // pending pastes don't cross sessions
   chatClearRefs();                 // nor staged prompt references
-  // chat drives the Claude CLI; a Codex session can't be resumed by it — the
-  // Chat tab still shows its transcript, there's just no composer or live stream
-  chatDisabled = engine === "codex";
-  if (chatDisabled) return;
+  chatEngine = engine === "codex" ? "codex" : "claude";
+  chatDisabled = false;
+  chatModel = localStorage.getItem(`agentgrid.chatModel.${chatEngine}`) ??
+    (chatEngine === "claude" ? localStorage.getItem("agentgrid.chatModel") : "") ?? "";
+  $("cModel").title = `Model for the next turn — Default uses your ${chatEngine === "codex" ? "Codex" : "Claude Code"} default`;
+  $("cPosture").querySelector('[data-posture="auto"]').title = chatEngine === "codex"
+    ? "Run tools in the project sandbox — Stop cancels the turn"
+    : "Run every tool without asking — Stop is the guard";
   todoCache = null; loadTodos();     // fresh open-todo list for this session's [] picker
   document.querySelectorAll("#cPosture button").forEach(b =>
     b.setAttribute("aria-pressed", String(b.dataset.posture === chatPosture)));
-  fillModels("cModel", "claude", chatModel);
+  fillModels("cModel", chatEngine, chatModel);
   loadModels().then(() => {
     if (openId === id && !chatDisabled && $("cModel").value !== CUSTOM_MODEL)
-      fillModels("cModel", "claude", chatModel);
+      fillModels("cModel", chatEngine, chatModel);
   });
   const ta = $("cInput"); ta.value = ""; chatGrow(ta);
   chatSetStatus();
@@ -1498,7 +1502,7 @@ function chatOpen(id, engine) {
 
 // Chat (default) shows the conversation + composer; Details shows the session's
 // name, tags, notes, move-to and facts. One pane at a time; the composer only
-// exists on Chat (and never for a Codex session).
+// exists on Chat for both supported engines.
 function setPanelTab(tab) {
   panelTab = tab === "details" ? "details" : "chat";
   const chat = panelTab === "chat";
@@ -1551,7 +1555,7 @@ function chatOnEvent(ev) {
       break;
     case "assistant_message":
       if ((ev.text || "").trim())
-        chatAppend(`<div class="msg assistant"><div class="who">CLAUDE</div>` +
+        chatAppend(`<div class="msg assistant"><div class="who">${chatEngine === "codex" ? "CODEX" : "CLAUDE"}</div>` +
           `<div class="body">${md(ev.text)}</div></div>`);
       break;
     case "thinking":
@@ -1648,7 +1652,7 @@ async function chatSend() {
     ta.value = ""; chatGrow(ta); hideSlash();
     if (modelCommand[1]) {
       const value = modelCommand[1].trim();
-      fillModels("cModel", "claude", value.toLowerCase() === "default" ? "" : value);
+      fillModels("cModel", chatEngine, value.toLowerCase() === "default" ? "" : value);
       saveChatModel();
       toast(`Next turn: ${chatModel || "Default"}`);
     } else openModelPicker();
@@ -2316,7 +2320,7 @@ function blocksHtml(blocks) {
       i--;
       html += traceHtml(run);
     } else if (b.kind === "user" || b.kind === "assistant") {
-      html += `<div class="msg ${b.kind}"><div class="who">${b.kind === "user" ? "YOU" : "CLAUDE"}</div>` +
+      html += `<div class="msg ${b.kind}"><div class="who">${b.kind === "user" ? "YOU" : chatEngine === "codex" ? "CODEX" : "CLAUDE"}</div>` +
         `<div class="body">${md(cleanSlash(b.text))}</div></div>`;
     }
   }
@@ -2331,7 +2335,9 @@ function traceHtml(run) {
       return `<div class="tcall"><span class="tname">${esc(b.name)}</span> ${esc(b.gist)}</div>`;
     if (b.kind === "result")
       return `<div class="tres${b.error ? " err" : ""}">${esc(b.text)}</div>`;
-    return `<div class="tthink">· thinking</div>`;
+    return b.text
+      ? `<details class="cthink"><summary>Reasoning summary</summary><div class="tthink">${esc(b.text)}</div></details>`
+      : `<div class="tthink">· thinking</div>`;
   }).join("");
   // one or two calls are cheaper to read than a control that hides them
   if (calls.length < 3) return `<div class="trace">${inner}</div>`;
@@ -3194,7 +3200,7 @@ async function loadModels() {
 }
 function saveChatModel() {
   chatModel = selectedModel("cModel");
-  localStorage.setItem("agentgrid.chatModel", chatModel);
+  localStorage.setItem(`agentgrid.chatModel.${chatEngine}`, chatModel);
 }
 function openModelPicker() {
   $("cModel").focus();

@@ -733,8 +733,14 @@ Suggestions come from Codex's local model cache and Claude's configured model,
 local usage history, and models seen on the board. Suggestions may include older
 models; the CLI checks availability. **Default** uses the CLI's configuration.
 
-In Claude chat, `/model` opens the model picker. `/model <exact-id>` selects an
+In Claude or Codex chat, `/model` opens the model picker. `/model <exact-id>` selects an
 ID directly, and `/model default` clears the override. The selection applies to
 subsequent messages, not turns already running or queued. These commands are
-handled locally and are not sent as prompts. Codex's chat composer remains
-unavailable; choose its model when creating a new agent.
+handled locally and are not sent as prompts. Each engine remembers its own model.
+
+Codex chat resumes the selected conversation with `codex exec resume`, streams
+replies and tool activity, supports image attachments, and queues follow-up
+messages. Stop cancels the active chat turn and clears its queue. Auto uses the
+workspace-write sandbox; Read-only uses the read-only sandbox. A Codex session
+still running outside AgentGrid must finish before you send a new message.
+This continues the saved conversation; it does not attach to a running terminal.

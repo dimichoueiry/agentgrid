@@ -466,13 +466,13 @@ details.tools .tfail{color:var(--failed)}
 .msg .uimg{display:block;max-width:230px;max-height:230px;margin-top:6px;
   border-radius:6px;border:1px solid var(--line)}
 /* secondary controls sit below the composer: posture, model, and the key hint */
-.cctl{display:flex;align-items:center;gap:8px;margin-top:8px}
+.cctl{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:8px}
 /* posture: the top bar's segmented control, reused verbatim */
 .seg{display:flex;border:1px solid var(--line-2);border-radius:6px;overflow:hidden;flex:0 0 auto}
 .seg button{padding:3px 10px;font-size:11.5px;color:var(--text-2)}
 .seg button+button{border-left:1px solid var(--line)}
 .seg button[aria-pressed=true]{background:var(--card-hover);color:var(--text);font-weight:550}
-.cctl select{flex:0 0 auto;font-size:11.5px;padding:3px 8px;color:var(--text-2);max-width:118px}
+.cctl select{flex:0 0 auto;font-size:11.5px;padding:3px 8px;color:var(--text-2);max-width:260px}
 .chint{font-size:10.5px;color:var(--text-3);margin-left:auto;white-space:nowrap}
 .chint .kc{color:var(--text-2)}
 /* thinking + error, when streamed live into the transcript (tool calls reuse
@@ -817,6 +817,7 @@ details.cthink[open]>summary::before{transform:rotate(90deg)}
         <option value="opus">Opus</option>
         <option value="haiku">Haiku</option>
       </select>
+      <input id="cModelCustom" hidden aria-label="Exact model ID" placeholder="Exact model ID" autocomplete="off" style="width:190px">
       <span class="chint"><span class="kc">&#9166;</span> send &nbsp;·&nbsp; <span class="kc">&#8679;&#9166;</span> newline &nbsp;·&nbsp; <span class="kc">/</span> prompts</span>
     </div>
   </div>
@@ -865,7 +866,9 @@ details.cthink[open]>summary::before{transform:rotate(90deg)}
         <option value="sonnet">Sonnet</option>
         <option value="opus">Opus</option>
         <option value="haiku">Haiku</option>
-      </select></label>
+      </select>
+      <input id="naModelCustom" hidden aria-label="Exact model ID" placeholder="Exact model ID" autocomplete="off">
+      <span class="hint">Suggestions come from your local CLI history/cache. You can also enter an exact model ID.</span></label>
     <label>System prompt <span class="hint">optional — rides along with every run</span>
       <textarea id="naSys" rows="3" placeholder="You are a…"></textarea></label>
     <label>Task
@@ -1482,7 +1485,11 @@ function chatOpen(id, engine) {
   todoCache = null; loadTodos();     // fresh open-todo list for this session's [] picker
   document.querySelectorAll("#cPosture button").forEach(b =>
     b.setAttribute("aria-pressed", String(b.dataset.posture === chatPosture)));
-  $("cModel").value = chatModel;
+  fillModels("cModel", "claude", chatModel);
+  loadModels().then(() => {
+    if (openId === id && !chatDisabled && $("cModel").value !== CUSTOM_MODEL)
+      fillModels("cModel", "claude", chatModel);
+  });
   const ta = $("cInput"); ta.value = ""; chatGrow(ta);
   chatSetStatus();
   chatConnect(id);
@@ -1636,6 +1643,21 @@ async function chatSend() {
   const ta = $("cInput"); if (!ta) return;
   const msg = ta.value.trim();
   if (!openId) return;
+  const modelCommand = /^\/model(?:\s+(.+))?$/i.exec(msg);
+  if (modelCommand) {
+    ta.value = ""; chatGrow(ta); hideSlash();
+    if (modelCommand[1]) {
+      const value = modelCommand[1].trim();
+      fillModels("cModel", "claude", value.toLowerCase() === "default" ? "" : value);
+      saveChatModel();
+      toast(`Next turn: ${chatModel || "Default"}`);
+    } else openModelPicker();
+    return;
+  }
+  if ($("cModel").value === CUSTOM_MODEL && !selectedModel("cModel")) {
+    toast("Enter an exact model ID."); $("cModelCustom").focus(); return;
+  }
+  saveChatModel();
   // An image still uploading has no path yet; hold the send rather than drop it.
   if (chatAtt.some(a => a.pending)) { toast("An image is still uploading…"); return; }
   const ready = chatAtt.filter(a => a.path);
@@ -2858,7 +2880,8 @@ function checkSlashMenu() {
   if (!m) { hideSlash(); return; }
   slashFrom = el.selectionStart - m[1].length - 1;   // index of the "/"
   const q = m[1].toLowerCase();
-  slashHits = promptLibrary.filter(p => !q || p.name.includes(q)).slice(0, 8);
+  slashHits = [{name: "model", description: "Choose the model for your next turn", builtin: true},
+    ...promptLibrary.filter(p => p.name !== "model")].filter(p => !q || p.name.includes(q)).slice(0, 8);
   if (!slashHits.length) { hideSlash(); return; }
   slashSel = 0;
   const menu = $("slashMenu");
@@ -2884,6 +2907,7 @@ function insertSlash(i) {
   const end = el.selectionStart;
   el.setRangeText("", slashFrom, end, "end");   // drop the /query token; the body is NOT pasted
   hideSlash();
+  if (p.builtin) { openModelPicker(); return; }
   // a compact reference chip instead of a wall of text; the body rides along
   // on send and stays editable for this one message
   chatRefs.push({id: ++chatRefSeq, name: p.name, body: p.body || "", orig: p.body || ""});
@@ -3137,6 +3161,7 @@ async function openNewAgent() {
   } catch (e) { projectsCache = projectsCache || []; }
   // if a project filter is set, that is almost certainly where this one belongs
   fillProjectSelect(project && projectsCache.some(p => p.path === project) ? project : "");
+  await loadModels();
   syncEngineModels();
   try {
     agentLibrary = (await api("/api/agents")).agents || [];
@@ -3146,14 +3171,38 @@ async function openNewAgent() {
 }
 // each engine has its own model vocabulary; Default always means "let the
 // CLI's own config decide", which is the only never-wrong choice
-const ENGINE_MODELS = {
-  claude: [["", "Default"], ["sonnet", "Sonnet"], ["opus", "Opus"], ["haiku", "Haiku"]],
-  codex: [["", "Default"], ["gpt-5.5", "GPT-5.5"], ["gpt-5.5-codex", "GPT-5.5 Codex"]],
+let ENGINE_MODELS = {
+  claude: [["", "Default"], ["sonnet", "Sonnet (alias)"], ["opus", "Opus (alias)"], ["haiku", "Haiku (alias)"]],
+  codex: [["", "Default"]],
 };
+const CUSTOM_MODEL = "__custom__";
+function selectedModel(id) {
+  return $(id).value === CUSTOM_MODEL ? $(id + "Custom").value.trim() : $(id).value;
+}
+function fillModels(id, engine, selected = "") {
+  const choices = [...(ENGINE_MODELS[engine] || ENGINE_MODELS.claude)];
+  if (selected && !choices.some(([v]) => v === selected)) choices.push([selected, selected]);
+  $(id).innerHTML = choices.map(([v, label]) =>
+    `<option value="${esc(v)}">${esc(label)}</option>`).join("") +
+    `<option value="${CUSTOM_MODEL}">Custom model…</option>`;
+  $(id).value = selected;
+  $(id + "Custom").hidden = true;
+}
+async function loadModels() {
+  try { ENGINE_MODELS = (await api("/api/models")).models || ENGINE_MODELS; }
+  catch (_) { /* Default and custom IDs work without a cache. */ }
+}
+function saveChatModel() {
+  chatModel = selectedModel("cModel");
+  localStorage.setItem("agentgrid.chatModel", chatModel);
+}
+function openModelPicker() {
+  $("cModel").focus();
+  try { $("cModel").showPicker(); } catch (_) { /* Keyboard selection still works. */ }
+}
 function syncEngineModels() {
   const engine = $("naEngine").value;
-  const models = ENGINE_MODELS[engine] || ENGINE_MODELS.claude;
-  $("naModel").innerHTML = models.map(([v, l]) => `<option value="${v}">${l}</option>`).join("");
+  fillModels("naModel", engine);
   // Interactive start opens a real `claude` terminal; codex has no such mode
   // here, so it falls back to a detached run regardless.
   const sess = $("naSession"), codex = engine === "codex";
@@ -3162,6 +3211,9 @@ function syncEngineModels() {
 }
 function closeNewAgent() { $("modal").hidden = true; }
 async function startAgent() {
+  if ($("naModel").value === CUSTOM_MODEL && !selectedModel("naModel")) {
+    $("naErr").textContent = "Enter an exact model ID."; $("naModelCustom").focus(); return;
+  }
   const prompt = $("naTask").value.trim();
   if (!prompt) { $("naErr").textContent = "Give the agent something to do."; return; }
   $("naStart").disabled = true;
@@ -3169,7 +3221,7 @@ async function startAgent() {
   try {
     r = await post("/api/spawn", {
       cwd: $("naProject").value, prompt, engine: $("naEngine").value,
-      model: $("naModel").value, name: $("naName").value.trim(),
+      model: selectedModel("naModel"), name: $("naName").value.trim(),
       systemPrompt: $("naSys").value.trim(),
       interactive: $("naSession").value === "interactive",
     });
@@ -3564,10 +3616,15 @@ function bindEvents() {
     document.querySelectorAll("#cPosture button").forEach(x =>
       x.setAttribute("aria-pressed", String(x === b)));
   });
-  $("cModel").addEventListener("change", e => {
-    chatModel = e.target.value;                                   // applies to the next turn sent
-    localStorage.setItem("agentgrid.chatModel", chatModel);       // a view preference, remembered
-  });
+  for (const id of ["cModel", "naModel"]) {
+    $(id).addEventListener("change", () => {
+      const custom = $(id).value === CUSTOM_MODEL;
+      $(id + "Custom").hidden = !custom;
+      if (custom) $(id + "Custom").focus();
+      if (id === "cModel") saveChatModel();
+    });
+  }
+  $("cModelCustom").addEventListener("input", saveChatModel);
   const cin = $("cInput");
   cin.addEventListener("input", () => { chatGrow(cin); checkAtFiles(); checkSlashMenu(); checkTodoMenu(); });
   cin.addEventListener("click", () => { checkAtFiles(); checkSlashMenu(); checkTodoMenu(); });   // caret moved into/out of a token
@@ -4013,20 +4070,19 @@ function bindEvents() {
     if (!def) return;
     $("naEngine").value = def.engine;
     syncEngineModels();
-    if (def.model && ![...$("naModel").options].some(o => o.value === def.model)) {
-      $("naModel").insertAdjacentHTML("beforeend",
-        `<option value="${esc(def.model)}">${esc(def.model)}</option>`);
-    }
-    $("naModel").value = def.model || "";
+    fillModels("naModel", def.engine, def.model || "");
     $("naSys").value = def.systemPrompt || "";
     $("naName").value = def.name;
     $("naTask").focus();
   });
   $("naLibSave").addEventListener("click", async () => {
+    if ($("naModel").value === CUSTOM_MODEL && !selectedModel("naModel")) {
+      $("naErr").textContent = "Enter an exact model ID."; $("naModelCustom").focus(); return;
+    }
     const name = $("naName").value.trim() || $("naLib").value;
     if (!name) { $("naErr").textContent = "Give it a name first — that is what the library files it under."; return; }
     const r = await post("/api/agents/save", {
-      name, engine: $("naEngine").value, model: $("naModel").value,
+      name, engine: $("naEngine").value, model: selectedModel("naModel"),
       systemPrompt: $("naSys").value.trim(),
     });
     if (r && r.error) { $("naErr").textContent = r.error; return; }

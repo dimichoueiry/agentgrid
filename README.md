@@ -724,3 +724,17 @@ Apache License 2.0 — see [LICENSE](LICENSE). Copyright 2026 Dimitri
 El-Choueiry. In short: use, modify and redistribute freely, including
 commercially, provided you keep the license and attribution and note any
 changes; it also grants a patent license and comes with no warranty.
+
+### Choosing an exact model
+
+In **New agent**, choose Claude or Codex, then pick a model or select
+**Custom model…** and enter its exact ID. Saved library agents retain that ID.
+Suggestions come from Codex's local model cache and Claude's configured model,
+local usage history, and models seen on the board. Suggestions may include older
+models; the CLI checks availability. **Default** uses the CLI's configuration.
+
+In Claude chat, `/model` opens the model picker. `/model <exact-id>` selects an
+ID directly, and `/model default` clears the override. The selection applies to
+subsequent messages, not turns already running or queued. These commands are
+handled locally and are not sent as prompts. Codex's chat composer remains
+unavailable; choose its model when creating a new agent.

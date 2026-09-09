@@ -42,7 +42,7 @@ from datetime import date, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from agentgrid import chat, discovery, notes, sync, teams, terminal, transcript
+from agentgrid import chat, discovery, models, notes, sync, teams, terminal, transcript
 
 STATIC = Path(__file__).resolve().parent / "static"
 POLL_SECONDS = 2.0
@@ -1051,6 +1051,8 @@ class Handler(BaseHTTPRequestHandler):
         route = parsed.path
         if route == "/":
             self._send(200, (STATIC / "app.html").read_bytes(), "text/html; charset=utf-8")
+        elif route == "/api/models":
+            self._send_json(200, {"models": models.catalog(self.fleet.snapshot().get("sessions", []))})
         elif route == "/api/sessions":
             self._send_json(200, self._sessions_snapshot())
         elif route == "/api/notes":

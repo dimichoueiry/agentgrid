@@ -254,18 +254,20 @@ class ChatSession:
     def send(self, message: str, posture: str, model: str = "",
              attachments: list[str] | None = None) -> None:
         """Queue a message; start the worker if it isn't already draining."""
-        self._pending.put((message, posture, model, list(attachments or [])))
         with self._lock:
+            self._pending.put((message, posture, model, list(attachments or [])))
             if self._worker is None or not self._worker.is_alive():
                 self._worker = threading.Thread(target=self._drain, daemon=True)
                 self._worker.start()
 
     def _drain(self) -> None:
         while True:
-            try:
-                message, posture, model, attachments = self._pending.get_nowait()
-            except queue.Empty:
-                return
+            with self._lock:
+                try:
+                    message, posture, model, attachments = self._pending.get_nowait()
+                except queue.Empty:
+                    self._worker = None
+                    return
             self._run_turn(message, posture, model, attachments)
 
     def _run_turn(self, message: str, posture: str, model: str = "",
@@ -355,8 +357,8 @@ class ChatSession:
             if code not in (0, None) and not finished:
                 self._emit({"type": "error",
                             "message": last_noise[:200] or f"{self.engine} exited {code}"})
-            elif self.engine == "codex" and not finished:
-                self._emit({"type": "error", "message": "Codex exited without completing the turn."})
+            elif not finished:
+                self._emit({"type": "error", "message": f"{self.engine.title()} exited without completing the turn."})
 
     def cancel(self) -> None:
         """Stop the current turn and drop anything queued behind it."""

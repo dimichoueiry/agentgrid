@@ -20,9 +20,10 @@ from agentgrid import teams
 class FakeSession:
     reply_fn = staticmethod(lambda prompt: "ok")
 
-    def __init__(self, session_id, cwd):
+    def __init__(self, session_id, cwd, engine="claude"):
         self.session_id = session_id
         self.cwd = cwd
+        self.engine = engine
         self._subs = []
 
     def subscribe(self):
@@ -153,7 +154,9 @@ class RunLoopTests(unittest.TestCase):
 
         self.assertEqual(sum(1 for e in events if e["type"] == "loop"), 2)   # exactly max
         self.assertEqual(_starts(events, "write"), 3)                        # initial + 2
-        self.assertTrue(run.done and run.ok)
+        self.assertTrue(run.done)
+        self.assertFalse(run.ok)
+        self.assertIn("Revision limit", run.reason)
 
     def test_feedback_reaches_the_writer_on_a_loop(self):
         seen = {"revise_prompt": ""}

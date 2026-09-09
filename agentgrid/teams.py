@@ -1,4 +1,4 @@
-"""Agent teams: wire Claude Code sessions into a pipeline with loops.
+"""Agent teams: wire Claude Code and Codex sessions into a pipeline with loops.
 
 A "team" is the authoring layer AgentGrid was missing. It lets you compose real
 Claude Code sessions -- a researcher, a writer, a reviewer -- into a pipeline
@@ -55,6 +55,9 @@ class Node:
     prompt: str          # template over {input} and {node_id}
     posture: str = "auto"
     model: str = ""
+    engine: str = "claude"
+    instructions: str = ""
+    include_context: bool = False
 
 
 @dataclass
@@ -106,20 +109,33 @@ def load_team(data: object) -> Team:
         prompt = str(raw.get("prompt") or "")
         if not node_id or not prompt.strip():
             raise ValueError("each node needs an id and a prompt")
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", node_id) or node_id in ("input", "at"):
+            raise ValueError("step ids must use letters, numbers, hyphens or underscores; input and at are reserved")
         if node_id in seen:
             raise ValueError(f"duplicate node id: {node_id}")
         seen.add(node_id)
         posture = raw.get("posture") if raw.get("posture") in chat.POSTURES else chat.DEFAULT_POSTURE
+        engine = raw.get("engine", "claude")
+        if engine not in ("claude", "codex"):
+            raise ValueError(f"{node_id}: choose Claude or Codex")
+        if "includeContext" in raw and not isinstance(raw["includeContext"], bool):
+            raise ValueError(f"{node_id}: includeContext must be true or false")
         nodes.append(Node(
             id=node_id,
             role=str(raw.get("role") or node_id),
             prompt=prompt,
             posture=posture,
-            model=str(raw.get("model") or ""),
+            model=str(raw.get("model") or "").strip(),
+            engine=engine, instructions=str(raw.get("instructions") or ""),
+            include_context=raw.get("includeContext", False),
         ))
 
     loops: list[Loop] = []
-    for raw in data.get("loops") or []:
+    raw_loops = data.get("loops") or []
+    if not isinstance(raw_loops, list):
+        raise ValueError("loops must be a list")
+    loop_nodes = set()
+    for raw in raw_loops:
         if not isinstance(raw, dict):
             raise ValueError("each loop must be an object")
         at = str(raw.get("at") or "")
@@ -127,7 +143,13 @@ def load_team(data: object) -> Team:
         when = str(raw.get("when") or "")
         if at not in seen or back_to not in seen:
             raise ValueError("a loop's 'at' and 'back_to' must be node ids")
-        if not when:
+        ids = [n.id for n in nodes]
+        if ids.index(back_to) >= ids.index(at):
+            raise ValueError("a revision loop must return to an earlier step")
+        if at in loop_nodes:
+            raise ValueError("each review step can have only one revision loop")
+        loop_nodes.add(at)
+        if not when.strip():
             raise ValueError("a loop needs a 'when' token to watch for")
         try:
             cap = max(1, int(raw.get("max", 3)))
@@ -146,7 +168,8 @@ def team_to_dict(team: Team) -> dict:
         "cwd": team.cwd,
         "nodes": [
             {"id": n.id, "role": n.role, "prompt": n.prompt,
-             "posture": n.posture, "model": n.model}
+             "posture": n.posture, "model": n.model, "engine": n.engine,
+             "instructions": n.instructions, "includeContext": n.include_context}
             for n in team.nodes
         ],
         "loops": [
@@ -232,6 +255,7 @@ class TeamRun:
         self._worker: threading.Thread | None = None
         self.done = False
         self.ok = False
+        self.reason = ""
 
     # -- fan-out (same shape as ChatSession, so the UI reuses its plumbing) --
 
@@ -288,8 +312,11 @@ class TeamRun:
                     break
 
                 loop = self._loop_at(node.id)
-                if loop and loop.when.upper() in result.upper() \
-                        and loop_counts.get(loop.at, 0) < loop.max:
+                if loop and loop.when.upper() in result.upper():
+                    if loop_counts.get(loop.at, 0) >= loop.max:
+                        self.reason = f"Revision limit reached at {loop.at}; review still requests changes."
+                        self._emit({"type": "revision_limit", "id": loop.at, "message": self.reason})
+                        break
                     loop_counts[loop.at] = loop_counts.get(loop.at, 0) + 1
                     self._emit({"type": "loop", "at": loop.at, "backTo": loop.back_to,
                                 "iter": loop_counts[loop.at], "max": loop.max})
@@ -301,25 +328,38 @@ class TeamRun:
                 idx += 1
             else:
                 self.ok = not self._cancelled
+        except Exception as error:
+            self.reason = str(error)
+            self._emit({"type": "team_error", "message": self.reason})
         finally:
             self.done = True
             self._emit({"type": "team_done", "ok": self.ok,
-                        "cancelled": self._cancelled, "outputs": self.outputs})
+                        "cancelled": self._cancelled, "outputs": self.outputs, "reason": self.reason})
 
     def _loop_at(self, node_id: str) -> Loop | None:
         return next((l for l in self.team.loops if l.at == node_id), None)
 
     def _run_node(self, node: Node, prompt: str) -> tuple[str, bool]:
         """Run one node to completion. Returns (output_text, failed)."""
+        sections = []
+        if node.instructions.strip():
+            sections.append("Agent instructions:\n" + node.instructions.strip())
+        sections.append(prompt)
+        if node.include_context:
+            sections.append("Original brief:\n" + self.outputs["input"])
+            for previous in self.team.nodes[:self.team.index_of(node.id)]:
+                sections.append(f"Output from {previous.role} ({previous.id}):\n{self.outputs[previous.id]}")
+        prompt = "\n\n".join(sections)
         session = self._sessions.get(node.id)
         if session is None:
-            session = chat.ChatSession(None, self.team.cwd)
+            session = chat.ChatSession(None, self.team.cwd, node.engine)
             self._sessions[node.id] = session
         channel = session.subscribe()
         self._emit({"type": "node_started", "id": node.id, "role": node.role})
         session.send(prompt, node.posture, node.model)
 
         result, failed = "", False
+        messages = []
         try:
             while True:
                 event = channel.get()
@@ -329,8 +369,10 @@ class TeamRun:
                 if kind == "turn_started" and not session.session_id:
                     # Belt-and-suspenders: make the session resumable for loops.
                     session.session_id = event.get("sessionId")
+                if kind == "assistant_message" and event.get("text"):
+                    messages.append(event["text"])
                 if kind == "turn_done":
-                    result = event.get("result") or ""
+                    result = event.get("result") or "\n\n".join(messages)
                     failed = not event.get("ok", True)
                     break
                 if kind == "error":
@@ -352,6 +394,9 @@ class TeamManager:
     def start(self, team: Team, team_input: str) -> TeamRun:
         run = TeamRun(team, team_input)
         with self._lock:
+            existing = self._runs.get(team.name)
+            if existing and not existing.done:
+                raise ValueError("This workflow is already running. Stop it or wait for it to finish.")
             self._runs[team.name] = run
         run.start()
         return run

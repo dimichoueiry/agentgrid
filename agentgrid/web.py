@@ -42,7 +42,7 @@ from datetime import date, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from agentgrid import chat, discovery, models, notes, sync, teams, terminal, transcript
+from agentgrid import chat, discovery, models, notes, sync, teams, terminal, transcript, workflows
 
 STATIC = Path(__file__).resolve().parent / "static"
 POLL_SECONDS = 2.0
@@ -1092,7 +1092,15 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(200, self.chat.state(self._one(query, "session")))
         elif route == "/api/teams":
             self._send_json(200, {"teams": [teams.team_to_dict(t) for t in teams.list_teams()],
-                                  "postures": list(chat.POSTURES)})
+                                  "postures": list(chat.POSTURES),
+                                  "runs": {t.name: {"done": r.done, "ok": r.ok}
+                                           for t in teams.list_teams() if (r := self.teams.get(t.name))}})
+        elif route == "/api/teams/example":
+            example = Path(__file__).resolve().parent.parent / "examples" / "teams" / "mlguerrilla-lessons.json"
+            self._send_json(200, {"workflow": json.loads(example.read_text(encoding="utf-8"))})
+        elif route == "/api/teams/draft":
+            draft = self.drafts.status(self._one(query, "id"))
+            self._send_json(200 if draft else 404, draft or {"error": "Draft not found."})
         elif route == "/api/teams/stream":
             self._teams_stream(query)
         elif route == "/api/transcript":
@@ -1366,6 +1374,14 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(200, {"ok": True})
         elif route == "/api/teams":
             self._teams_save(body)
+        elif route == "/api/teams/import":
+            try:
+                team = workflows.parse_workflow(str(body.get("source") or ""))
+                self._send_json(200, {"workflow": teams.team_to_dict(team)})
+            except ValueError as error:
+                self._send_json(400, {"error": str(error)})
+        elif route == "/api/teams/draft":
+            self._workflow_draft(body)
         elif route == "/api/teams/delete":
             self._send_json(200, {"ok": teams.delete_team(str(body.get("name") or ""))})
         elif route == "/api/teams/run":
@@ -1377,6 +1393,29 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(404, {"error": "No such route."})
 
     # -- team routes ---------------------------------------------------------
+
+    def _workflow_draft(self, body: dict) -> None:
+        source = str(body.get("source") or "")
+        try:
+            # JSON export is deterministic and does not require a model call.
+            team = workflows.parse_workflow(source)
+        except ValueError:
+            team = None
+        cwd = str(body.get("cwd") or "")
+        if team is not None:
+            if cwd:
+                team.cwd = cwd
+            self._send_json(200, {"workflow": teams.team_to_dict(team)})
+            return
+        if not Path(cwd).is_dir() or not cwd:
+            self._send_json(400, {"error": "Choose an existing working directory before building a draft."})
+            return
+        try:
+            job_id = self.drafts.start(source, cwd, str(body.get("engine") or "claude"),
+                                       str(body.get("model") or ""))
+            self._send_json(202, {"draftId": job_id})
+        except ValueError as error:
+            self._send_json(400, {"error": str(error)})
 
     def _teams_save(self, body: dict) -> None:
         # Validate through the same loader the engine uses, so a team saved from
@@ -1398,7 +1437,14 @@ class Handler(BaseHTTPRequestHandler):
         if not team.cwd:
             self._send_json(400, {"error": "This team has no working directory set."})
             return
-        self.teams.start(team, str(body.get("input") or ""))
+        if not Path(team.cwd).is_dir():
+            self._send_json(400, {"error": "Working directory does not exist."})
+            return
+        try:
+            self.teams.start(team, str(body.get("input") or ""))
+        except ValueError as error:
+            self._send_json(409, {"error": str(error)})
+            return
         self._send_json(200, {"ok": True})
 
     def _teams_stream(self, query: dict) -> None:
@@ -1885,7 +1931,7 @@ def serve(port: int = 8787, open_browser: bool = True,
     # than globals, so two servers in one process cannot share state by accident.
     handler = type("BoundHandler", (Handler,),
                    {"fleet": fleet, "token": token, "chat": chat.ChatManager(),
-                    "teams": teams.TeamManager()})
+                    "teams": teams.TeamManager(), "drafts": workflows.DraftManager()})
     try:
         httpd = ThreadingHTTPServer(("127.0.0.1", port), handler)
     except OSError:

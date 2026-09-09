@@ -692,6 +692,26 @@ details.cthink[open]>summary::before{transform:rotate(90deg)}
 .tmlog .run{color:var(--accent)}
 .tmlog .out{color:var(--text-2);white-space:pre-wrap;margin:2px 0 6px 14px}
 .tmlog .loop{color:var(--accent);font-weight:600}
+
+.tmdraft{margin:12px 0;padding:12px;border:1px solid var(--line-2);border-radius:8px}
+.tmdraft summary{cursor:pointer;font-weight:600}
+.tmflow{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0 12px}
+.tmflow span{padding:4px 9px;background:var(--card-hover);border-radius:20px;font-size:11px}
+.tmnode summary{cursor:pointer;font-weight:600;padding:3px 0}.tmnode{padding:14px}.tmnode label{display:block;font-size:12px;margin-top:8px}
+.tmnode textarea{width:100%;box-sizing:border-box;min-height:80px}
+.tmnode .tmnrow{align-items:center;flex-wrap:wrap}.tmnode .tmnrow label{flex:1;min-width:100px}
+.tmnode .tmnrow input,.tmnode .tmnrow select{width:100%;box-sizing:border-box}
+.tmnode .tmcontext{display:flex;align-items:center;gap:7px}.tmcontext input{width:auto}
+.tmstepnum{font-weight:600;color:var(--accent)}
+.tmloop{margin:8px 0;padding:12px;border:1px solid var(--line-2);border-radius:8px}
+.tmloop .trow4{flex-wrap:wrap}.tmloop label{min-width:110px}
+.tmoutput{margin:10px 0;padding:10px;border:1px solid var(--line-2);border-radius:8px}
+#tmInput{width:100%;box-sizing:border-box;padding:8px;min-height:110px}
+#tmNodes .tmcontext input{width:auto;flex:0 0 auto;margin:0}
+#teamsModal .trow2>label{min-width:0}
+.tmoutput summary{cursor:pointer;font-weight:600}.tmoutput pre{white-space:pre-wrap;overflow-wrap:anywhere;font:inherit;line-height:1.6}
+.tmoutput .srow{margin:8px 0}.workflow-export{margin-top:8px}
+.tmlog{max-height:55vh}.tmlog .out{overflow-wrap:anywhere}
 </style>
 </head>
 <body>
@@ -955,7 +975,25 @@ details.cthink[open]>summary::before{transform:rotate(90deg)}
 
 <div class="modal" id="teamsModal" hidden>
   <div class="sheet wide">
-    <div class="stitle">Teams — build a workflow</div>
+    <div class="stitle">Teams — workflows</div>
+    <p class="hint">Design a sequence of agents, share context between steps, and revise until the review passes.</p>
+    <div class="srow">
+      <button class="btn sm" id="tmNew">New workflow</button>
+      <button class="btn sm" id="tmImport">Import JSON</button>
+      <button class="btn sm" id="tmExport">Export JSON</button>
+      <button class="btn sm" id="tmExample">Lesson pipeline</button>
+      <input type="file" id="tmFile" accept=".json,application/json" hidden>
+    </div>
+    <details id="tmDraftBox" class="tmdraft">
+      <summary>Build a workflow from a description or chat reply</summary>
+      <label>Describe your workflow<textarea id="tmSource" rows="5" placeholder="Plan a lesson, review the prerequisites, write it, edit the style, then review teaching quality…"></textarea></label>
+      <div class="trow2">
+        <label>Build with<select id="tmDraftEngine"><option value="claude">Claude</option><option value="codex">Codex</option></select></label>
+        <label>Model<input id="tmDraftModel" list="tmDraftModels" placeholder="Default or exact model ID"><datalist id="tmDraftModels"></datalist></label>
+      </div>
+      <div class="srow"><span id="tmDraftStatus" class="hint" role="status"></span><span class="spacer"></span><button class="btn key" id="tmBuild">Build draft</button><button class="btn key" id="tmReviewDraft" hidden>Review draft</button></div>
+      <p class="hint">Uses your selected agent to turn prose into a draft. JSON imports need no model call. Review the steps before saving or running.</p>
+    </details>
     <label>Team
       <div class="librow">
         <select id="tmPick"><option value="">— new team —</option></select>
@@ -966,27 +1004,25 @@ details.cthink[open]>summary::before{transform:rotate(90deg)}
       <label>Working directory <span class="hint">where the agents run</span>
         <input id="tmCwd" placeholder="/absolute/path/to/repo" autocomplete="off" spellcheck="false"></label>
     </div>
-    <div class="thead">Agents <span class="hint">a prompt can pull another's output with {node_id}; {input} is the team's input</span></div>
+    <div class="thead">Steps <span class="hint">run from top to bottom</span></div>
+    <div id="tmFlow" class="tmflow" aria-label="Workflow sequence"></div>
     <div id="tmNodes"></div>
-    <button class="btn sm" id="tmAddNode">+ Add agent</button>
-    <div class="thead">Loop <span class="hint">optional — send work back until a token stops appearing</span></div>
-    <div class="trow4">
-      <label>when <select id="tmLoopAt"><option value="">—</option></select></label>
-      <label>outputs <input id="tmLoopWhen" placeholder="NEEDS_WORK" autocomplete="off"></label>
-      <label>go back to <select id="tmLoopBack"><option value="">—</option></select></label>
-      <label>max <input id="tmLoopMax" type="number" min="1" value="3"></label>
-    </div>
+    <div class="srow"><button class="btn sm" id="tmAddNode">+ Add step</button><button class="btn sm" id="tmExpandAll">Expand all</button><button class="btn sm" id="tmCollapseAll">Collapse all</button></div>
+    <div class="thead">Revision loops <span class="hint">optional — send feedback to an earlier step</span></div>
+    <div id="tmLoops"></div>
+    <button class="btn sm" id="tmAddLoop">+ Add revision loop</button>
     <div class="srow">
       <span class="hint err" id="tmErr"></span><span class="spacer"></span>
       <button class="btn" id="tmCancel">Close</button>
       <button class="btn" id="tmSave">Save</button>
     </div>
-    <div class="thead">Run <span class="hint">feeds {input} to the first agent</span></div>
-    <textarea id="tmInput" rows="2" placeholder="What should the team work on?"></textarea>
+    <div class="thead">Run <span class="hint">the original brief shared with your steps</span></div>
+    <textarea id="tmInput" rows="4" placeholder="Lesson brief, audience, source material, and desired result…"></textarea>
     <div class="srow">
       <span class="hint" id="tmStatus"></span><span class="spacer"></span>
       <button class="btn" id="tmStop" hidden>Stop</button>
       <button class="btn key" id="tmRun">Save &amp; Run</button>
+      <button class="btn" id="tmDownload" hidden>Download results</button>
     </div>
     <div id="tmLog" class="tmlog"></div>
   </div>
@@ -1556,7 +1592,7 @@ function chatOnEvent(ev) {
     case "assistant_message":
       if ((ev.text || "").trim())
         chatAppend(`<div class="msg assistant"><div class="who">${chatEngine === "codex" ? "CODEX" : "CLAUDE"}</div>` +
-          `<div class="body">${md(ev.text)}</div></div>`);
+          `<div class="body">${md(ev.text)}</div>${workflowExportButton(ev.text)}</div>`);
       break;
     case "thinking":
       if ((ev.text || "").trim())
@@ -2321,7 +2357,7 @@ function blocksHtml(blocks) {
       html += traceHtml(run);
     } else if (b.kind === "user" || b.kind === "assistant") {
       html += `<div class="msg ${b.kind}"><div class="who">${b.kind === "user" ? "YOU" : chatEngine === "codex" ? "CODEX" : "CLAUDE"}</div>` +
-        `<div class="body">${md(cleanSlash(b.text))}</div></div>`;
+        `<div class="body">${md(cleanSlash(b.text))}</div>${b.kind === "assistant" ? workflowExportButton(b.text) : ""}</div>`;
     }
   }
   return html;
@@ -3252,7 +3288,7 @@ function syncedAgo(ts) {
 // the log replays from the server so opening the panel mid-run still shows it all.
 let teamsPostures = ["auto", "read-only"];
 let teamsCache = [];
-let tmSrc = null;
+let tmSrc = null, tmEditorLoaded = false, tmActiveRun = "", tmRuns = {}, tmOutputs = {}, tmPendingDraft = null;
 
 const WRITING_TEMPLATE = {
   name: "", cwd: "",
@@ -3272,123 +3308,236 @@ function tmFillPicker(selected) {
     teamsCache.map(t => `<option value="${esc(t.name)}"${t.name === selected ? " selected" : ""}>${esc(t.name)}</option>`).join("");
 }
 async function openTeams() {
-  $("tmErr").textContent = ""; $("tmStatus").textContent = ""; $("tmLog").innerHTML = "";
   let data = {};
-  try { data = await api("/api/teams"); } catch (e) { data = {}; }
-  teamsCache = data.teams || [];
+  try { data = await api("/api/teams"); } catch (_) {}
+  await loadModels();
+  teamsCache = data.teams || []; tmRuns = data.runs || {};
   teamsPostures = data.postures || teamsPostures;
-  tmFillPicker(teamsCache[0] ? teamsCache[0].name : "");
-  loadTeamIntoEditor(teamsCache[0] || WRITING_TEMPLATE);
+  tmFillPicker(tmEditorLoaded ? $("tmName").value : teamsCache[0]?.name);
+  if (!tmEditorLoaded) loadTeamIntoEditor(teamsCache[0] || WRITING_TEMPLATE);
+  else if (tmActiveRun) connectTeamRun(tmActiveRun);
+  $("tmDraftModels").innerHTML = workflowModelOptions($("tmDraftEngine").value);
   $("teamsModal").hidden = false;
 }
 function closeTeams() { if (tmSrc) { tmSrc.close(); tmSrc = null; } $("teamsModal").hidden = true; }
 
-function nodeEditorHTML(n) {
-  n = n || {};
-  const opts = teamsPostures.map(p =>
-    `<option value="${p}"${n.posture === p ? " selected" : ""}>${p}</option>`).join("");
-  return `<div class="tmnode">
-    <div class="tmnrow">
-      <input class="tmid" placeholder="id (e.g. writer)" value="${esc(n.id || "")}">
-      <input class="tmrole" placeholder="role label" value="${esc(n.role || "")}">
-      <select class="tmposture">${opts}</select>
-      <button class="btn sm tmrm" title="remove agent">✕</button>
+function workflowModelOptions(engine) {
+  return (ENGINE_MODELS[engine] || []).filter(([v]) => v).map(([v, label]) =>
+    `<option value="${esc(v)}">${esc(label)}</option>`).join("");
+}
+function nodeEditorHTML(n, index) {
+  const engine = n.engine || "claude";
+  return `<details class="tmnode" ${index === 0 ? "open" : ""}><summary class="tmcaption">${index + 1}. ${esc(n.role || n.id || "New step")} · ${engine === "codex" ? "Codex" : "Claude"}</summary>
+    <div class="tmnrow"><span class="tmstepnum">${index + 1}</span>
+      <label>Agent name<input class="tmrole" placeholder="Lesson Architect" value="${esc(n.role || "")}"></label>
+      <label>Step ID<input class="tmid" placeholder="architect" value="${esc(n.id || "")}"></label>
+      <button class="btn sm tmup" title="Move step up" ${index === 0 ? "disabled" : ""}>↑</button>
+      <button class="btn sm tmdown" title="Move step down">↓</button>
+      <button class="btn sm tmrm" title="Remove step">✕</button>
     </div>
-    <textarea class="tmprompt" rows="3" placeholder="what to tell this agent — use {input} and {other_id}">${esc(n.prompt || "")}</textarea>
-  </div>`;
+    <div class="tmnrow">
+      <label>Engine<select class="tmengine"><option value="claude" ${engine === "claude" ? "selected" : ""}>Claude</option><option value="codex" ${engine === "codex" ? "selected" : ""}>Codex</option></select></label>
+      <label>Model<input class="tmmodel" value="${esc(n.model || "")}" list="tmModels${index}" placeholder="Default or exact model ID"><datalist id="tmModels${index}">${workflowModelOptions(engine)}</datalist></label>
+      <label>Permissions<select class="tmposture"><option value="read-only" ${n.posture === "read-only" ? "selected" : ""}>Read-only</option><option value="auto" ${n.posture === "auto" ? "selected" : ""}>Auto</option></select></label>
+    </div>
+    <label>Agent instructions<textarea class="tminstructions" rows="3" placeholder="Role, teaching principles, constraints, and output format…">${esc(n.instructions || "")}</textarea></label>
+    <label>Task<textarea class="tmprompt" rows="3" placeholder="What should this step produce?">${esc(n.prompt || "")}</textarea></label>
+    <label class="tmcontext"><input type="checkbox" ${n.includeContext ? "checked" : ""}> Include original brief and all earlier outputs</label>
+    <div class="hint">For specific handoffs, use {input} for the brief and {step_id} for a step’s output.</div>
+  </details>`;
 }
 function renderTeamNodes(nodes) {
-  $("tmNodes").innerHTML = (nodes.length ? nodes : [{}]).map(nodeEditorHTML).join("");
-  $("tmNodes").querySelectorAll(".tmrm").forEach(b => b.addEventListener("click", () => {
-    b.closest(".tmnode").remove(); refreshLoopSelects();
-  }));
-  $("tmNodes").querySelectorAll(".tmid").forEach(i => i.addEventListener("input", refreshLoopSelects));
+  $("tmNodes").innerHTML = (nodes.length ? nodes : [newWorkflowNode()]).map(nodeEditorHTML).join("");
+  const cards = [...$("tmNodes").querySelectorAll(".tmnode")];
+  cards.forEach((card, i) => {
+    card.querySelector(".tmdown").disabled = i === cards.length - 1;
+    card.querySelector(".tmrm").onclick = () => { card.remove(); refreshLoopSelects(); };
+    for (const [selector, offset] of [[".tmup", -1], [".tmdown", 1]]) {
+      card.querySelector(selector).onclick = () => {
+        const current = collectNodesRaw(); [current[i], current[i + offset]] = [current[i + offset], current[i]];
+        renderTeamNodes(current); refreshLoopSelects();
+      };
+    }
+    card.querySelector(".tmengine").onchange = e => {
+      card.querySelector(".tmmodel").value = "";
+      card.querySelector("datalist").innerHTML = workflowModelOptions(e.target.value);
+      paintWorkflowFlow();
+    };
+    card.querySelector(".tmid").oninput = refreshLoopSelects;
+    card.querySelector(".tmrole").oninput = paintWorkflowFlow;
+  });
+  paintWorkflowFlow();
+}
+function newWorkflowNode() {
+  const used = new Set(collectNodesRaw().map(n => n.id));
+  let i = 1; while (used.has(`step_${i}`)) i++;
+  return {id: `step_${i}`, role: "", engine: "claude", posture: "read-only", includeContext: true};
+}
+function paintWorkflowFlow() {
+  $("tmNodes").querySelectorAll(".tmnode").forEach((card, i) => {
+    const caption = card.querySelector(".tmcaption");
+    if (caption) caption.textContent = `${i + 1}. ${card.querySelector(".tmrole").value || card.querySelector(".tmid").value || "New step"} · ${card.querySelector(".tmengine").value === "codex" ? "Codex" : "Claude"}`;
+  });
+  $("tmFlow").innerHTML = collectNodesRaw().map((n, i) =>
+    `${i ? '<b aria-hidden="true">→</b>' : ""}<span>${i + 1}. ${esc(n.role || n.id || "New step")}</span>`).join("");
+}
+function renderWorkflowLoops(loops) {
+  $("tmLoops").innerHTML = loops.map(l => `<div class="tmloop">
+    <div class="trow4">
+      <label>Review step<select class="tmat" data-selected="${esc(l.at || "")}"></select></label>
+      <label>Revision phrase<input class="tmwhen" value="${esc(l.when || "")}" placeholder="REQUIRES REVISION"></label>
+      <label>Return to<select class="tmback" data-selected="${esc(l.back_to || "")}"></select></label>
+      <label>Max revisions<input class="tmmax" type="number" min="1" value="${l.max || 3}"></label>
+      <button class="btn sm tmlooprm" title="Remove loop">✕</button>
+    </div>
+    <label>Feedback to the returning agent<textarea class="tmfeedback" rows="2">${esc(l.feedback || "Please revise based on this feedback:\n\n{at}")}</textarea></label>
+    <div class="hint">{at} is the reviewer’s output. Reaching the limit marks the run as needing revision.</div>
+  </div>`).join("");
+  $("tmLoops").querySelectorAll(".tmlooprm").forEach(b => b.onclick = () => b.closest(".tmloop").remove());
+  refreshLoopSelects();
 }
 function loadTeamIntoEditor(t) {
+  if (tmSrc) { tmSrc.close(); tmSrc = null; }
+  tmActiveRun = ""; tmOutputs = {}; $("tmLog").innerHTML = "";
+  $("tmStatus").textContent = ""; $("tmErr").textContent = "";
+  $("tmRun").disabled = false; $("tmStop").hidden = true; $("tmDownload").hidden = true;
   $("tmName").value = t.name || "";
   $("tmCwd").value = t.cwd || "";
   renderTeamNodes(t.nodes || []);
-  refreshLoopSelects();
-  const loop = (t.loops || [])[0] || {};
-  $("tmLoopWhen").value = loop.when || "";
-  $("tmLoopMax").value = loop.max || 3;
-  $("tmLoopAt").value = loop.at || "";
-  $("tmLoopBack").value = loop.back_to || "";
+  renderWorkflowLoops(t.loops || []);
   $("tmDel").hidden = !teamsCache.some(x => x.name === t.name);
+  tmEditorLoaded = true;
+  if (tmRuns[t.name]) connectTeamRun(t.name);
 }
 function collectNodesRaw() {
   return [...$("tmNodes").querySelectorAll(".tmnode")].map(el => ({
-    id: el.querySelector(".tmid").value.trim(),
-    role: el.querySelector(".tmrole").value.trim(),
-    posture: el.querySelector(".tmposture").value,
-    prompt: el.querySelector(".tmprompt").value,
+    id: el.querySelector(".tmid").value.trim(), role: el.querySelector(".tmrole").value.trim(),
+    engine: el.querySelector(".tmengine").value, model: el.querySelector(".tmmodel").value.trim(),
+    posture: el.querySelector(".tmposture").value, instructions: el.querySelector(".tminstructions").value,
+    prompt: el.querySelector(".tmprompt").value, includeContext: el.querySelector(".tmcontext input").checked,
+  }));
+}
+function collectLoops() {
+  return [...$("tmLoops").querySelectorAll(".tmloop")].map(el => ({
+    at: el.querySelector(".tmat").value, back_to: el.querySelector(".tmback").value,
+    when: el.querySelector(".tmwhen").value.trim(), max: Number(el.querySelector(".tmmax").value),
+    feedback: el.querySelector(".tmfeedback").value,
   }));
 }
 function refreshLoopSelects() {
   const ids = collectNodesRaw().map(n => n.id).filter(Boolean);
-  for (const sel of ["tmLoopAt", "tmLoopBack"]) {
-    const cur = $(sel).value;
-    $(sel).innerHTML = `<option value="">—</option>` +
-      ids.map(id => `<option value="${esc(id)}">${esc(id)}</option>`).join("");
-    if (ids.includes(cur)) $(sel).value = cur;
-  }
+  $("tmLoops").querySelectorAll("select").forEach(sel => {
+    const cur = sel.value || sel.dataset.selected || "";
+    delete sel.dataset.selected;
+    sel.innerHTML = `<option value="">Choose step…</option>` + ids.map(id => `<option value="${esc(id)}">${esc(id)}</option>`).join("");
+    if (cur && !ids.includes(cur)) sel.insertAdjacentHTML("beforeend", `<option value="${esc(cur)}">Missing: ${esc(cur)}</option>`);
+    sel.value = cur;
+  });
+  paintWorkflowFlow();
 }
 function collectTeam() {
-  const team = {name: $("tmName").value.trim(), cwd: $("tmCwd").value.trim(),
-                nodes: collectNodesRaw().filter(n => n.id && n.prompt.trim()), loops: []};
-  const at = $("tmLoopAt").value, back = $("tmLoopBack").value, when = $("tmLoopWhen").value.trim();
-  if (at && back && when)
-    team.loops.push({at, back_to: back, when, max: parseInt($("tmLoopMax").value, 10) || 3});
-  return team;
+  return {name: $("tmName").value.trim(), cwd: $("tmCwd").value.trim(), nodes: collectNodesRaw(), loops: collectLoops()};
 }
 async function saveTeam() {
   const team = collectTeam();
-  if (!team.name) { $("tmErr").textContent = "Give the team a name."; return false; }
-  if (!team.nodes.length) { $("tmErr").textContent = "Add at least one agent (id + prompt)."; return false; }
   const r = await post("/api/teams", team);
-  if (r && r.error) { $("tmErr").textContent = r.error; return false; }
-  $("tmErr").textContent = "";
+  if (!r || r.error) { $("tmErr").textContent = r?.error || "Could not save workflow."; return false; }
+  $("tmErr").textContent = "Saved.";
   try { teamsCache = (await api("/api/teams")).teams || []; } catch (e) {}
-  tmFillPicker(team.name);
-  $("tmDel").hidden = false;
+  tmFillPicker(team.name); $("tmDel").hidden = false;
   return true;
+}
+function connectTeamRun(name) {
+  if (tmSrc) tmSrc.close();
+  tmActiveRun = name; tmOutputs = {}; $("tmLog").innerHTML = "";
+  tmSrc = new EventSource(`/api/teams/stream?name=${encodeURIComponent(name)}&t=${encodeURIComponent(TOKEN)}`);
+  tmSrc.onmessage = e => { let ev; try { ev = JSON.parse(e.data); } catch (_) { return; } renderTeamEvent(ev); };
 }
 async function runTeam() {
   if (!(await saveTeam())) return;
   const name = $("tmName").value.trim();
-  $("tmLog").innerHTML = ""; $("tmStatus").textContent = "starting…";
+  $("tmStatus").textContent = "Starting…";
   const r = await post("/api/teams/run", {name, input: $("tmInput").value});
-  if (r && r.error) { $("tmStatus").textContent = ""; $("tmErr").textContent = r.error; return; }
-  $("tmStop").hidden = false; $("tmRun").disabled = true;
-  if (tmSrc) tmSrc.close();
-  tmSrc = new EventSource(
-    `/api/teams/stream?name=${encodeURIComponent(name)}&t=${encodeURIComponent(TOKEN)}`);
-  tmSrc.onmessage = (e) => { let ev; try { ev = JSON.parse(e.data); } catch (_) { return; } renderTeamEvent(ev); };
+  if (!r || r.error) { $("tmStatus").textContent = ""; $("tmErr").textContent = r?.error || "Could not start workflow."; return; }
+  tmRuns[name] = {done: false}; connectTeamRun(name);
 }
 function tmLogLine(html, cls) {
-  const div = document.createElement("div");
-  div.className = "ev" + (cls ? " " + cls : "");
-  div.innerHTML = html;
-  const log = $("tmLog"); log.appendChild(div); log.scrollTop = log.scrollHeight;
+  const div = document.createElement("div"); div.className = "ev" + (cls ? " " + cls : "");
+  div.innerHTML = html; $("tmLog").appendChild(div);
 }
 function renderTeamEvent(ev) {
   if (ev.type === "team_started") {
-    $("tmStatus").textContent = "running";
-    tmLogLine(`▶ <span class="node">${esc(ev.name)}</span>: ` +
-      (ev.nodes || []).map(n => esc(n.role)).join(" → "));
+    $("tmStatus").textContent = "Running"; $("tmStop").hidden = false; $("tmRun").disabled = true;
+    tmLogLine((ev.nodes || []).map(n => esc(n.role)).join(" → "));
   } else if (ev.type === "node_started") {
-    tmLogLine(`● <span class="node run">${esc(ev.role)}</span> (${esc(ev.id)}) running…`, "run");
+    tmLogLine(`● ${esc(ev.role)} — running`, "run");
+  } else if (ev.type === "node_event" && ev.event.type === "error") {
+    tmLogLine(`${esc(ev.id)}: ${esc(ev.event.message)}`, "err");
+  } else if (ev.type === "node_event" && ev.event.type === "tool_use") {
+    $("tmStatus").textContent = `${ev.id}: ${ev.event.name || "tool"}`;
   } else if (ev.type === "node_done") {
-    tmLogLine(`✓ <span class="node">${esc(ev.id)}</span>` +
-      `<div class="out">${esc((ev.output || "").slice(0, 800))}</div>`);
+    tmOutputs[ev.id] = ev.output || "";
+    tmLogLine(`<details class="tmoutput" open><summary>${ev.ok ? "✓" : "✗"} ${esc(ev.id)}</summary>
+      <div class="srow"><button class="btn sm" data-copy-output="${esc(ev.output || "")}">Copy result</button></div>
+      <pre>${esc(ev.output || "No text output.")}</pre></details>`);
+    $("tmDownload").hidden = false;
   } else if (ev.type === "loop") {
-    tmLogLine(`↻ loop ${ev.iter}/${ev.max}: ${esc(ev.at)} → back to ${esc(ev.backTo)}`, "loop");
+    tmLogLine(`↻ Revision ${ev.iter}/${ev.max}: ${esc(ev.at)} → ${esc(ev.backTo)}`, "loop");
+  } else if (ev.type === "revision_limit" || ev.type === "team_error") {
+    tmLogLine(esc(ev.message), "err");
   } else if (ev.type === "team_done") {
-    tmLogLine(`■ done ${ev.ok ? "✓" : (ev.cancelled ? "(stopped)" : "✗")}`);
-    $("tmStatus").textContent = ev.ok ? "done" : (ev.cancelled ? "stopped" : "failed");
+    $("tmStatus").textContent = ev.ok ? "Completed" : ev.cancelled ? "Stopped" : ev.reason || "Failed";
     $("tmStop").hidden = true; $("tmRun").disabled = false;
+    tmRuns[tmActiveRun] = {done: true, ok: ev.ok};
     if (tmSrc) { tmSrc.close(); tmSrc = null; }
   }
+}
+function downloadWorkflowFile(name, content, type) {
+  const url = URL.createObjectURL(new Blob([content], {type}));
+  const a = document.createElement("a"); a.href = url; a.download = name; a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+async function importWorkflowText(source) {
+  const r = await post("/api/teams/import", {source});
+  if (!r || r.error) { $("tmErr").textContent = r?.error || "Could not import workflow."; return; }
+  loadTeamIntoEditor(r.workflow); $("tmErr").textContent = "Imported draft — review, then save.";
+}
+async function buildWorkflowDraft() {
+  $("tmReviewDraft").hidden = true;
+  $("tmBuild").disabled = true; $("tmDraftStatus").textContent = "Building an editable draft…";
+  try {
+    let r = await post("/api/teams/draft", {source: $("tmSource").value, cwd: $("tmCwd").value,
+      engine: $("tmDraftEngine").value, model: $("tmDraftModel").value.trim()});
+    if (!r || r.error) throw Error(r?.error || "Could not build draft.");
+    if (r.draftId) {
+      const id = r.draftId;
+      do {
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        r = await api(`/api/teams/draft?id=${encodeURIComponent(id)}`);
+        if (r.error) throw Error(r.error);
+      } while (r.status === "building");
+    }
+    if (!r.workflow) throw Error("No workflow returned.");
+    tmPendingDraft = r.workflow;
+    $("tmReviewDraft").hidden = false;
+    $("tmDraftStatus").textContent = "Draft ready. Open it to review instructions, models, and handoffs.";
+  } catch (e) { $("tmDraftStatus").textContent = e.message; }
+  finally { $("tmBuild").disabled = false; }
+}
+function workflowExportButton(text) {
+  return `<button class="btn sm workflow-export" data-workflow-source="${esc(text || "")}">Export as workflow</button>`;
+}
+async function exportChatWorkflow(source) {
+  const session = sessions.find(s => s.sessionId === openId);
+  await openTeams();
+  $("tmSource").value = source;
+  $("tmDraftBox").open = true;
+  if (session?.cwd) $("tmCwd").value = session.cwd;
+  $("tmDraftEngine").value = chatEngine;
+  $("tmDraftModels").innerHTML = workflowModelOptions(chatEngine);
+  $("tmDraftModel").value = chatModel;
+  $("tmDraftStatus").textContent = "Build an editable workflow from this reply. Nothing runs until you choose Save & Run.";
+  $("tmSource").focus();
 }
 
 async function openSync() {
@@ -3517,12 +3666,12 @@ function bindEvents() {
   $("tmCancel").addEventListener("click", closeTeams);
   $("teamsModal").addEventListener("click", e => { if (e.target === $("teamsModal")) closeTeams(); });
   $("tmAddNode").addEventListener("click", () => {
-    renderTeamNodes(collectNodesRaw().concat([{posture: teamsPostures[0]}]));
+    renderTeamNodes(collectNodesRaw().concat([newWorkflowNode()]));
     refreshLoopSelects();
   });
   $("tmSave").addEventListener("click", saveTeam);
   $("tmRun").addEventListener("click", runTeam);
-  $("tmStop").addEventListener("click", () => post("/api/teams/cancel", {name: $("tmName").value.trim()}));
+  $("tmStop").addEventListener("click", () => post("/api/teams/cancel", {name: tmActiveRun}));
   $("tmPick").addEventListener("change", () => {
     const t = teamsCache.find(x => x.name === $("tmPick").value);
     loadTeamIntoEditor(t || {name: "", cwd: $("tmCwd").value, nodes: [], loops: []});
@@ -3530,7 +3679,49 @@ function bindEvents() {
   $("tmDel").addEventListener("click", async () => {
     const name = $("tmPick").value; if (!name) return;
     await post("/api/teams/delete", {name});
-    await openTeams();
+    tmEditorLoaded = false; await openTeams();
+  });
+
+  $("tmExpandAll").onclick = () => $("tmNodes").querySelectorAll("details").forEach(d => d.open = true);
+  $("tmCollapseAll").onclick = () => $("tmNodes").querySelectorAll("details").forEach(d => d.open = false);
+  $("tmNew").onclick = () => loadTeamIntoEditor({nodes: [newWorkflowNode()], cwd: $("tmCwd").value});
+  $("tmAddLoop").onclick = () => renderWorkflowLoops([...collectLoops(), {when: "REQUIRES REVISION", max: 3}]);
+  $("tmBuild").onclick = buildWorkflowDraft;
+  $("tmReviewDraft").onclick = () => {
+    if (!tmPendingDraft) return;
+    loadTeamIntoEditor(tmPendingDraft); tmPendingDraft = null;
+    $("tmReviewDraft").hidden = true; $("tmDraftStatus").textContent = "Draft opened. Review and save when ready.";
+  };
+  $("tmDraftEngine").onchange = () => {
+    $("tmDraftModel").value = "";
+    $("tmDraftModels").innerHTML = workflowModelOptions($("tmDraftEngine").value);
+  };
+  $("tmImport").onclick = () => $("tmFile").click();
+  $("tmFile").onchange = async e => {
+    const file = e.target.files[0]; if (file) await importWorkflowText(await file.text());
+    e.target.value = "";
+  };
+  $("tmExport").onclick = async () => {
+    const r = await post("/api/teams/import", {source: JSON.stringify(collectTeam())});
+    if (r?.error) { $("tmErr").textContent = r.error; return; }
+    if (r?.workflow) downloadWorkflowFile("workflow.json", JSON.stringify(r.workflow, null, 2), "application/json");
+  };
+  $("tmExample").onclick = async () => {
+    const data = await api("/api/teams/example");
+    if (data.workflow) loadTeamIntoEditor({...data.workflow, cwd: $("tmCwd").value});
+  };
+  $("tmDownload").onclick = () => downloadWorkflowFile("workflow-results.md",
+    Object.entries(tmOutputs).map(([id, text]) => `# ${id}\n\n${text}`).join("\n\n"), "text/markdown");
+  $("tmLog").onclick = async e => {
+    const button = e.target.closest("[data-copy-output]");
+    if (button) {
+      try { await navigator.clipboard.writeText(button.dataset.copyOutput || ""); toast("Result copied."); }
+      catch (_) { toast("Clipboard unavailable. Select the result text to copy it."); }
+    }
+  };
+  $("tScroll").addEventListener("click", e => {
+    const button = e.target.closest("[data-workflow-source]");
+    if (button) exportChatWorkflow(button.dataset.workflowSource);
   });
 
   // prompt / skills library

@@ -42,7 +42,7 @@ from datetime import date, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from agentgrid import chat, discovery, models, notes, sync, teams, terminal, transcript, workflows
+from agentgrid import chat, discovery, models, notes, sync, teams, terminal, transcript, workflows, credentials, openrouter
 
 STATIC = Path(__file__).resolve().parent / "static"
 POLL_SECONDS = 2.0
@@ -667,7 +667,7 @@ def spawn_agent(cwd: str, prompt: str, model: str | None,
         # waited on the way `claude --bg` can -- it is detached outright and
         # the rollout file it writes is how the board finds it. There is no
         # job id to hand back; naming waits on (cwd, time) instead.
-        argv = (["codex", "exec", "--cd", cwd, "-s", "workspace-write",
+        argv = ([chat.codex_binary(), "exec", "--cd", cwd, "-s", "workspace-write",
                  "--skip-git-repo-check"]
                 + (["-m", model] if model else []) + [prompt])
         try:
@@ -678,6 +678,7 @@ def spawn_agent(cwd: str, prompt: str, model: str | None,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 start_new_session=True,
+                env={k: v for k, v in os.environ.items() if k != "OPENROUTER_API_KEY"},
             )
         except FileNotFoundError:
             return False, "codex CLI not found on PATH.", None
@@ -1051,6 +1052,16 @@ class Handler(BaseHTTPRequestHandler):
         route = parsed.path
         if route == "/":
             self._send(200, (STATIC / "app.html").read_bytes(), "text/html; charset=utf-8")
+        elif route == "/api/providers/openrouter":
+            try:
+                self._send_json(200, credentials.connection_status())
+            except ValueError as error:
+                self._send_json(400, {"error": str(error)})
+        elif route == "/api/providers/openrouter/models":
+            try:
+                self._send_json(200, {"models": openrouter.model_catalog()})
+            except ValueError as error:
+                self._send_json(400, {"error": str(error)})
         elif route == "/api/models":
             self._send_json(200, {"models": models.catalog(self.fleet.snapshot().get("sessions", []))})
         elif route == "/api/sessions":
@@ -1374,6 +1385,28 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(200, {"ok": True})
         elif route == "/api/teams":
             self._teams_save(body)
+        elif route == "/api/providers/openrouter":
+            try:
+                action = body.get("action", "save")
+                if action == "save":
+                    key = str(body.get("key") or "").strip()
+                    if not key:
+                        raise ValueError("Enter an OpenRouter key.")
+                    if os.environ.get("OPENROUTER_API_KEY"):
+                        raise ValueError("The server uses OPENROUTER_API_KEY. Remove it from the environment before saving a different key.")
+                    openrouter.check_connection(key)
+                    credentials.save_key(key)
+                    openrouter.clear_cache()
+                elif action == "delete":
+                    credentials.delete_key()
+                    openrouter.clear_cache()
+                elif action == "test":
+                    openrouter.check_connection()
+                else:
+                    raise ValueError("Unknown provider action.")
+                self._send_json(200, credentials.connection_status())
+            except ValueError as error:
+                self._send_json(400, {"error": str(error)})
         elif route == "/api/teams/import":
             try:
                 team = workflows.parse_workflow(str(body.get("source") or ""))
@@ -1437,6 +1470,13 @@ class Handler(BaseHTTPRequestHandler):
         if not team.cwd:
             self._send_json(400, {"error": "This team has no working directory set."})
             return
+        if any(n.engine == "openrouter" for n in team.nodes) or (team.coordinator or {}).get("engine") == "openrouter":
+            try:
+                if not credentials.get_key():
+                    raise ValueError("Connect OpenRouter in Providers before running this workflow.")
+            except ValueError as error:
+                self._send_json(400, {"error": str(error)})
+                return
         if not Path(team.cwd).is_dir():
             self._send_json(400, {"error": "Working directory does not exist."})
             return

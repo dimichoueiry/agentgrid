@@ -1,8 +1,11 @@
-# Proposed coordinator and provider architecture
+# Coordinator and provider architecture
 
-Status: design for the next layer. The current workflow builder runs fixed
-Claude/Codex sequences and revision loops. It does not yet connect OpenRouter or
-run an autonomous coordinator.
+Status: initial implementation available. OpenRouter connection settings,
+Keychain storage, live model suggestions, streamed text steps and bounded
+coordinator mode are implemented. The coordinator emits validated JSON
+delegate/finish decisions, uses only defined specialists, and runs them serially.
+Delegation limits are enforced; dollar budgets, durable recovery, API tools and
+parallel execution below remain design work.
 
 ## User experience
 
@@ -22,7 +25,7 @@ A smaller coordinator can route to larger specialists. Its suitability should be
 measured on correct delegation, recovery, and termination, not assumed from a
 model's name. Fixed workflows remain preferable when the order is already known.
 
-## Runtime
+## Further runtime design
 
 The coordinator receives tools such as `delegate(agent_id, task, input_refs)`,
 `read_result(run_id)`, `request_revision(run_id, feedback)`, and `finish(result)`.

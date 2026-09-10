@@ -9,6 +9,22 @@ from agentgrid import chat, web
 
 
 class CodexChatTests(unittest.TestCase):
+    def setUp(self):
+        patcher = mock.patch.object(chat, "codex_binary", return_value="codex")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_nested_duplicate_errors(self):
+        room = chat.ChatSession(None, "/repo", "codex")
+        channel = room.subscribe()
+        message = json.dumps({"error": {"message": "Model requires a newer version of Codex."}})
+        self.run_fixture(room, [
+            {"type": "error", "message": message},
+            {"type": "turn.failed", "error": {"message": message}},
+        ])
+        self.assertEqual(channel.get_nowait()["message"], "Model requires a newer version of Codex.")
+        self.assertTrue(channel.empty())
+
     def test_normalized_reply_and_lifecycle(self):
         self.assertEqual(chat.normalize_codex({'type': 'turn.started'}), [{'type': 'turn_started'}])
         self.assertEqual(chat.normalize_codex({'type': 'item.completed', 'item': {

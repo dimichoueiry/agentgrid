@@ -76,6 +76,7 @@ class Team:
     cwd: str
     nodes: list[Node]
     loops: list[Loop] = field(default_factory=list)
+    coordinator: dict | None = None
 
     def node(self, node_id: str) -> Node | None:
         return next((n for n in self.nodes if n.id == node_id), None)
@@ -109,17 +110,21 @@ def load_team(data: object) -> Team:
         prompt = str(raw.get("prompt") or "")
         if not node_id or not prompt.strip():
             raise ValueError("each node needs an id and a prompt")
-        if not re.fullmatch(r"[A-Za-z0-9_-]+", node_id) or node_id in ("input", "at"):
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", node_id) or node_id in ("input", "at", "__coordinator"):
             raise ValueError("step ids must use letters, numbers, hyphens or underscores; input and at are reserved")
         if node_id in seen:
             raise ValueError(f"duplicate node id: {node_id}")
         seen.add(node_id)
         posture = raw.get("posture") if raw.get("posture") in chat.POSTURES else chat.DEFAULT_POSTURE
         engine = raw.get("engine", "claude")
-        if engine not in ("claude", "codex"):
-            raise ValueError(f"{node_id}: choose Claude or Codex")
+        if engine not in ("claude", "codex", "openrouter"):
+            raise ValueError(f"{node_id}: choose Claude, Codex or OpenRouter")
         if "includeContext" in raw and not isinstance(raw["includeContext"], bool):
             raise ValueError(f"{node_id}: includeContext must be true or false")
+        if engine == "openrouter":
+            posture = "read-only"
+        if engine == "openrouter" and not str(raw.get("model") or "").strip():
+            raise ValueError(f"{node_id}: choose an OpenRouter model")
         nodes.append(Node(
             id=node_id,
             role=str(raw.get("role") or node_id),
@@ -159,13 +164,31 @@ def load_team(data: object) -> Team:
             at=at, back_to=back_to, when=when, max=cap,
             feedback=str(raw.get("feedback") or Loop.feedback),
         ))
-    return Team(name=name, cwd=cwd, nodes=nodes, loops=loops)
+    coordinator = data.get("coordinator")
+    if coordinator is not None:
+        if not isinstance(coordinator, dict) or coordinator.get("engine", "claude") not in ("claude", "codex", "openrouter"):
+            raise ValueError("Choose a valid coordinator engine")
+        if coordinator.get("engine") == "openrouter" and not str(coordinator.get("model") or "").strip():
+            raise ValueError("Choose an OpenRouter coordinator model")
+        try:
+            cap = int(coordinator.get("maxDelegations", 8))
+        except (ValueError, TypeError):
+            raise ValueError("Coordinator delegation limit must be a number")
+        if not 1 <= cap <= 50:
+            raise ValueError("Coordinator delegation limit must be between 1 and 50")
+        coordinator = {"engine": coordinator.get("engine", "claude"),
+                       "model": str(coordinator.get("model") or ""),
+                       "instructions": str(coordinator.get("instructions") or ""), "maxDelegations": cap}
+        if loops:
+            raise ValueError("Coordinator mode handles revisions itself; remove fixed revision loops")
+    return Team(name=name, cwd=cwd, nodes=nodes, loops=loops, coordinator=coordinator)
 
 
 def team_to_dict(team: Team) -> dict:
     return {
         "name": team.name,
         "cwd": team.cwd,
+        "coordinator": team.coordinator,
         "nodes": [
             {"id": n.id, "role": n.role, "prompt": n.prompt,
              "posture": n.posture, "model": n.model, "engine": n.engine,
@@ -256,6 +279,7 @@ class TeamRun:
         self.done = False
         self.ok = False
         self.reason = ""
+        self.final_result = ""
 
     # -- fan-out (same shape as ChatSession, so the UI reuses its plumbing) --
 
@@ -302,6 +326,9 @@ class TeamRun:
         override: str | None = None      # a one-shot prompt for a loop-back node
         idx = 0
         try:
+            if self.team.coordinator:
+                self._run_coordinated()
+                return
             while idx < len(self.team.nodes) and not self._cancelled:
                 node = self.team.nodes[idx]
                 prompt = override if override is not None else render(node.prompt, self.outputs)
@@ -334,7 +361,68 @@ class TeamRun:
         finally:
             self.done = True
             self._emit({"type": "team_done", "ok": self.ok,
-                        "cancelled": self._cancelled, "outputs": self.outputs, "reason": self.reason})
+                        "cancelled": self._cancelled, "outputs": self.outputs, "reason": self.reason, "finalResult": self.final_result})
+
+    def _run_coordinated(self):
+        """Bounded delegation through validated JSON decisions, one worker at a time."""
+        config = self.team.coordinator
+        coordinator = Node(id="__coordinator", role="Coordinator", prompt="Decide the next step.",
+                           engine=config["engine"], model=config["model"], posture="read-only")
+        roster = [{"id": n.id, "role": n.role, "task": n.prompt} for n in self.team.nodes]
+        rules = (
+            "Coordinate the workflow using only the named specialists below. Do not use filesystem, shell, or other tools yourself. "
+            "Return ONLY one JSON object per turn. To delegate: "
+            '{"action":"delegate","agent":"step_id","task":"specific assignment"}. '
+            'To finish: {"action":"finish","result":"final answer for the user"}. '
+            "Read specialist results before deciding. Request revisions by delegating again. "
+            "Do not claim work was done unless it appears in a specialist result. "
+            "You cannot create agents or change models or permissions.\n"
+        )
+        used = 0
+        while not self._cancelled:
+            # Only bounded excerpts go into coordinator decisions; full originals
+            # stay in outputs and are passed to the selected specialist.
+            results = {k: v[-20000:] for k, v in self.outputs.items() if k != "input" and v}
+            prompt = rules + config["instructions"] + "\nOriginal brief:\n" + self.outputs["input"]
+            prompt += "\nSpecialists:\n" + json.dumps(roster)
+            prompt += "\nLatest results (long results may be excerpted):\n" + json.dumps(results)
+            prompt += f"\nRemaining delegations: {config['maxDelegations'] - used}."
+            text, failed = self._run_node(coordinator, prompt)
+            if failed or self._cancelled:
+                self.reason = "Coordinator failed or was stopped."
+                return
+            candidate = text.strip()
+            if candidate.startswith("```"):
+                candidate = re.sub(r"^```(?:json)?\s*|\s*```$", "", candidate)
+            try:
+                decision = json.loads(candidate)
+            except ValueError:
+                self.reason = "Coordinator returned an invalid decision. Use a model that follows structured instructions."
+                return
+            if not isinstance(decision, dict):
+                self.reason = "Coordinator decision must be an object."
+                return
+            if decision.get("action") == "finish" and isinstance(decision.get("result"), str) and decision["result"].strip():
+                self.final_result = decision["result"]
+                self.ok = True
+                return
+            node = self.team.node(decision.get("agent"))
+            assignment = decision.get("task")
+            if decision.get("action") != "delegate" or node is None or not isinstance(assignment, str) or not assignment.strip():
+                self.reason = "Coordinator requested an invalid or unavailable specialist."
+                return
+            if used >= config["maxDelegations"]:
+                self.reason = "Coordinator delegation limit reached."
+                return
+            used += 1
+            self._emit({"type": "delegation", "id": node.id, "task": assignment,
+                        "count": used, "max": config["maxDelegations"]})
+            task = render(node.prompt, self.outputs) + "\n\nCoordinator assignment:\n" + assignment
+            result, failed = self._run_node(node, task)
+            self.outputs[node.id] = result
+            if failed:
+                self.reason = f"Specialist {node.id} failed."
+                return
 
     def _loop_at(self, node_id: str) -> Loop | None:
         return next((l for l in self.team.loops if l.at == node_id), None)
@@ -347,7 +435,10 @@ class TeamRun:
         sections.append(prompt)
         if node.include_context:
             sections.append("Original brief:\n" + self.outputs["input"])
-            for previous in self.team.nodes[:self.team.index_of(node.id)]:
+            prior = self.team.nodes if self.team.coordinator else self.team.nodes[:self.team.index_of(node.id)]
+            for previous in prior:
+                if previous.id == node.id or not self.outputs.get(previous.id):
+                    continue
                 sections.append(f"Output from {previous.role} ({previous.id}):\n{self.outputs[previous.id]}")
         prompt = "\n\n".join(sections)
         session = self._sessions.get(node.id)

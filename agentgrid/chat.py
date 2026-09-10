@@ -34,7 +34,7 @@ import subprocess
 import threading
 
 CLAUDE_BIN = "claude"
-CODEX_BIN = "codex"
+from agentgrid.executables import codex_binary
 
 # The permission postures the UI offers, mapped to the CLI's --permission-mode.
 # "auto" runs every tool without asking (the Stop button is the guard);
@@ -124,6 +124,20 @@ def normalize_codex(raw: dict) -> list[dict]:
     if kind in ("turn.failed", "error"):
         error = raw.get("error")
         message = error.get("message") if isinstance(error, dict) else raw.get("message")
+        # Some CLI errors wrap the actual API error in a JSON message string.
+        for _ in range(3):
+            if not isinstance(message, str):
+                break
+            try:
+                nested = json.loads(message)
+            except ValueError:
+                break
+            if not isinstance(nested, dict):
+                break
+            inner = nested.get("error", nested)
+            if not isinstance(inner, dict) or not isinstance(inner.get("message"), str):
+                break
+            message = inner["message"]
         return [{"type": "error", "message": message or "Codex turn failed."}]
     item = raw.get("item")
     if not isinstance(item, dict):
@@ -223,6 +237,10 @@ class ChatSession:
         self.session_id = session_id
         self.cwd = cwd
         self.engine = engine
+        self._api_history = []
+        self._api_cancel = threading.Event()
+        self._api_response = None
+        self._cancel_generation = 0
         self._pending: queue.Queue = queue.Queue()
         self._subscribers: list[queue.Queue] = []
         self._lock = threading.Lock()
@@ -255,7 +273,7 @@ class ChatSession:
              attachments: list[str] | None = None) -> None:
         """Queue a message; start the worker if it isn't already draining."""
         with self._lock:
-            self._pending.put((message, posture, model, list(attachments or [])))
+            self._pending.put((message, posture, model, list(attachments or []), self._cancel_generation))
             if self._worker is None or not self._worker.is_alive():
                 self._worker = threading.Thread(target=self._drain, daemon=True)
                 self._worker.start()
@@ -264,16 +282,25 @@ class ChatSession:
         while True:
             with self._lock:
                 try:
-                    message, posture, model, attachments = self._pending.get_nowait()
+                    message, posture, model, attachments, generation = self._pending.get_nowait()
                 except queue.Empty:
                     self._worker = None
                     return
+                if generation != self._cancel_generation:
+                    continue
+                self._api_cancel.clear()
             self._run_turn(message, posture, model, attachments)
 
     def _run_turn(self, message: str, posture: str, model: str = "",
                   attachments: list[str] | None = None) -> None:
+        if self._api_cancel.is_set():
+            return
+        if self.engine == "openrouter":
+            from agentgrid import openrouter
+            openrouter.run_turn(self, message, model, attachments)
+            return
         if self.engine == "codex":
-            argv = [CODEX_BIN, "exec", "-s",
+            argv = [codex_binary(), "exec", "-s",
                     "read-only" if posture == "read-only" else "workspace-write",
                     "-c", 'approval_policy="never"']
             if self.session_id:
@@ -306,6 +333,7 @@ class ChatSession:
                 text=True,
                 bufsize=1,                          # line-buffered
                 start_new_session=True,             # own process group, for a clean cancel
+                env={k: v for k, v in os.environ.items() if k != "OPENROUTER_API_KEY"},
             )
         except (OSError, ValueError) as error:
             self._emit({"type": "error", "message": f"could not start {self.engine}: {error}"})
@@ -317,6 +345,7 @@ class ChatSession:
 
         last_noise = ""
         finished = False
+        seen_errors = set()
         try:
             for line in proc.stdout:                # blocks in this worker thread only
                 line = line.strip()
@@ -340,6 +369,11 @@ class ChatSession:
                         self.session_id = raw.get("thread_id")
                 events = normalize_codex(raw) if self.engine == "codex" else normalize(raw)
                 for event in events:
+                    if event["type"] == "error":
+                        message_key = event.get("message", "")
+                        if message_key in seen_errors:
+                            continue
+                        seen_errors.add(message_key)
                     if event["type"] in ("turn_done", "error"):
                         finished = True
                     self._emit(event)
@@ -362,6 +396,13 @@ class ChatSession:
 
     def cancel(self) -> None:
         """Stop the current turn and drop anything queued behind it."""
+        with self._lock:
+            self._cancel_generation += 1
+            self._api_cancel.set()
+        response = self._api_response
+        if response is not None:
+            # Closing a blocked transport must not stall the Stop HTTP request.
+            threading.Thread(target=response.close, daemon=True).start()
         with self._lock:
             proc = self._proc
         try:

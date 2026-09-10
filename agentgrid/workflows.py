@@ -26,7 +26,7 @@ Return only JSON with this schema:
 "prompt":"What this step should produce","posture":"read-only","includeContext":true}],
 "loops":[{"at":"reviewer","back_to":"writer","when":"REQUIRES REVISION","max":3,
 "feedback":"Revise using this review: {at}"}]}
-Use claude or codex for engine, keep model empty unless the source specifies one.
+Use claude, codex, or openrouter for engine. OpenRouter requires an exact provider/model ID; keep model empty for CLI engines unless specified.
 Use read-only for writing/reviewing text; auto only for explicitly requested file changes.
 includeContext=true passes the original brief and all earlier outputs automatically.
 If specific handoffs are needed instead, use includeContext=false and {input} / {step_id}
@@ -64,8 +64,10 @@ class DraftManager:
     def start(self, source: str, cwd: str, engine: str, model: str = "") -> str:
         if not source.strip() or len(source) > MAX_SOURCE:
             raise ValueError("Provide a workflow description of 1–120,000 characters.")
-        if engine not in ("claude", "codex"):
-            raise ValueError("Choose Claude or Codex to build the draft.")
+        if engine not in ("claude", "codex", "openrouter"):
+            raise ValueError("Choose Claude, Codex or OpenRouter to build the draft.")
+        if engine == "openrouter" and not model.strip():
+            raise ValueError("Choose an exact OpenRouter model ID.")
         with self._lock:
             self._jobs = {k: v for k, v in self._jobs.items()
                           if v["status"] == "building" or time.monotonic() - v["created"] < 3600}

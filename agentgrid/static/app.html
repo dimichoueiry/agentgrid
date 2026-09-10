@@ -730,6 +730,7 @@ details.cthink[open]>summary::before{transform:rotate(90deg)}
     title="Notify when an agent needs you or replies (while this tab is open)">Alerts</button></div>
   <div class="spacer"></div>
   <button class="btn" id="promptsBtn" title="Reusable prompts — reference them in a chat with /name">/ Prompts</button>
+  <button class="btn" id="providersBtn" title="Connect model providers">Providers</button>
   <button class="btn" id="teamsBtn" title="Build and run agent workflows">⛓ Teams</button>
   <button class="btn" id="syncBtn" title="Sync your notes to a GitHub repo">⟳ Sync</button>
   <button class="btn key" id="newBtn" title="Start a new agent  (n)">New agent</button>
@@ -973,6 +974,17 @@ details.cthink[open]>summary::before{transform:rotate(90deg)}
   <div class="sheet wide" id="gmSheet"></div>
 </div>
 
+<div class="modal" id="providersModal" hidden>
+  <div class="sheet">
+    <div class="stitle">Model providers</div>
+    <p>Claude Code and Codex use their existing CLI logins. Connect OpenRouter for additional models in workflows.</p>
+    <label>OpenRouter API key<input type="password" id="orKey" autocomplete="off" spellcheck="false" placeholder="Paste your key"></label>
+    <p class="hint">Stored in macOS Keychain. Never included in workflows or exports. OpenRouter usage is billed separately.</p>
+    <p id="orStatus" class="hint" role="status"></p>
+    <div class="srow"><button class="btn" id="orTest">Test connection</button><button class="btn" id="orRemove">Remove saved key</button><span class="spacer"></span><button class="btn key" id="orSave">Connect</button></div>
+    <div class="srow"><span class="spacer"></span><button class="btn" id="orClose">Close</button></div>
+  </div>
+</div>
 <div class="modal" id="teamsModal" hidden>
   <div class="sheet wide">
     <div class="stitle">Teams — workflows</div>
@@ -988,7 +1000,7 @@ details.cthink[open]>summary::before{transform:rotate(90deg)}
       <summary>Build a workflow from a description or chat reply</summary>
       <label>Describe your workflow<textarea id="tmSource" rows="5" placeholder="Plan a lesson, review the prerequisites, write it, edit the style, then review teaching quality…"></textarea></label>
       <div class="trow2">
-        <label>Build with<select id="tmDraftEngine"><option value="claude">Claude</option><option value="codex">Codex</option></select></label>
+        <label>Build with<select id="tmDraftEngine"><option value="claude">Claude</option><option value="codex">Codex</option><option value="openrouter">OpenRouter</option></select></label>
         <label>Model<input id="tmDraftModel" list="tmDraftModels" placeholder="Default or exact model ID"><datalist id="tmDraftModels"></datalist></label>
       </div>
       <div class="srow"><span id="tmDraftStatus" class="hint" role="status"></span><span class="spacer"></span><button class="btn key" id="tmBuild">Build draft</button><button class="btn key" id="tmReviewDraft" hidden>Review draft</button></div>
@@ -1003,6 +1015,16 @@ details.cthink[open]>summary::before{transform:rotate(90deg)}
       <label>Name <input id="tmName" autocomplete="off"></label>
       <label>Working directory <span class="hint">where the agents run</span>
         <input id="tmCwd" placeholder="/absolute/path/to/repo" autocomplete="off" spellcheck="false"></label>
+    </div>
+    <label>Execution mode<select id="tmMode"><option value="fixed">Fixed steps</option><option value="coordinator">Coordinator chooses specialists</option></select></label>
+    <div id="tmCoordinator" class="tmdraft" hidden>
+      <div class="trow2">
+        <label>Coordinator engine<select id="tmCoordEngine"><option value="claude">Claude</option><option value="codex">Codex</option><option value="openrouter">OpenRouter</option></select></label>
+        <label>Coordinator model<input id="tmCoordModel" list="tmCoordModels" placeholder="Default or exact model ID"><datalist id="tmCoordModels"></datalist></label>
+      </div>
+      <label>Coordinator instructions<textarea id="tmCoordInstructions" rows="3" placeholder="Delegate work, evaluate the results, request targeted revisions, and return the completed lesson."></textarea></label>
+      <label>Maximum delegations<input id="tmCoordMax" type="number" min="1" max="50" value="8"></label>
+      <p class="hint">The steps below become the available specialists. The coordinator selects one at a time and may revisit it. Its model and each specialist’s model are independent.</p>
     </div>
     <div class="thead">Steps <span class="hint">run from top to bottom</span></div>
     <div id="tmFlow" class="tmflow" aria-label="Workflow sequence"></div>
@@ -3311,6 +3333,7 @@ async function openTeams() {
   let data = {};
   try { data = await api("/api/teams"); } catch (_) {}
   await loadModels();
+  await loadOpenRouterModels();
   teamsCache = data.teams || []; tmRuns = data.runs || {};
   teamsPostures = data.postures || teamsPostures;
   tmFillPicker(tmEditorLoaded ? $("tmName").value : teamsCache[0]?.name);
@@ -3321,13 +3344,54 @@ async function openTeams() {
 }
 function closeTeams() { if (tmSrc) { tmSrc.close(); tmSrc = null; } $("teamsModal").hidden = true; }
 
+function engineLabel(engine) { return {claude: "Claude", codex: "Codex", openrouter: "OpenRouter"}[engine] || engine; }
+let orModelsLoaded = false;
+async function loadOpenRouterModels(force = false) {
+  if (orModelsLoaded && !force) return;
+  try {
+    const r = await api("/api/providers/openrouter/models");
+    if (r.error) return;
+    ENGINE_MODELS.openrouter = (r.models || []).map(m => [m.id, m.name]);
+    orModelsLoaded = true;
+  } catch (_) { /* Exact model IDs still work when catalog lookup fails. */ }
+}
+async function openProviders() {
+  $("orKey").value = ""; $("providersModal").hidden = false;
+  try {
+    const r = await api("/api/providers/openrouter");
+    paintProviderStatus(r);
+  } catch (_) { $("orStatus").textContent = "Could not read provider settings."; }
+}
+function paintProviderStatus(r) {
+  $("orStatus").textContent = r.error || (r.connected ? `Connected via ${r.source === "environment" ? "server environment" : "macOS Keychain"}.` : "Not connected.");
+  $("orRemove").disabled = !r.connected || r.source === "environment";
+  $("orSave").disabled = !r.canSave || r.source === "environment";
+  $("orKey").disabled = !r.canSave || r.source === "environment";
+  $("orTest").disabled = !r.connected;
+}
+async function providerAction(action) {
+  $("orStatus").textContent = action === "save" ? "Checking the key…" : "Updating connection…";
+  for (const id of ["orSave", "orRemove", "orTest"]) $(id).disabled = true;
+  try {
+    const r = await post("/api/providers/openrouter", {action, ...(action === "save" ? {key: $("orKey").value} : {})});
+    $("orKey").value = "";
+    if (r?.error) {
+      const status = await api("/api/providers/openrouter"); paintProviderStatus(status);
+      $("orStatus").textContent = r.error;
+    } else {
+      paintProviderStatus(r || {});
+      orModelsLoaded = false; await loadOpenRouterModels(true);
+    }
+  } catch (_) { $("orStatus").textContent = "Provider update failed. Reopen Providers to retry."; }
+}
+
 function workflowModelOptions(engine) {
   return (ENGINE_MODELS[engine] || []).filter(([v]) => v).map(([v, label]) =>
     `<option value="${esc(v)}">${esc(label)}</option>`).join("");
 }
 function nodeEditorHTML(n, index) {
   const engine = n.engine || "claude";
-  return `<details class="tmnode" ${index === 0 ? "open" : ""}><summary class="tmcaption">${index + 1}. ${esc(n.role || n.id || "New step")} · ${engine === "codex" ? "Codex" : "Claude"}</summary>
+  return `<details class="tmnode" ${index === 0 ? "open" : ""}><summary class="tmcaption">${index + 1}. ${esc(n.role || n.id || "New step")} · ${engineLabel(engine)}</summary>
     <div class="tmnrow"><span class="tmstepnum">${index + 1}</span>
       <label>Agent name<input class="tmrole" placeholder="Lesson Architect" value="${esc(n.role || "")}"></label>
       <label>Step ID<input class="tmid" placeholder="architect" value="${esc(n.id || "")}"></label>
@@ -3336,14 +3400,14 @@ function nodeEditorHTML(n, index) {
       <button class="btn sm tmrm" title="Remove step">✕</button>
     </div>
     <div class="tmnrow">
-      <label>Engine<select class="tmengine"><option value="claude" ${engine === "claude" ? "selected" : ""}>Claude</option><option value="codex" ${engine === "codex" ? "selected" : ""}>Codex</option></select></label>
+      <label>Engine<select class="tmengine"><option value="claude" ${engine === "claude" ? "selected" : ""}>Claude</option><option value="codex" ${engine === "codex" ? "selected" : ""}>Codex</option><option value="openrouter" ${engine === "openrouter" ? "selected" : ""}>OpenRouter</option></select></label>
       <label>Model<input class="tmmodel" value="${esc(n.model || "")}" list="tmModels${index}" placeholder="Default or exact model ID"><datalist id="tmModels${index}">${workflowModelOptions(engine)}</datalist></label>
-      <label>Permissions<select class="tmposture"><option value="read-only" ${n.posture === "read-only" ? "selected" : ""}>Read-only</option><option value="auto" ${n.posture === "auto" ? "selected" : ""}>Auto</option></select></label>
+      <label>Permissions<select class="tmposture" ${engine === "openrouter" ? "disabled" : ""}><option value="read-only" ${n.posture === "read-only" || engine === "openrouter" ? "selected" : ""}>${engine === "openrouter" ? "Text only" : "Read-only"}</option><option value="auto" ${n.posture === "auto" && engine !== "openrouter" ? "selected" : ""}>Auto</option></select></label>
     </div>
     <label>Agent instructions<textarea class="tminstructions" rows="3" placeholder="Role, teaching principles, constraints, and output format…">${esc(n.instructions || "")}</textarea></label>
     <label>Task<textarea class="tmprompt" rows="3" placeholder="What should this step produce?">${esc(n.prompt || "")}</textarea></label>
     <label class="tmcontext"><input type="checkbox" ${n.includeContext ? "checked" : ""}> Include original brief and all earlier outputs</label>
-    <div class="hint">For specific handoffs, use {input} for the brief and {step_id} for a step’s output.</div>
+    <div class="hint">For specific handoffs, use {input} and {step_id}. OpenRouter specialists use supplied text; file access and shell tools require Claude or Codex.</div>
   </details>`;
 }
 function renderTeamNodes(nodes) {
@@ -3358,8 +3422,13 @@ function renderTeamNodes(nodes) {
         renderTeamNodes(current); refreshLoopSelects();
       };
     }
-    card.querySelector(".tmengine").onchange = e => {
+    card.querySelector(".tmengine").onchange = async e => {
+      if (e.target.value === "openrouter") await loadOpenRouterModels();
       card.querySelector(".tmmodel").value = "";
+      const posture = card.querySelector(".tmposture");
+      posture.disabled = e.target.value === "openrouter";
+      posture.querySelector('option[value="read-only"]').textContent = posture.disabled ? "Text only" : "Read-only";
+      if (posture.disabled) posture.value = "read-only";
       card.querySelector("datalist").innerHTML = workflowModelOptions(e.target.value);
       paintWorkflowFlow();
     };
@@ -3376,7 +3445,7 @@ function newWorkflowNode() {
 function paintWorkflowFlow() {
   $("tmNodes").querySelectorAll(".tmnode").forEach((card, i) => {
     const caption = card.querySelector(".tmcaption");
-    if (caption) caption.textContent = `${i + 1}. ${card.querySelector(".tmrole").value || card.querySelector(".tmid").value || "New step"} · ${card.querySelector(".tmengine").value === "codex" ? "Codex" : "Claude"}`;
+    if (caption) caption.textContent = `${i + 1}. ${card.querySelector(".tmrole").value || card.querySelector(".tmid").value || "New step"} · ${engineLabel(card.querySelector(".tmengine").value)}`;
   });
   $("tmFlow").innerHTML = collectNodesRaw().map((n, i) =>
     `${i ? '<b aria-hidden="true">→</b>' : ""}<span>${i + 1}. ${esc(n.role || n.id || "New step")}</span>`).join("");
@@ -3403,6 +3472,13 @@ function loadTeamIntoEditor(t) {
   $("tmRun").disabled = false; $("tmStop").hidden = true; $("tmDownload").hidden = true;
   $("tmName").value = t.name || "";
   $("tmCwd").value = t.cwd || "";
+  $("tmMode").value = t.coordinator ? "coordinator" : "fixed";
+  $("tmCoordinator").hidden = !t.coordinator;
+  $("tmCoordEngine").value = t.coordinator?.engine || "claude";
+  $("tmCoordModel").value = t.coordinator?.model || "";
+  $("tmCoordMax").value = t.coordinator?.maxDelegations || 8;
+  $("tmCoordInstructions").value = t.coordinator?.instructions || "";
+  $("tmCoordModels").innerHTML = workflowModelOptions($("tmCoordEngine").value);
   renderTeamNodes(t.nodes || []);
   renderWorkflowLoops(t.loops || []);
   $("tmDel").hidden = !teamsCache.some(x => x.name === t.name);
@@ -3436,7 +3512,10 @@ function refreshLoopSelects() {
   paintWorkflowFlow();
 }
 function collectTeam() {
-  return {name: $("tmName").value.trim(), cwd: $("tmCwd").value.trim(), nodes: collectNodesRaw(), loops: collectLoops()};
+  return {name: $("tmName").value.trim(), cwd: $("tmCwd").value.trim(), nodes: collectNodesRaw(), loops: collectLoops(),
+    coordinator: $("tmMode").value === "coordinator" ? {engine: $("tmCoordEngine").value,
+      model: $("tmCoordModel").value.trim(), instructions: $("tmCoordInstructions").value,
+      maxDelegations: Number($("tmCoordMax").value)} : null};
 }
 async function saveTeam() {
   const team = collectTeam();
@@ -3475,7 +3554,14 @@ function renderTeamEvent(ev) {
     tmLogLine(`${esc(ev.id)}: ${esc(ev.event.message)}`, "err");
   } else if (ev.type === "node_event" && ev.event.type === "tool_use") {
     $("tmStatus").textContent = `${ev.id}: ${ev.event.name || "tool"}`;
+  } else if (ev.type === "node_event" && ev.event.type === "assistant_delta") {
+    let preview = $("tmLiveOutput");
+    if (!preview) { tmLogLine('<pre id="tmLiveOutput" class="out"></pre>'); preview = $("tmLiveOutput"); }
+    preview.textContent += ev.event.text || "";
+  } else if (ev.type === "delegation") {
+    tmLogLine(`Coordinator → ${esc(ev.id)} (${ev.count}/${ev.max}): ${esc(ev.task)}`, "loop");
   } else if (ev.type === "node_done") {
+    $("tmLiveOutput")?.remove();
     tmOutputs[ev.id] = ev.output || "";
     tmLogLine(`<details class="tmoutput" open><summary>${ev.ok ? "✓" : "✗"} ${esc(ev.id)}</summary>
       <div class="srow"><button class="btn sm" data-copy-output="${esc(ev.output || "")}">Copy result</button></div>
@@ -3486,6 +3572,11 @@ function renderTeamEvent(ev) {
   } else if (ev.type === "revision_limit" || ev.type === "team_error") {
     tmLogLine(esc(ev.message), "err");
   } else if (ev.type === "team_done") {
+    if (ev.finalResult) {
+      tmOutputs.final = ev.finalResult;
+      tmLogLine(`<details class="tmoutput" open><summary>Final result</summary><pre>${esc(ev.finalResult)}</pre></details>`);
+      $("tmDownload").hidden = false;
+    }
     $("tmStatus").textContent = ev.ok ? "Completed" : ev.cancelled ? "Stopped" : ev.reason || "Failed";
     $("tmStop").hidden = true; $("tmRun").disabled = false;
     tmRuns[tmActiveRun] = {done: true, ok: ev.ok};
@@ -3661,6 +3752,19 @@ function bindEvents() {
   $("syncCancel").addEventListener("click", closeSync);
   $("syncGo").addEventListener("click", doSync);
 
+  $("providersBtn").onclick = openProviders;
+  $("orSave").onclick = () => providerAction("save");
+  $("orTest").onclick = () => providerAction("test");
+  $("orRemove").onclick = () => providerAction("delete");
+  $("orClose").onclick = () => { $("orKey").value = ""; $("providersModal").hidden = true; };
+  $("providersModal").onclick = e => { if (e.target === $("providersModal")) $("orClose").click(); };
+  $("tmMode").onchange = () => { $("tmCoordinator").hidden = $("tmMode").value !== "coordinator"; };
+  $("tmCoordEngine").onchange = async () => {
+    $("tmCoordModel").value = "";
+    if ($("tmCoordEngine").value === "openrouter") await loadOpenRouterModels();
+    $("tmCoordModels").innerHTML = workflowModelOptions($("tmCoordEngine").value);
+  };
+
   // teams (agent workflows)
   $("teamsBtn").addEventListener("click", openTeams);
   $("tmCancel").addEventListener("click", closeTeams);
@@ -3692,7 +3796,8 @@ function bindEvents() {
     loadTeamIntoEditor(tmPendingDraft); tmPendingDraft = null;
     $("tmReviewDraft").hidden = true; $("tmDraftStatus").textContent = "Draft opened. Review and save when ready.";
   };
-  $("tmDraftEngine").onchange = () => {
+  $("tmDraftEngine").onchange = async () => {
+    if ($("tmDraftEngine").value === "openrouter") await loadOpenRouterModels();
     $("tmDraftModel").value = "";
     $("tmDraftModels").innerHTML = workflowModelOptions($("tmDraftEngine").value);
   };
@@ -4328,6 +4433,7 @@ function bindEvents() {
 
   // keyboard: Escape closes the topmost thing; single keys never fire while typing
   document.addEventListener("keydown", e => {
+    if (e.key === "Escape" && !$("providersModal").hidden) { $("orClose").click(); return; }
     if (e.key === "Escape") {
       if (!$("atFiles").hidden) { hideAtFiles(); return; }
       if (!$("slashMenu").hidden) { hideSlash(); return; }

@@ -747,7 +747,7 @@ This continues the saved conversation; it does not attach to a running terminal.
 
 ### Workflow authoring and chat export
 
-Teams now supports Claude and Codex per step, exact model IDs, separate agent
+Teams now supports Claude, Codex and OpenRouter per step, exact model IDs, separate agent
 instructions, automatic brief/prior-output sharing, reordering, and editable
 revision loops. Complete results can be copied or downloaded. A review that
 still requests changes at its revision limit is reported explicitly.
@@ -756,3 +756,8 @@ Choose **Export as workflow** under an agent's reply to build an editable draft,
 or use Teams' description box, JSON import/export, or the **Lesson pipeline**
 starter. Drafts are reviewed before saving; **Save & Run** starts execution.
 See [the workflow guide](docs/workflows.md) for the full flow and JSON format.
+
+Connect OpenRouter through **Providers** (macOS Keychain or server environment).
+Teams' **Coordinator** mode lets a separately chosen model delegate to named
+specialists across providers, with an enforced delegation limit. OpenRouter
+steps currently handle text; Claude/Codex specialists provide file and shell tools.

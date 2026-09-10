@@ -4,7 +4,7 @@ Open **Teams** to start from a blank workflow, the writing example, the full
 **Lesson pipeline** template, or imported JSON. Steps run from top to bottom.
 Expand a step to edit it; use the arrows to reorder steps.
 
-Each step has an engine (Claude or Codex), an optional exact model ID, permissions,
+Each step has an engine (Claude, Codex or OpenRouter), an optional exact model ID, permissions,
 reusable agent instructions, and a task. Instructions accompany each invocation;
 they are not installed as global CLI settings. Enable **Include original brief
 and all earlier outputs** to pass that context automatically. For selective
@@ -89,5 +89,35 @@ IDs must be unique letters, digits, underscores or hyphens; `input` and `at` are
 reserved. A loop must return to an earlier step. AgentGrid stores saved definitions
 in `~/.agentgrid/teams/`. Definitions contain no API credentials.
 
-OpenRouter and autonomous coordinator mode are proposed in
-[the orchestration design](orchestration-design.md); they are not yet implemented.
+## OpenRouter and coordinator mode
+
+Open **Providers**, enter your OpenRouter key, and choose **Connect**. The server
+tests it before saving it in macOS Keychain. Alternatively set
+`OPENROUTER_API_KEY` on the server; environment configuration takes precedence.
+Keys are excluded from workflow exports and CLI child environments. OpenRouter
+usage is billed separately from Claude/Codex subscriptions.
+
+Choose OpenRouter for a step or draft conversion, then select or type an exact
+model ID. Suggestions load from the provider catalog. OpenRouter steps currently
+accept text only, with no filesystem or shell tools. Use Claude/Codex specialists
+for repository work. Each OpenRouter response is capped at 8,192 output tokens;
+truncated responses fail rather than silently becoming completed results.
+
+Select **Coordinator** as the execution mode to choose an independent routing
+model. Define the allowed specialists as steps, specify completion instructions,
+and set the maximum delegations (1–50). The coordinator assigns one specialist at
+a time and can revisit specialists. AgentGrid validates every decision and stops
+on invalid decisions, worker failures, or exhausted delegations. Remove fixed
+revision loops before switching to coordinator mode.
+
+This initial mode uses JSON decisions, not arbitrary agent creation or parallel
+workers. There is no enforced dollar budget or restart recovery yet. Stop cancels
+locally and closes the API stream; upstream cancellation and billing depend on
+the provider. See [the orchestration design](orchestration-design.md).
+
+## Codex executable selection
+
+AgentGrid compares the PATH Codex CLI with installed macOS Codex app binaries
+and selects the newest version for both chats and new agents. Set
+`AGENTGRID_CODEX_BIN` to pin an executable. Restart AgentGrid after upgrading or
+changing this override. Nested API errors are displayed as one readable message.

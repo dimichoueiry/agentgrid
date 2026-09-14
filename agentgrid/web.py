@@ -104,6 +104,27 @@ def safe_stem(name: str) -> str:
     return stem[:48] or "paste"
 
 
+def decode_image_data(data: str) -> tuple[bytes, str]:
+    """Decode a base64 image (bare or a `data:` URL) to (bytes, extension).
+
+    Raises ValueError on anything that is not a real, in-bounds PNG/JPEG/GIF/
+    WebP -- the type is decided by magic bytes, never the client's label. Shared
+    by the chat paste path and the review overlay's marked-up screenshots.
+    """
+    if data.startswith("data:"):
+        comma = data.find(",")
+        data = data[comma + 1:] if comma >= 0 else ""
+    raw = base64.b64decode(data, validate=True)
+    if not raw:
+        raise ValueError("empty image")
+    if len(raw) > MAX_UPLOAD_BYTES:
+        raise ValueError("image too large")
+    ext = image_extension(raw)
+    if ext is None:
+        raise ValueError("not a supported image")
+    return raw, ext
+
+
 def session_uploads_dir(session_id: str) -> Path:
     """The uploads directory for one session.
 
@@ -1945,20 +1966,61 @@ class Handler(BaseHTTPRequestHandler):
             return
         url = str(body.get("url") or "")[:2000]
         title = str(body.get("title") or "")[:300]
-        prompt = _compile_review_prompt(url, title, comments)
         target = str(body.get("target") or "").strip()
         if target:
             session = self._session_by_id(target)
             if session is None:
                 self._send_json(404, {"error": "That session is no longer running. Pick another, or New agent."})
                 return
+            # Marked-up screenshots are saved into this session's uploads dir and
+            # attached to the turn, so the agent sees the drawing, not just reads
+            # about it.
+            img_dir = session_uploads_dir(session.session_id)
+            attachments = []
+            for c in comments:
+                saved = self._save_review_image(img_dir, c.get("image"))
+                if saved:
+                    c["_imgpath"] = saved
+                    attachments.append(saved)
+            prompt = _compile_review_prompt(url, title, comments)
             self.chat.send(session.session_id, session.cwd, prompt,
-                           chat.DEFAULT_POSTURE, "", [], engine=session.engine)
+                           chat.DEFAULT_POSTURE, "", attachments, engine=session.engine)
             self._send_json(200, {"ok": True, "dispatched": "session",
-                                  "sessionId": session.session_id})
+                                  "sessionId": session.session_id,
+                                  "attached": len(attachments)})
             return
-        path = _save_pending_review(url, title, prompt, comments)
+        # Parked: save any screenshots beside the batch and reference their paths
+        # in the prompt, so a later pickup still has the drawings.
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+        img_dir = REVIEWS_DIR / stamp
+        for c in comments:
+            saved = self._save_review_image(img_dir, c.get("image"))
+            if saved:
+                c["_imgpath"] = saved
+        prompt = _compile_review_prompt(url, title, comments)
+        path = _save_pending_review(url, title, prompt, comments, stamp)
         self._send_json(200, {"ok": True, "dispatched": "pending", "path": str(path)})
+
+    def _save_review_image(self, dir_path: Path, data: object) -> str | None:
+        """Save one inline screenshot (base64/`data:` URL) and return its path.
+
+        Returns None for a missing or invalid image rather than failing the
+        whole release -- a bad drawing should never lose the words that came
+        with it.
+        """
+        if not isinstance(data, str) or not data:
+            return None
+        try:
+            raw, ext = decode_image_data(data)
+        except (ValueError, binascii.Error):
+            return None
+        try:
+            dir_path.mkdir(parents=True, exist_ok=True)
+            dest = dir_path / f"review-{time.strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(3)}.{ext}"
+            dest.write_bytes(raw)
+        except OSError:
+            return None
+        return str(dest)
 
     def _review_install_page(self) -> str:
         """The /review page: drag-to-install bookmarklet + copy snippet."""
@@ -2104,21 +2166,34 @@ def _compile_review_prompt(url: str, title: str, comments: list) -> str:
             where = f"the element `{selector}`" if selector else "a spot on the page"
         lines.append(f"{i}. On {where}:")
         lines.append(f"   {note}")
+        # A marked-up screenshot rides with this item when the reviewer drew on
+        # one; name the file so the agent can open it (it is also attached to
+        # the turn when this goes to a running session).
+        imgpath = str(c.get("_imgpath") or "").strip()
+        if imgpath:
+            lines.append(f"   Marked-up screenshot (my drawing shows the spot): {imgpath}")
         lines.append("")
     return "\n".join(line for line in lines if line is not None).strip() + "\n"
 
 
-def _save_pending_review(url: str, title: str, prompt: str, comments: list) -> Path:
-    """Park a released batch with no chosen session, so it is never lost."""
+def _save_pending_review(url: str, title: str, prompt: str, comments: list,
+                         stamp: str | None = None) -> Path:
+    """Park a released batch with no chosen session, so it is never lost.
+
+    Inline screenshot bytes are dropped from the stored JSON -- they are already
+    written as files next to it and referenced by `_imgpath` -- so the record
+    stays small.
+    """
     REVIEWS_DIR.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+    stamp = stamp or datetime.now().strftime("%Y%m%d-%H%M%S-%f")
     path = REVIEWS_DIR / f"{stamp}.json"
+    lean = [{k: v for k, v in c.items() if k != "image"} for c in comments]
     path.write_text(json.dumps({
         "createdAt": time.time(),
         "url": url,
         "title": title,
         "prompt": prompt,
-        "comments": comments,
+        "comments": lean,
     }, indent=2), encoding="utf-8")
     return path
 

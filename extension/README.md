@@ -20,9 +20,13 @@ AgentGrid agent. No bookmarklet, no copying URLs.
 2. Go to the localhost page you're building.
 3. Press **Cmd+K** (or **Ctrl+K**). The **Review** pill appears and arms.
    Press it again to toggle off.
-4. Highlight text or click near anything (images included) to comment. Open the
-   tray via the pill's number badge, pick the agent working on this project, and
-   hit **Release**.
+4. Comment:
+   - **Highlight text** to leave a note tied to the exact words.
+   - **Click near anything** to grab a screenshot, then draw on it — circle a
+     spot, drop an arrow, sketch — and write "change this to that." The marked-up
+     image is attached to the agent's turn, so it sees exactly what you mean.
+5. Open the tray via the pill's number badge, pick the agent working on this
+   project, and hit **Release**.
 
 ## Notes
 

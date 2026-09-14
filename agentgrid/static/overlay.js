@@ -235,7 +235,7 @@
     ".item .thumb{ margin-top:6px; width:100%; max-height:96px; object-fit:cover; border-radius:6px; border:1px solid var(--line-2); display:block; }",
     // annotation editor
     ".editor{ pointer-events:auto; position:fixed; inset:0; background:rgba(0,0,0,.55); display:flex; align-items:center; justify-content:center; }",
-    ".editor .frame{ background:var(--card); border:1px solid var(--line-2); border-radius:14px; box-shadow:var(--shadow); padding:12px; display:flex; flex-direction:column; gap:10px; max-width:92vw; }",
+    ".editor .frame{ background:var(--card); border:1px solid var(--line-2); border-radius:14px; box-shadow:var(--shadow); padding:12px; display:flex; flex-direction:column; gap:10px; max-width:74vw; max-height:90vh; overflow:auto; }",
     ".editor .tools{ display:flex; align-items:center; gap:6px; flex-wrap:wrap; }",
     ".editor .tool{ width:32px; height:30px; border-radius:8px; border:1px solid var(--line-2); background:var(--card); color:var(--text); cursor:pointer; font-size:14px; display:inline-flex; align-items:center; justify-content:center; }",
     ".editor .tool.on{ background:var(--accent); color:#fff; border-color:var(--accent); }",
@@ -243,7 +243,7 @@
     ".editor .swatch{ width:20px; height:20px; border-radius:50%; cursor:pointer; border:2px solid transparent; }",
     ".editor .swatch.on{ border-color:var(--text); }",
     ".editor .sep{ flex:1; }",
-    ".editor canvas{ display:block; border-radius:8px; background:var(--card-hover); cursor:crosshair; touch-action:none; max-width:88vw; }",
+    ".editor canvas{ display:block; border-radius:8px; background:var(--card-hover); cursor:crosshair; touch-action:none; max-width:100%; }",
     ".editor textarea{ width:100%; min-height:52px; resize:vertical; border:1px solid var(--line-2); border-radius:8px; padding:8px; font-size:13px; color:var(--text); background:var(--bg); outline:none; font-family:inherit; }",
     ".editor textarea:focus{ border-color:var(--accent); }",
     ".editor .foot{ display:flex; justify-content:space-between; align-items:center; gap:10px; }",
@@ -604,8 +604,12 @@
     var ta = editor.querySelector("textarea");
     var img = new Image();
     img.onload = function () {
-      var maxW = Math.min(img.naturalWidth, 1400, Math.floor(window.innerWidth * 0.86));
-      var scale = maxW / img.naturalWidth;
+      // Fit the screenshot inside the space left after the toolbar, textarea and
+      // buttons, capped by BOTH width and height so the whole editor stays on
+      // screen (a tall retina capture used to overflow the viewport).
+      var availW = Math.min(window.innerWidth * 0.7, 1040);
+      var availH = window.innerHeight * 0.52;
+      var scale = Math.min(availW / img.naturalWidth, availH / img.naturalHeight, 1);
       canvas.width = Math.round(img.naturalWidth * scale);
       canvas.height = Math.round(img.naturalHeight * scale);
       redraw();

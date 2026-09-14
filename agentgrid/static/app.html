@@ -3268,11 +3268,9 @@ function openModelPicker() {
 function syncEngineModels() {
   const engine = $("naEngine").value;
   fillModels("naModel", engine);
-  // Interactive start opens a real `claude` terminal; codex has no such mode
-  // here, so it falls back to a detached run regardless.
-  const sess = $("naSession"), codex = engine === "codex";
-  sess.querySelector('option[value="interactive"]').disabled = codex;
-  if (codex && sess.value === "interactive") sess.value = "background";
+  // Interactive start opens a real terminal running the CLI, seeded with the
+  // task -- available for both claude and codex.
+  $("naSession").querySelector('option[value="interactive"]').disabled = false;
 }
 function closeNewAgent() { $("modal").hidden = true; }
 async function startAgent() {

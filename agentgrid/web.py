@@ -695,12 +695,10 @@ def spawn_agent(cwd: str, prompt: str, model: str | None,
                   f"</system instructions>\n\n{prompt}")
 
     if interactive:
-        # Codex's non-interactive `exec` is a different tool from its TUI, so
-        # interactive is a Claude-only choice for now rather than a silent
-        # fall-through to a background codex run the user did not ask for.
-        if engine == "codex":
-            return False, "Interactive start is only available for Claude right now.", None
-        return spawn_interactive(cwd, prompt, model)
+        # Open a real terminal running the CLI, seeded with the task. Both
+        # engines have an interactive mode: `claude <prompt>` and `codex
+        # <prompt>` each start a watch-and-type-into session.
+        return spawn_interactive(cwd, prompt, model, engine)
 
     if engine == "codex":
         # codex exec runs the whole task and only then exits, so it cannot be
@@ -864,8 +862,9 @@ def open_in_terminal(session) -> tuple[bool, str]:
     return True, f"Opened a Terminal tab attached to {session.job_id}."
 
 
-def spawn_interactive(cwd: str, prompt: str, model: str | None) -> tuple[bool, str, None]:
-    """Start a regular, watch-and-type-into `claude` in a fresh Terminal tab.
+def spawn_interactive(cwd: str, prompt: str, model: str | None,
+                      engine: str = "claude") -> tuple[bool, str, None]:
+    """Start a regular, watch-and-type-into CLI session in a fresh Terminal tab.
 
     The counterpart to a background spawn: rather than detaching a daemon, this
     opens a terminal running an ordinary interactive session, seeded with the
@@ -873,20 +872,26 @@ def spawn_interactive(cwd: str, prompt: str, model: str | None) -> tuple[bool, s
     interactive over background. There is no job id to hand back; the board
     finds it the same way it finds any interactive session, from the fleet.
 
-    Every piece of the shell line is `shlex.quote`d before it is framed into
-    AppleScript, so a prompt full of quotes, `$`, or newlines runs as one
-    argument rather than as shell to be interpreted.
+    Both engines have an interactive mode seeded by a positional prompt:
+    `claude <prompt>` and `codex <prompt>`. Every piece of the shell line is
+    `shlex.quote`d before it is framed into AppleScript, so a prompt full of
+    quotes, `$`, or newlines runs as one argument rather than as shell.
     """
-    argv = ["claude"] + (["--model", model] if model else []) + [prompt]
+    if engine == "codex":
+        argv = [chat.codex_binary()] + (["-m", model] if model else []) + [prompt]
+        label = "codex"
+    else:
+        argv = ["claude"] + (["--model", model] if model else []) + [prompt]
+        label = "claude"
     command = f"cd {shlex.quote(cwd)} && " + " ".join(shlex.quote(part) for part in argv)
     if sys.platform != "darwin":
         return False, (f"Starting an interactive session needs Terminal.app (macOS "
                        f"only). Run this yourself: {command}"), None
-    first_line = prompt.strip().splitlines()[0] if prompt.strip() else "claude"
-    ok, message = _open_terminal_tab(command, first_line[:40] or "claude")
+    first_line = prompt.strip().splitlines()[0] if prompt.strip() else label
+    ok, message = _open_terminal_tab(command, first_line[:40] or label)
     if not ok:
         return False, message, None
-    return True, f"Opened an interactive claude in {Path(cwd).name}.", None
+    return True, f"Opened an interactive {label} in {Path(cwd).name}.", None
 
 
 # --- @-mention file search ---------------------------------------------------
@@ -1940,10 +1945,12 @@ class Handler(BaseHTTPRequestHandler):
         if name:
             if job_id:
                 self.fleet.name_when_seen(job_id, name)
+            elif engine == "codex":
+                # A codex session (exec or interactive) is found in the rollout
+                # files by cwd + time, never a job id.
+                self.fleet.name_codex_when_seen(cwd, name)
             elif interactive:
                 self.fleet.name_interactive_when_seen(cwd, name)
-            elif engine == "codex":
-                self.fleet.name_codex_when_seen(cwd, name)
             else:
                 # Say the name was not applied rather than dropping it silently.
                 message += " Could not read its id, so the name was not applied."

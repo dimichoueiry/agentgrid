@@ -977,13 +977,25 @@ class RecoverEndedInteractiveTests(unittest.TestCase):
 class InteractiveSpawnTests(unittest.TestCase):
     ALLOWED = [{"path": "/tmp/repo"}]
 
-    def test_codex_cannot_start_interactive(self):
-        ok, message, job = web.spawn_agent(
-            "/tmp/repo", "do it", None, self.ALLOWED,
-            engine="codex", interactive=True)
-        self.assertFalse(ok)
+    def test_codex_can_start_interactive(self):
+        # Interactive codex opens a Terminal running `codex <prompt>`, the same
+        # shape as the claude interactive path.
+        captured = {}
+
+        def fake_tab(command, title):
+            captured["command"] = command
+            return True, "ok"
+
+        with mock.patch.object(web, "_open_terminal_tab", fake_tab), \
+                mock.patch.object(web.sys, "platform", "darwin"), \
+                mock.patch.object(web.chat, "codex_binary", lambda: "codex"):
+            ok, message, job = web.spawn_agent(
+                "/tmp/repo", "do it", None, self.ALLOWED,
+                engine="codex", interactive=True)
+        self.assertTrue(ok)
         self.assertIsNone(job)
-        self.assertIn("Claude", message)
+        expected = "cd /tmp/repo && codex " + shlex.quote("do it")
+        self.assertEqual(captured["command"], expected)
 
     def test_interactive_command_is_shell_quoted(self):
         captured = {}

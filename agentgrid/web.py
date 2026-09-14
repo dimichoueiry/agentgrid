@@ -420,6 +420,16 @@ def save_project_prefs(prefs: dict) -> None:
     os.replace(temporary, PROJECT_PREFS_PATH)
 
 
+def freeform_root() -> Path:
+    """Working directory for a project-less agent -- the Desktop, as if you had
+    opened a terminal there and run `claude`. Falls back to home when there is
+    no Desktop (a headless box, or a localized one), so a spawn never lands in a
+    directory that does not exist.
+    """
+    desktop = Path.home() / "Desktop"
+    return desktop if desktop.is_dir() else Path.home()
+
+
 def add_project(raw_path: str, create: bool = False) -> tuple[bool, str, bool]:
     """Add a directory to the picker by hand, optionally creating it.
 
@@ -1883,7 +1893,16 @@ class Handler(BaseHTTPRequestHandler):
         projects = discover_projects(self.fleet.raw())
         engine = "codex" if str(body.get("engine") or "") == "codex" else "claude"
         interactive = bool(body.get("interactive"))
-        cwd = str(body.get("cwd") or "")
+        if body.get("noProject"):
+            # A project-less agent, like running `claude` from the Desktop. The
+            # cwd is resolved here rather than trusted from the client, and only
+            # this one server-chosen root is added to the allowlist, so the
+            # spawn boundary still holds.
+            root = freeform_root()
+            cwd = str(root)
+            projects = projects + [{"path": cwd, "name": root.name, "label": root.name}]
+        else:
+            cwd = str(body.get("cwd") or "")
         ok, message, job_id = spawn_agent(
             cwd,
             str(body.get("prompt") or ""),

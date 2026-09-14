@@ -3201,10 +3201,11 @@ function fillProjectSelect(selected) {
   const rest = projectsCache.filter(p => !p.fav && !p.hidden);
   const hid = projectsCache.filter(p => p.hidden);
   $("naProject").innerHTML =
+    `<option value="__desktop__">🖥 No project · Desktop</option>` +
     (favs.length ? `<optgroup label="Favourites">${favs.map(opt).join("")}</optgroup>` : "") +
     `<optgroup label="Projects">${rest.map(opt).join("")}</optgroup>` +
     (hid.length ? `<optgroup label="Hidden">${hid.map(opt).join("")}</optgroup>` : "");
-  if (selected && projectsCache.some(p => p.path === selected)) $("naProject").value = selected;
+  if (selected === "__desktop__" || (selected && projectsCache.some(p => p.path === selected))) $("naProject").value = selected;
   syncProjectButtons();
 }
 function syncProjectButtons() {
@@ -3283,8 +3284,10 @@ async function startAgent() {
   $("naStart").disabled = true;
   let r;
   try {
+    const noProject = $("naProject").value === "__desktop__";
     r = await post("/api/spawn", {
-      cwd: $("naProject").value, prompt, engine: $("naEngine").value,
+      cwd: noProject ? "" : $("naProject").value, noProject, prompt,
+      engine: $("naEngine").value,
       model: selectedModel("naModel"), name: $("naName").value.trim(),
       systemPrompt: $("naSys").value.trim(),
       interactive: $("naSession").value === "interactive",

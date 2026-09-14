@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import html
 import json
 import os
 import queue
@@ -56,6 +57,14 @@ PROJECTS_TTL = 30.0
 UPLOADS_DIR = Path.home() / ".agentgrid" / "uploads"
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 MAX_BODY_BYTES = 16 * 1024 * 1024
+
+# Batches released from the web-review overlay for a "New agent" target (no
+# running session chosen) are parked here so nothing is lost before pickup.
+REVIEWS_DIR = Path.home() / ".agentgrid" / "reviews"
+# The overlay is injected onto the user's own dev site (another origin), so a
+# small, explicit set of routes answers cross-origin. Everything else stays
+# same-origin only. The per-run token is still required on every one of them.
+CORS_PATHS = ("/overlay.js", "/api/sessions", "/api/review/release")
 
 # Magic-byte signatures for the image types the chat can paste. Content-type is
 # never trusted -- the client controls it -- so the bytes themselves decide, and
@@ -1008,6 +1017,18 @@ class Handler(BaseHTTPRequestHandler):
         supplied = (query.get("t") or [""])[0] or self.headers.get("X-Agentgrid-Token", "")
         return bool(supplied) and secrets.compare_digest(supplied, self.token)
 
+    def _cors_origin(self) -> str:
+        """The Origin to echo back, but only for the few overlay routes.
+
+        The review overlay runs on the user's dev site (a different origin) and
+        must read these responses, so we reflect its Origin. The token still
+        gates the request, so reflecting an arbitrary localhost origin only
+        matters to a page that already holds the per-run secret.
+        """
+        origin = self.headers.get("Origin", "")
+        path = urllib.parse.urlsplit(self.path).path
+        return origin if (origin and path in CORS_PATHS) else ""
+
     def _send(self, code: int, body: bytes, content_type: str) -> None:
         try:
             self.send_response(code)
@@ -1016,11 +1037,29 @@ class Handler(BaseHTTPRequestHandler):
             # No embedding, and no referrer leakage of the token in the URL.
             self.send_header("X-Frame-Options", "DENY")
             self.send_header("Referrer-Policy", "no-referrer")
+            cors = self._cors_origin()
+            if cors:
+                self.send_header("Access-Control-Allow-Origin", cors)
+                self.send_header("Vary", "Origin")
             self.end_headers()
             self.wfile.write(body)
         except (BrokenPipeError, ConnectionResetError):
             # The browser gave up on the request; nothing useful to do.
             pass
+
+    def do_OPTIONS(self) -> None:  # noqa: N802
+        """CORS preflight for the overlay routes; a no-op elsewhere."""
+        origin = self.headers.get("Origin", "")
+        path = urllib.parse.urlsplit(self.path).path
+        self.send_response(204 if (origin and path in CORS_PATHS) else 404)
+        if origin and path in CORS_PATHS:
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Vary", "Origin")
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Agentgrid-Token")
+            self.send_header("Access-Control-Max-Age", "600")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
     def _send_json(self, code: int, payload) -> None:
         self._send(code, json.dumps(payload).encode("utf-8"),
@@ -1052,6 +1091,15 @@ class Handler(BaseHTTPRequestHandler):
         route = parsed.path
         if route == "/":
             self._send(200, (STATIC / "app.html").read_bytes(), "text/html; charset=utf-8")
+        elif route == "/overlay.js":
+            # The web-review overlay, injected onto the user's own dev site.
+            self._send(200, (STATIC / "overlay.js").read_bytes(),
+                       "application/javascript; charset=utf-8")
+        elif route == "/review":
+            # A tiny install page: the draggable bookmarklet and a copyable
+            # snippet, with the live token baked in so it just works.
+            self._send(200, self._review_install_page().encode("utf-8"),
+                       "text/html; charset=utf-8")
         elif route == "/api/providers/openrouter":
             try:
                 self._send_json(200, credentials.connection_status())
@@ -1318,6 +1366,8 @@ class Handler(BaseHTTPRequestHandler):
             self._notes_renameall(body)
         elif route == "/api/spawn":
             self._spawn(body)
+        elif route == "/api/review/release":
+            self._review_release(body)
         elif route == "/api/projects/add":
             ok, message, can_create = add_project(
                 str(body.get("path") or ""), bool(body.get("create")))
@@ -1859,6 +1909,54 @@ class Handler(BaseHTTPRequestHandler):
                 message += " Could not read its id, so the name was not applied."
         self._send_json(200, {"ok": True, "message": message})
 
+    # -- web-review overlay --------------------------------------------------
+
+    def _review_release(self, body: dict) -> None:
+        """Take a batch of overlay comments and hand it to an agent.
+
+        With a running session chosen, the compiled instruction is queued onto
+        that session's chat (the loop the user wants: annotate the live app,
+        release, the same agent fixes it). With no target ("New agent"), the
+        batch is parked on disk so nothing is lost before it is picked up.
+        """
+        raw = body.get("comments")
+        comments = [c for c in raw if isinstance(c, dict)] if isinstance(raw, list) else []
+        if not comments:
+            self._send_json(400, {"error": "No comments to release."})
+            return
+        url = str(body.get("url") or "")[:2000]
+        title = str(body.get("title") or "")[:300]
+        prompt = _compile_review_prompt(url, title, comments)
+        target = str(body.get("target") or "").strip()
+        if target:
+            session = self._session_by_id(target)
+            if session is None:
+                self._send_json(404, {"error": "That session is no longer running. Pick another, or New agent."})
+                return
+            self.chat.send(session.session_id, session.cwd, prompt,
+                           chat.DEFAULT_POSTURE, "", [], engine=session.engine)
+            self._send_json(200, {"ok": True, "dispatched": "session",
+                                  "sessionId": session.session_id})
+            return
+        path = _save_pending_review(url, title, prompt, comments)
+        self._send_json(200, {"ok": True, "dispatched": "pending", "path": str(path)})
+
+    def _review_install_page(self) -> str:
+        """The /review page: drag-to-install bookmarklet + copy snippet."""
+        origin = f"http://127.0.0.1:{self.server.server_address[1]}"
+        # The bookmarklet injects overlay.js with the origin+token baked in.
+        # json.dumps keeps the token safely quoted inside the javascript: URL.
+        loader = (
+            "javascript:(function(){var o=%s,t=%s,d=document,"
+            "s=d.createElement('script');s.src=o+'/overlay.js?ag='+"
+            "encodeURIComponent(o)+'&t='+encodeURIComponent(t)+'&_='+Date.now();"
+            "(d.body||d.documentElement).appendChild(s);})();"
+            % (json.dumps(origin), json.dumps(self.token))
+        )
+        href = html.escape(loader, quote=True)
+        snippet = html.escape(loader[len("javascript:"):])
+        return _REVIEW_PAGE.replace("__HREF__", href).replace("__SNIPPET__", snippet)
+
     def _rename(self, body: dict) -> None:
         session = self._session_by_id(str(body.get("sessionId") or ""))
         if session is None:
@@ -1955,6 +2053,122 @@ class Handler(BaseHTTPRequestHandler):
         self._send_json(200, {"ok": True, "message": message})
 
 
+# --- web-review helpers ------------------------------------------------------
+
+
+def _compile_review_prompt(url: str, title: str, comments: list) -> str:
+    """Turn a batch of overlay comments into one clear instruction for an agent.
+
+    Each comment carries where it was left (a text selection, an image, or a
+    clicked element) and what to change. The location goes first so the agent
+    can find the spot, then the requested change.
+    """
+    head = title.strip() or url or "the running app"
+    lines = [
+        f"I reviewed {head} in the browser and left the edits below. "
+        "Please make each change in the code, then tell me what you changed.",
+        "",
+        f"Page: {url}" if url else "",
+        "",
+    ]
+    for i, c in enumerate(comments, 1):
+        kind = str(c.get("kind") or "point")
+        quote = str(c.get("quote") or "").strip()[:600]
+        label = str(c.get("label") or "").strip()[:300]
+        selector = str(c.get("selector") or "").strip()[:300]
+        note = str(c.get("note") or "").strip()[:2000]
+        if kind == "text":
+            where = f'selected text: "{quote}"' if quote else "a selected span of text"
+        elif kind == "image":
+            where = f"the image ({label})" if label else "an image"
+        else:
+            where = f"the element `{selector}`" if selector else "a spot on the page"
+        lines.append(f"{i}. On {where}:")
+        lines.append(f"   {note}")
+        lines.append("")
+    return "\n".join(line for line in lines if line is not None).strip() + "\n"
+
+
+def _save_pending_review(url: str, title: str, prompt: str, comments: list) -> Path:
+    """Park a released batch with no chosen session, so it is never lost."""
+    REVIEWS_DIR.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+    path = REVIEWS_DIR / f"{stamp}.json"
+    path.write_text(json.dumps({
+        "createdAt": time.time(),
+        "url": url,
+        "title": title,
+        "prompt": prompt,
+        "comments": comments,
+    }, indent=2), encoding="utf-8")
+    return path
+
+
+_REVIEW_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AgentGrid · Web Review</title>
+<style>
+:root{--bg:#fbfbfa;--card:#fff;--text:#18181b;--text-2:#6b6b73;--line-2:#d6d6d2;
+--accent:#b4690e;--mono:ui-monospace,SFMono-Regular,Menlo,monospace;
+--sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+@media(prefers-color-scheme:dark){:root{--bg:#131315;--card:#1a1a1d;--text:#ececee;
+--text-2:#9797a0;--line-2:#33333a;--accent:#d9a441}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font-family:var(--sans);
+line-height:1.55;display:flex;justify-content:center;padding:48px 20px}
+main{max-width:640px;width:100%}
+h1{font-size:22px;margin:0 0 6px}
+p.sub{color:var(--text-2);margin:0 0 28px;font-size:14px}
+.step{background:var(--card);border:1px solid var(--line-2);border-radius:14px;
+padding:18px 20px;margin-bottom:16px}
+.step h2{font-size:14px;margin:0 0 10px;display:flex;gap:8px;align-items:center}
+.step h2 .n{width:22px;height:22px;border-radius:50%;background:var(--accent);
+color:#fff;font-size:12px;font-weight:700;display:flex;align-items:center;
+justify-content:center}
+@media(prefers-color-scheme:dark){.step h2 .n{color:#131315}}
+.bm{display:inline-flex;align-items:center;gap:8px;height:40px;padding:0 18px;
+background:var(--accent);color:#fff;border-radius:20px;text-decoration:none;
+font-weight:640;font-size:14px;cursor:grab}
+@media(prefers-color-scheme:dark){.bm{color:#131315}}
+.small{color:var(--text-2);font-size:13px;margin-top:10px}
+code{font-family:var(--mono);font-size:12px}
+pre{background:var(--bg);border:1px solid var(--line-2);border-radius:10px;
+padding:12px;overflow:auto;font-family:var(--mono);font-size:11.5px;
+white-space:pre-wrap;word-break:break-all;margin:0}
+button.copy{margin-top:10px;height:32px;padding:0 14px;border-radius:8px;
+border:1px solid var(--line-2);background:var(--card);color:var(--text);
+font-size:13px;font-weight:600;cursor:pointer;font-family:var(--sans)}
+ul{margin:6px 0 0;padding-left:20px;color:var(--text-2);font-size:13px}
+li{margin:3px 0}
+</style></head><body><main>
+<h1>Web Review overlay</h1>
+<p class="sub">Comment on any localhost page you're building, then release the
+edits to an agent to fix.</p>
+<div class="step"><h2><span class="n">1</span> Install the bookmarklet</h2>
+<p style="margin:0 0 12px;font-size:14px">Drag this button up to your bookmarks
+bar:</p>
+<a class="bm" href="__HREF__">\U0001f4ac Review this page</a>
+<p class="small">Can't drag it? Copy the snippet below and paste it into the
+browser's DevTools Console on the page you want to review.</p>
+<pre id="snip">__SNIPPET__</pre>
+<button class="copy" onclick="navigator.clipboard.writeText(document.getElementById('snip').textContent);this.textContent='Copied ✔'">Copy snippet</button>
+</div>
+<div class="step"><h2><span class="n">2</span> Open your app and click it</h2>
+<p style="margin:0;font-size:14px">Go to the page you're building (e.g.
+<code>localhost:3000</code>) and click the bookmarklet. A <b>Review</b> pill
+appears bottom-right. Press <code>c</code> to arm it.</p></div>
+<div class="step"><h2><span class="n">3</span> Comment, then release</h2>
+<ul>
+<li><b>Highlight text</b> → a Comment chip appears → type your note.</li>
+<li><b>Click near anything</b> (including an image) → a pin drops → type your note.</li>
+<li>Open the tray, pick the agent working on this project, and hit
+<b>Release</b>. The agent gets every edit as one instruction.</li>
+</ul></div>
+<p class="small">The token in this bookmarklet is tied to this AgentGrid run.
+If you restart AgentGrid, revisit this page and re-install it.</p>
+</main></body></html>"""
+
+
 # --- entry point -------------------------------------------------------------
 
 
@@ -1980,8 +2194,10 @@ def serve(port: int = 8787, open_browser: bool = True,
         httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
     httpd.daemon_threads = True
     url = f"http://127.0.0.1:{httpd.server_address[1]}/?t={token}"
+    review_url = f"http://127.0.0.1:{httpd.server_address[1]}/review?t={token}"
     print("agentgrid web UI")
     print(f"  {url}")
+    print(f"  web review overlay: {review_url}")
     print("  projects from: " + (", ".join(str(root) for root in scanning) or "(no roots found)"))
     # flush=True because Python block-buffers stdout when it is not a
     # terminal, and `ag --web > log &` must still show the URL that carries

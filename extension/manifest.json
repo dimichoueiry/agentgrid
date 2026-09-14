@@ -1,0 +1,31 @@
+{
+  "manifest_version": 3,
+  "name": "AgentGrid Web Review",
+  "version": "0.1.0",
+  "description": "Press a hotkey on any localhost page to leave review comments and release them to an AgentGrid agent.",
+  "permissions": ["scripting", "storage", "activeTab"],
+  "host_permissions": [
+    "http://localhost/*",
+    "http://127.0.0.1/*"
+  ],
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [
+    {
+      "matches": ["http://localhost/*", "http://127.0.0.1/*"],
+      "js": ["capture.js"],
+      "run_at": "document_start"
+    }
+  ],
+  "commands": {
+    "toggle-overlay": {
+      "suggested_key": {
+        "default": "Ctrl+K",
+        "mac": "Command+K"
+      },
+      "description": "Toggle the AgentGrid review overlay on the current page"
+    }
+  },
+  "action": {
+    "default_title": "Toggle AgentGrid review overlay"
+  }
+}

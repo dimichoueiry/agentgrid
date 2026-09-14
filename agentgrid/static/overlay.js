@@ -52,6 +52,8 @@
   var CFG = discoverConfig();
   var AG_ORIGIN = (CFG.origin || "").replace(/\/$/, "");
   var AG_TOKEN = CFG.token || "";
+  // Injected by the extension (which can capture the screen) vs a bookmarklet.
+  var extMode = !!CFG.ext;
 
   // ---- Small helpers -----------------------------------------------------
   var STORE_KEY = "ag_review::" + location.origin + location.pathname;
@@ -123,8 +125,14 @@
     }
   }
   function save() {
+    // Screenshots stay in memory only -- base64 images would blow the
+    // localStorage quota. A reload keeps your notes and pins, not the drawings.
     try {
-      localStorage.setItem(STORE_KEY, JSON.stringify(comments));
+      var lean = comments.map(function (c) {
+        var o = {}; for (var k in c) if (k !== "image") o[k] = c[k];
+        return o;
+      });
+      localStorage.setItem(STORE_KEY, JSON.stringify(lean));
     } catch (e) {}
   }
 
@@ -224,6 +232,22 @@
     ".item .qq{ font-size:11px; color:var(--text-3); white-space:nowrap; overflow:hidden;",
     " text-overflow:ellipsis; margin-bottom:2px; }",
     ".item .nn{ font-size:12.5px; color:var(--text); line-height:1.4; word-break:break-word; }",
+    ".item .thumb{ margin-top:6px; width:100%; max-height:96px; object-fit:cover; border-radius:6px; border:1px solid var(--line-2); display:block; }",
+    // annotation editor
+    ".editor{ pointer-events:auto; position:fixed; inset:0; background:rgba(0,0,0,.55); display:flex; align-items:center; justify-content:center; }",
+    ".editor .frame{ background:var(--card); border:1px solid var(--line-2); border-radius:14px; box-shadow:var(--shadow); padding:12px; display:flex; flex-direction:column; gap:10px; max-width:92vw; }",
+    ".editor .tools{ display:flex; align-items:center; gap:6px; flex-wrap:wrap; }",
+    ".editor .tool{ width:32px; height:30px; border-radius:8px; border:1px solid var(--line-2); background:var(--card); color:var(--text); cursor:pointer; font-size:14px; display:inline-flex; align-items:center; justify-content:center; }",
+    ".editor .tool.on{ background:var(--accent); color:#fff; border-color:var(--accent); }",
+    "@media (prefers-color-scheme:dark){ .editor .tool.on{ color:#131315; } }",
+    ".editor .swatch{ width:20px; height:20px; border-radius:50%; cursor:pointer; border:2px solid transparent; }",
+    ".editor .swatch.on{ border-color:var(--text); }",
+    ".editor .sep{ flex:1; }",
+    ".editor canvas{ display:block; border-radius:8px; background:var(--card-hover); cursor:crosshair; touch-action:none; max-width:88vw; }",
+    ".editor textarea{ width:100%; min-height:52px; resize:vertical; border:1px solid var(--line-2); border-radius:8px; padding:8px; font-size:13px; color:var(--text); background:var(--bg); outline:none; font-family:inherit; }",
+    ".editor textarea:focus{ border-color:var(--accent); }",
+    ".editor .foot{ display:flex; justify-content:space-between; align-items:center; gap:10px; }",
+    ".editor .hint{ font-size:10.5px; color:var(--text-3); }",
     ".item .x{ flex:none; color:var(--text-3); font-size:15px; line-height:1; opacity:0; padding:2px 4px; border-radius:6px; }",
     ".item:hover .x{ opacity:1; }",
     ".item .x:hover{ background:var(--line-2); color:var(--text); }",
@@ -507,6 +531,177 @@
     });
   }
 
+  // ---- Screenshot capture (via the extension) ----------------------------
+  // Ask the extension to grab the visible tab. Resolves to a data URL, or null
+  // if there is no extension bridge (bookmarklet) or it times out.
+  function captureScreenshot() {
+    if (!extMode) return Promise.resolve(null);
+    return new Promise(function (resolve) {
+      var reqId = "cap" + Date.now() + Math.random().toString(36).slice(2, 6);
+      var settled = false;
+      function onMsg(e) {
+        var d = e.data;
+        if (!d || d.source !== "ag-review-ext" || d.reqId !== reqId) return;
+        settled = true;
+        window.removeEventListener("message", onMsg);
+        resolve(d.dataUrl || null);
+      }
+      window.addEventListener("message", onMsg);
+      window.postMessage({ source: "ag-review", type: "capture", reqId: reqId }, "*");
+      setTimeout(function () {
+        if (!settled) { window.removeEventListener("message", onMsg); resolve(null); }
+      }, 2000);
+    });
+  }
+
+  // ---- Annotation editor -------------------------------------------------
+  // Grab a screenshot, let the reviewer draw on it (circle/arrow/pen) and write
+  // a note, then store both as one comment.
+  var COLORS = ["#ff3b30", "#ffcc00", "#34c759", "#0a84ff", "#ffffff"];
+  var editor = null;
+
+  function openAnnotator(anchor, atX, atY) {
+    // Hide our own UI so it is not in the shot, capture, then restore.
+    host.style.visibility = "hidden";
+    captureScreenshot().then(function (dataUrl) {
+      host.style.visibility = "";
+      if (!dataUrl) {
+        // Capture unavailable: fall back to a plain note so nothing is blocked.
+        openPopover(anchor, null, atX, atY);
+        return;
+      }
+      buildEditor(anchor, dataUrl);
+    });
+  }
+
+  function buildEditor(anchor, dataUrl) {
+    if (editor) editor.remove();
+    var tool = "ellipse", color = COLORS[0], shapes = [], drawing = null;
+    editor = document.createElement("div");
+    editor.className = "editor";
+    var toolBtn = function (t, glyph, title) {
+      return '<button class="tool' + (t === tool ? " on" : "") + '" data-tool="' + t + '" title="' + title + '">' + glyph + "</button>";
+    };
+    var swatches = COLORS.map(function (c, i) {
+      return '<span class="swatch' + (i === 0 ? " on" : "") + '" data-color="' + c + '" style="background:' + c + '"></span>';
+    }).join("");
+    editor.innerHTML =
+      '<div class="frame">' +
+      '<div class="tools">' +
+      toolBtn("ellipse", "◯", "Circle") + toolBtn("rect", "▭", "Box") +
+      toolBtn("arrow", "↗", "Arrow") + toolBtn("pen", "✎", "Draw") +
+      '<span class="sep"></span>' + swatches +
+      '<button class="tool undo" title="Undo">⤺</button>' +
+      "</div>" +
+      "<canvas></canvas>" +
+      '<textarea placeholder="Circle the spot, then say what to change…"></textarea>' +
+      '<div class="foot"><span class="hint">draw to mark it · ⌘↵ send</span>' +
+      '<span><button class="btn ghost cancel">Cancel</button> <button class="btn primary save">Add comment</button></span></div>' +
+      "</div>";
+    wrap.appendChild(editor);
+    var canvas = editor.querySelector("canvas");
+    var ctx = canvas.getContext("2d");
+    var ta = editor.querySelector("textarea");
+    var img = new Image();
+    img.onload = function () {
+      var maxW = Math.min(img.naturalWidth, 1400, Math.floor(window.innerWidth * 0.86));
+      var scale = maxW / img.naturalWidth;
+      canvas.width = Math.round(img.naturalWidth * scale);
+      canvas.height = Math.round(img.naturalHeight * scale);
+      redraw();
+      ta.focus();
+    };
+    img.src = dataUrl;
+
+    function redraw() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      if (img.complete) ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      shapes.concat(drawing ? [drawing] : []).forEach(function (s) { drawShape(ctx, s); });
+    }
+    function drawShape(c, s) {
+      c.strokeStyle = s.color; c.lineWidth = 3; c.lineJoin = "round"; c.lineCap = "round";
+      if (s.tool === "pen") {
+        c.beginPath();
+        s.pts.forEach(function (p, i) { i ? c.lineTo(p.x, p.y) : c.moveTo(p.x, p.y); });
+        c.stroke();
+      } else if (s.tool === "rect") {
+        c.strokeRect(s.x0, s.y0, s.x1 - s.x0, s.y1 - s.y0);
+      } else if (s.tool === "ellipse") {
+        c.beginPath();
+        c.ellipse((s.x0 + s.x1) / 2, (s.y0 + s.y1) / 2, Math.abs(s.x1 - s.x0) / 2, Math.abs(s.y1 - s.y0) / 2, 0, 0, 2 * Math.PI);
+        c.stroke();
+      } else if (s.tool === "arrow") {
+        var a = Math.atan2(s.y1 - s.y0, s.x1 - s.x0), h = 12;
+        c.beginPath(); c.moveTo(s.x0, s.y0); c.lineTo(s.x1, s.y1);
+        c.lineTo(s.x1 - h * Math.cos(a - 0.4), s.y1 - h * Math.sin(a - 0.4));
+        c.moveTo(s.x1, s.y1);
+        c.lineTo(s.x1 - h * Math.cos(a + 0.4), s.y1 - h * Math.sin(a + 0.4));
+        c.stroke();
+      }
+    }
+    function pos(e) {
+      var r = canvas.getBoundingClientRect();
+      return { x: (e.clientX - r.left) * (canvas.width / r.width),
+               y: (e.clientY - r.top) * (canvas.height / r.height) };
+    }
+    canvas.addEventListener("pointerdown", function (e) {
+      canvas.setPointerCapture(e.pointerId);
+      var p = pos(e);
+      drawing = tool === "pen"
+        ? { tool: "pen", color: color, pts: [p] }
+        : { tool: tool, color: color, x0: p.x, y0: p.y, x1: p.x, y1: p.y };
+    });
+    canvas.addEventListener("pointermove", function (e) {
+      if (!drawing) return;
+      var p = pos(e);
+      if (drawing.tool === "pen") drawing.pts.push(p);
+      else { drawing.x1 = p.x; drawing.y1 = p.y; }
+      redraw();
+    });
+    function endStroke() {
+      if (drawing) { shapes.push(drawing); drawing = null; redraw(); }
+    }
+    canvas.addEventListener("pointerup", endStroke);
+    canvas.addEventListener("pointercancel", endStroke);
+
+    editor.querySelectorAll(".tool[data-tool]").forEach(function (b) {
+      b.addEventListener("click", function () {
+        tool = b.getAttribute("data-tool");
+        editor.querySelectorAll(".tool[data-tool]").forEach(function (x) {
+          x.classList.toggle("on", x === b);
+        });
+      });
+    });
+    editor.querySelectorAll(".swatch").forEach(function (sw) {
+      sw.addEventListener("click", function () {
+        color = sw.getAttribute("data-color");
+        editor.querySelectorAll(".swatch").forEach(function (x) { x.classList.toggle("on", x === sw); });
+      });
+    });
+    editor.querySelector(".undo").addEventListener("click", function () {
+      shapes.pop(); redraw();
+    });
+
+    function close() { if (editor) { editor.remove(); editor = null; } }
+    function commit() {
+      var note = ta.value.trim();
+      if (!note && !shapes.length) { close(); return; }
+      var image = canvas.toDataURL("image/jpeg", 0.85);
+      comments.push({ id: uid(), kind: anchor.kind, anchor: anchor,
+                      note: note || "(see the marked-up screenshot)", image: image, done: false });
+      save();
+      close();
+      refresh();
+      showToast("Comment added · " + comments.filter(function (c) { return !c.done; }).length + " pending");
+    }
+    editor.querySelector(".save").addEventListener("click", commit);
+    editor.querySelector(".cancel").addEventListener("click", close);
+    ta.addEventListener("keydown", function (e) {
+      if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); commit(); }
+      else if (e.key === "Escape") { e.preventDefault(); close(); }
+    });
+  }
+
   // ---- Capture: selection chip + click pin -------------------------------
   document.addEventListener("mouseup", function (e) {
     if (!armed) return;
@@ -549,7 +744,11 @@
       e.preventDefault();
       e.stopPropagation();
       var anchor = anchorFromPoint(e.clientX, e.clientY, e.target);
-      openPopover(anchor, null, e.clientX + 10, e.clientY + 10);
+      // A click pin has no quoted text to locate it, so grab a screenshot and
+      // let the reviewer draw on it. Bookmarklet users (no extension, so no
+      // screen capture) fall back to a plain note.
+      if (extMode) openAnnotator(anchor, e.clientX + 10, e.clientY + 10);
+      else openPopover(anchor, null, e.clientX + 10, e.clientY + 10);
     },
     true
   );
@@ -576,12 +775,13 @@
       .map(function (c, idx) {
         var q =
           c.anchor.quote ||
-          (c.anchor.label ? "■ " + c.anchor.label : "• pinned point");
+          (c.image ? "🖼 screenshot" : (c.anchor.label ? "■ " + c.anchor.label : "• pinned point"));
+        var thumb = c.image ? '<img class="thumb" src="' + c.image + '" alt="">' : "";
         return (
           '<div class="item' + (c.done ? " done" : "") + '" data-id="' + c.id + '">' +
           '<div class="n">' + (idx + 1) + "</div>" +
           '<div class="body"><div class="qq">' + esc(q) + "</div>" +
-          '<div class="nn">' + esc(c.note) + "</div></div>" +
+          '<div class="nn">' + esc(c.note) + "</div>" + thumb + "</div>" +
           '<div class="x" title="Delete">×</div></div>'
         );
       })
@@ -682,7 +882,7 @@
       target: targetSession || null,
       prompt: compileMarkdown(),
       comments: comments.map(function (c) {
-        return { kind: c.anchor.kind, selector: c.anchor.selector, quote: c.anchor.quote || "", label: c.anchor.label || "", note: c.note };
+        return { kind: c.anchor.kind, selector: c.anchor.selector, quote: c.anchor.quote || "", label: c.anchor.label || "", note: c.note, image: c.image || "" };
       }),
     };
     var relBtn = tray.querySelector(".release");
@@ -757,11 +957,12 @@
 
   // The extension owns the global Cmd/Ctrl+K when it injected us; only bind it
   // here for bookmarklet users, so the two don't both fire and cancel out.
-  var extOwnsHotkey = !!(window.__AG_REVIEW__ && window.__AG_REVIEW__.ext);
+  var extOwnsHotkey = extMode;
 
   // Esc disarms / closes transient UI
   document.addEventListener("keydown", function (e) {
     if (e.key === "Escape") {
+      if (editor) { editor.remove(); editor = null; return; }
       if (pop) { closePop(); return; }
       if (chip) { closeChip(); return; }
       if (armed) setArmed(false);

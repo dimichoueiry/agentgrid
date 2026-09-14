@@ -56,6 +56,21 @@ function showLinkHint() {
   setTimeout(function () { d.remove(); }, 4200);
 }
 
+// The overlay (page main world) asks for a screenshot through bridge.js, which
+// relays here; only the extension can capture the visible tab.
+chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
+  if (!msg || msg.type !== "ag-capture") return;
+  var winId = sender.tab ? sender.tab.windowId : undefined;
+  chrome.tabs.captureVisibleTab(winId, { format: "jpeg", quality: 92 }, function (dataUrl) {
+    if (chrome.runtime.lastError) {
+      sendResponse({ dataUrl: null, error: String(chrome.runtime.lastError.message || "") });
+    } else {
+      sendResponse({ dataUrl: dataUrl });
+    }
+  });
+  return true; // keep the channel open for the async capture
+});
+
 chrome.commands.onCommand.addListener(function (command) {
   if (command === "toggle-overlay") toggleOnActiveTab();
 });

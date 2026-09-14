@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "AgentGrid Web Review",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Press a hotkey on any localhost page to comment, mark up a screenshot, and release edits to an AgentGrid agent.",
   "permissions": ["scripting", "storage", "activeTab"],
   "host_permissions": [

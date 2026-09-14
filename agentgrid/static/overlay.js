@@ -687,10 +687,26 @@
     });
 
     function close() { if (editor) { editor.remove(); editor = null; } }
+    // Export at the screenshot's native resolution, not the shrunk-to-fit editor
+    // canvas, and as lossless PNG -- the editor canvas is only for drawing on.
+    function exportImage() {
+      if (!img.naturalWidth) return canvas.toDataURL("image/png");
+      var out = document.createElement("canvas");
+      out.width = img.naturalWidth;
+      out.height = img.naturalHeight;
+      var octx = out.getContext("2d");
+      octx.drawImage(img, 0, 0, out.width, out.height);
+      var f = out.width / canvas.width; // scale the marks up from editor coords
+      octx.save();
+      octx.scale(f, f);
+      shapes.forEach(function (s) { drawShape(octx, s); });
+      octx.restore();
+      return out.toDataURL("image/png");
+    }
     function commit() {
       var note = ta.value.trim();
       if (!note && !shapes.length) { close(); return; }
-      var image = canvas.toDataURL("image/jpeg", 0.85);
+      var image = exportImage();
       comments.push({ id: uid(), kind: anchor.kind, anchor: anchor,
                       note: note || "(see the marked-up screenshot)", image: image, done: false });
       save();

@@ -61,7 +61,7 @@ function showLinkHint() {
 chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
   if (!msg || msg.type !== "ag-capture") return;
   var winId = sender.tab ? sender.tab.windowId : undefined;
-  chrome.tabs.captureVisibleTab(winId, { format: "jpeg", quality: 92 }, function (dataUrl) {
+  chrome.tabs.captureVisibleTab(winId, { format: "png" }, function (dataUrl) {
     if (chrome.runtime.lastError) {
       sendResponse({ dataUrl: null, error: String(chrome.runtime.lastError.message || "") });
     } else {

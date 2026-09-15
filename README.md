@@ -274,6 +274,28 @@ agent minutes or hours late, and a board still has to be looked at. The
 notification closes that loop — and it lives in the page, not a service, so
 alerts exist exactly while a board tab is open. Nothing runs when it closes.
 
+### Events for another program
+
+A companion on the same machine (Chief of Staff is the one this was built for)
+can hear about status changes without polling: `GET /api/events` is a
+[server-sent events](https://html.spec.whatwg.org/multipage/server-sent-events.html)
+stream, token-gated like everything else. Each event is one JSON object:
+
+```
+id: 3f9a2c1d-7
+data: {"type":"status","sessionId":"…","title":"Refactor auth","engine":"claude",
+       "cwd":"/Users/you/Desktop/drawcal","project":"drawcal",
+       "from":"working","to":"done","finished":true,"at":"2026-09-15T18:40:12"}
+```
+
+`finished` is true when a working session settled (done, failed, needs you,
+idle, stopped): the turn ended. The status shown is the board's, chat turns
+driven from the panel included. Events come from the same 2-second poll the
+board uses, so they land within a couple of seconds. A comment line is sent
+every 15 s as a heartbeat. Ids are `<run>-<n>`; reconnect with a
+`Last-Event-ID` header and the last 200 events after it are replayed, nothing
+twice. A restart is a new run, so an old id replays nothing.
+
 ## Tags
 
 Free-form labels per session: at most 6 each, at most 24 characters. A

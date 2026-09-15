@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import collections
 import html
 import json
 import os
@@ -166,6 +167,99 @@ def _valid_day(value: str | None) -> bool:
         return False
 
 
+class EventHub:
+    """Fan-out of session status changes, for `GET /api/events`.
+
+    The board polls; a companion (Chief of Staff) should not have to. Every
+    poll is shown to observe(), which turns status changes into events and
+    hands them to every open stream. The last KEEP events are kept so a
+    subscriber that drops and comes back with `Last-Event-ID` gets what it
+    missed and nothing twice. Ids carry a per-run prefix: after a restart the
+    counter starts over, and a stale id from the old run replays nothing.
+    """
+
+    KEEP = 200
+    SETTLED = ("done", "failed", "blocked", "idle", "stopped", "complete")
+
+    def __init__(self) -> None:
+        self.run = secrets.token_hex(4)
+        self._lock = threading.Lock()
+        self._seen: dict[str, str] = {}
+        self._primed = False
+        self._count = 0
+        self._log: collections.deque = collections.deque(maxlen=self.KEEP)
+        self._subscribers: list[queue.Queue] = []
+
+    def observe(self, sessions: list[dict]) -> list[dict]:
+        """One poll's sessions (already overlaid). Returns the events it produced."""
+        events: list[dict] = []
+        with self._lock:
+            now = {str(s.get("sessionId") or ""): s for s in sessions if s.get("sessionId")}
+            if self._primed:
+                for session_id, session in now.items():
+                    was = self._seen.get(session_id)
+                    status = str(session.get("status") or "unknown")
+                    if was is not None and was != status:
+                        events.append(self._event(session, was, status))
+            self._seen = {sid: str(s.get("status") or "unknown") for sid, s in now.items()}
+            self._primed = True
+            for event in events:
+                self._count += 1
+                event["id"] = f"{self.run}-{self._count}"
+                self._log.append(event)
+            channels = list(self._subscribers)
+        for event in events:
+            for channel in channels:
+                channel.put(event)
+        return events
+
+    @staticmethod
+    def _event(session: dict, was: str, status: str) -> dict:
+        return {
+            "type": "status",
+            "sessionId": session.get("sessionId"),
+            "title": session.get("title") or session.get("customName") or "",
+            "engine": session.get("engine") or "claude",
+            "cwd": session.get("cwd") or "",
+            "project": session.get("project") or "",
+            "from": was,
+            "to": status,
+            # The turn ended: the agent is done, failed, waiting on you, or was stopped.
+            "finished": was == "working" and status in EventHub.SETTLED,
+            "at": datetime.now().isoformat(timespec="seconds"),
+        }
+
+    def subscribe(self, last_event_id: str = "") -> queue.Queue:
+        """A channel of events to come, first replaying those after `last_event_id` (this run only)."""
+        channel: queue.Queue = queue.Queue()
+        after = 0
+        run, _, number = (last_event_id or "").rpartition("-")
+        if run == self.run and number.isdigit():
+            after = int(number)
+        with self._lock:
+            if after:
+                for event in self._log:
+                    if int(event["id"].rpartition("-")[2]) > after:
+                        channel.put(event)
+            self._subscribers.append(channel)
+        return channel
+
+    def unsubscribe(self, channel: queue.Queue) -> None:
+        with self._lock:
+            if channel in self._subscribers:
+                self._subscribers.remove(channel)
+
+
+def _overlay_chat(sessions: list[dict], chat_manager) -> list[dict]:
+    """`claude agents` never reports a headless chat turn (`claude -p --resume`) as the
+    session working, yet the panel is driving exactly that. The ChatManager knows, so a
+    session with a chat turn in flight is shown Working."""
+    for session in sessions:
+        if chat_manager.state(session["sessionId"]).get("running"):
+            session["status"] = "working"
+    return sessions
+
+
 class Fleet:
     """Polls the fleet on a daemon thread and holds the latest snapshot.
 
@@ -187,6 +281,10 @@ class Fleet:
         self._pending_codex: list[dict] = []
         self._halt = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True)
+        # Status changes go out as events (see EventHub); `overlay`, set by serve(),
+        # applies the chat's own live signal first so the events match /api/sessions.
+        self.events = EventHub()
+        self.overlay = None
 
     def start(self) -> None:
         self._thread.start()
@@ -210,6 +308,18 @@ class Fleet:
                 self._sessions = sessions
                 self._error = None
             self._polled_at = time.time()
+        if not error:
+            self._announce(sessions)
+
+    def _announce(self, sessions: list) -> None:
+        """Show this poll to the event hub. Never lets a fault there stop the polling."""
+        try:
+            projected = [self._as_json(session) for session in sessions]
+            if self.overlay is not None:
+                projected = self.overlay(projected)
+            self.events.observe(projected)
+        except Exception:  # noqa: BLE001 -- the board must keep polling whatever happens here
+            pass
 
     def name_when_seen(self, job_id: str, name: str) -> None:
         """Hold a name against a job id until the session exists.
@@ -1136,6 +1246,8 @@ class Handler(BaseHTTPRequestHandler):
             # snippet, with the live token baked in so it just works.
             self._send(200, self._review_install_page().encode("utf-8"),
                        "text/html; charset=utf-8")
+        elif route == "/api/events":
+            self._events_stream()
         elif route == "/api/providers/openrouter":
             try:
                 self._send_json(200, credentials.connection_status())
@@ -1604,19 +1716,43 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             run.unsubscribe(channel)
 
-    def _sessions_snapshot(self) -> dict:
-        """The board's fleet, with the chat's own live signal overlaid.
+    def _events_stream(self) -> None:
+        """SSE of session status changes, as they are noticed. Each event is
+        `id: <run>-<n>` and a JSON `data:` line; send `Last-Event-ID` when
+        reconnecting to get what was missed. A comment every 15 s keeps the
+        connection known to be alive."""
+        hub = self.fleet.events
+        channel = hub.subscribe(self.headers.get("Last-Event-ID", ""))
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "keep-alive")
+            self.send_header("X-Accel-Buffering", "no")
+            self.end_headers()
+            self.wfile.write(f"retry: 3000\n: connected {hub.run}\n\n".encode("utf-8"))
+            self.wfile.flush()
+            while True:
+                try:
+                    event = channel.get(timeout=15)
+                except queue.Empty:
+                    self.wfile.write(b": ping\n\n")
+                    self.wfile.flush()
+                    continue
+                payload = json.dumps(event).encode("utf-8")
+                self.wfile.write(b"id: " + event["id"].encode("utf-8") + b"\ndata: " + payload + b"\n\n")
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass
+        finally:
+            hub.unsubscribe(channel)
 
-        `claude agents` lists the fleet but never reports a headless chat turn
-        (`claude -p --resume`) as the session working -- yet the panel is
-        driving exactly that. The ChatManager knows, so a session with a chat
-        turn in flight is shown Working here; like any working card it then
-        cannot be dragged or re-filed until it settles.
-        """
+    def _sessions_snapshot(self) -> dict:
+        """The board's fleet, with the chat's own live signal overlaid (see
+        _overlay_chat); like any working card, one with a chat turn in flight
+        cannot be dragged or re-filed until it settles."""
         snapshot = self.fleet.snapshot()
-        for session in snapshot.get("sessions", []):
-            if self.chat.state(session["sessionId"]).get("running"):
-                session["status"] = "working"
+        _overlay_chat(snapshot.get("sessions", []), self.chat)
         return snapshot
 
     # -- chat routes ---------------------------------------------------------
@@ -2287,6 +2423,8 @@ def serve(port: int = 8787, open_browser: bool = True,
     handler = type("BoundHandler", (Handler,),
                    {"fleet": fleet, "token": token, "chat": chat.ChatManager(),
                     "teams": teams.TeamManager(), "drafts": workflows.DraftManager()})
+    # The events the fleet announces show the chat's live signal too, as /api/sessions does.
+    fleet.overlay = lambda sessions: _overlay_chat(sessions, handler.chat)
     try:
         httpd = ThreadingHTTPServer(("127.0.0.1", port), handler)
     except OSError:

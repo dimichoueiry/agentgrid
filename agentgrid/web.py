@@ -695,7 +695,7 @@ def _prompt_slug(name: str) -> str:
     return text[:60]
 
 
-def load_saved_prompts() -> list[dict]:
+def load_saved_prompts(area_id: str | None = None) -> list[dict]:
     """The library, oldest first. Missing or corrupt file is an empty library."""
     try:
         raw = json.loads(PROMPTS_PATH.read_text("utf-8"))
@@ -714,8 +714,11 @@ def load_saved_prompts() -> list[dict]:
             "name": slug,
             "description": str(entry.get("description") or "")[:MAX_PROMPT_DESC],
             "body": str(entry.get("body") or "")[:MAX_PROMPT_BODY],
+            "areaId": str(entry.get("areaId") or ""),
         })
-    return prompts
+    if area_id is None or area_id == "*":
+        return prompts
+    return [p for p in prompts if not p["areaId"] or p["areaId"] == area_id]
 
 
 def _write_saved_prompts(prompts: list[dict]) -> None:
@@ -725,27 +728,30 @@ def _write_saved_prompts(prompts: list[dict]) -> None:
     os.replace(temporary, PROMPTS_PATH)
 
 
-def save_saved_prompt(name: str, description: str, body: str) -> list[dict]:
-    """Save or overwrite one prompt, keyed by its slug."""
+def save_saved_prompt(name: str, description: str, body: str, area_id: str = "") -> list[dict]:
+    """Save or overwrite one prompt, keyed by slug within a work area."""
     slug = _prompt_slug(name)
-    prompts = [p for p in load_saved_prompts() if p["name"] != slug]
+    prompts = [p for p in load_saved_prompts("*")
+               if not (p["name"] == slug and p.get("areaId", "") == area_id)]
     prompts.append({
         "name": slug,
         "description": description.strip()[:MAX_PROMPT_DESC],
         "body": body.strip()[:MAX_PROMPT_BODY],
+        "areaId": area_id,
     })
     _write_saved_prompts(prompts)
     return prompts
 
 
-def delete_saved_prompt(name: str) -> list[dict]:
+def delete_saved_prompt(name: str, area_id: str = "") -> list[dict]:
     slug = _prompt_slug(name)
-    prompts = [p for p in load_saved_prompts() if p["name"] != slug]
+    prompts = [p for p in load_saved_prompts("*")
+               if not (p["name"] == slug and p.get("areaId", "") == area_id)]
     _write_saved_prompts(prompts)
     return prompts
 
 
-def export_prompt_to_claude(name: str) -> tuple[bool, str]:
+def export_prompt_to_claude(name: str, area_id: str = "") -> tuple[bool, str]:
     """Write one prompt to `~/.claude/commands/<name>.md` as a custom command.
 
     The file is Claude Code's documented custom-command format: an optional YAML
@@ -755,7 +761,8 @@ def export_prompt_to_claude(name: str) -> tuple[bool, str]:
     path that writes here without the user asking for this prompt by name.
     """
     slug = _prompt_slug(name)
-    prompt = next((p for p in load_saved_prompts() if p["name"] == slug), None)
+    prompt = next((p for p in load_saved_prompts("*")
+                   if p["name"] == slug and p.get("areaId", "") == area_id), None)
     if prompt is None:
         return False, "No such prompt to export."
     front = ""
@@ -1286,7 +1293,7 @@ class Handler(BaseHTTPRequestHandler):
         elif route == "/api/agents":
             self._send_json(200, {"agents": load_saved_agents()})
         elif route == "/api/prompts":
-            self._send_json(200, {"prompts": load_saved_prompts()})
+            self._send_json(200, {"prompts": load_saved_prompts(self._one(query, "areaId"))})
         elif route == "/api/sync":
             # The remote and branch to pre-fill the sync sheet with; never any
             # secret, because none is stored -- the transport is the user's git.
@@ -1559,11 +1566,13 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self._send_json(200, {"prompts": save_saved_prompt(
                     name, str(body.get("description") or ""),
-                    str(body.get("body") or ""))})
+                    str(body.get("body") or ""), str(body.get("areaId") or ""))})
         elif route == "/api/prompts/delete":
-            self._send_json(200, {"prompts": delete_saved_prompt(str(body.get("name") or ""))})
+            self._send_json(200, {"prompts": delete_saved_prompt(
+                str(body.get("name") or ""), str(body.get("areaId") or ""))})
         elif route == "/api/prompts/export":
-            ok, message = export_prompt_to_claude(str(body.get("name") or ""))
+            ok, message = export_prompt_to_claude(
+                str(body.get("name") or ""), str(body.get("areaId") or ""))
             if ok:
                 self._send_json(200, {"ok": True, "path": message})
             else:

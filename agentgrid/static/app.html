@@ -982,6 +982,8 @@ body.area-overview #views,body.area-overview #projectSel,body.area-overview #tag
       <input id="plDesc" maxlength="200" autocomplete="off" placeholder="Break work into small, checkable steps"></label>
     <label>Prompt <span class="hint">the text /name expands to</span>
       <textarea id="plBody" rows="5" placeholder="Please break this into small steps and check in with me after each one."></textarea></label>
+    <label>Show in <span class="hint">global prompts appear in every work area</span>
+      <select id="plArea"></select></label>
     <div class="srow">
       <span class="hint err" id="plErr"></span>
       <span class="spacer"></span>
@@ -1292,13 +1294,14 @@ let notesData = null, menuFor = null, dragPage = null, dragGroup = null;
 let expandedRow = null, managePages = [];
 let atFrom = -1, atSel = 0, atHits = [];
 // prompt / skills library + the composer's /slash palette over it
-let promptLibrary = [], plEditing = null;
+let promptLibrary = [], plEditing = null, promptScope = "";
 let slashFrom = -1, slashSel = 0, slashHits = [];
 // the composer's [] todo picker: your open todos, loaded when a chat opens
 let todoFrom = -1, todoSel = 0, todoHits = [], todoCache = null;
 
 let areaData = {areas: [], members: {}}, areasLoaded = false;
 let activeArea = localStorage.getItem("agentgrid.area") || "";
+promptScope = activeArea || "*";
 let editingArea = "", agentStarterPrompt = "";
 
 function areaSessions(id) {
@@ -1338,6 +1341,8 @@ async function loadAreas() {
 function enterArea(id) {
   activeArea = id; localStorage.setItem("agentgrid.area", id);
   project = ""; tag = ""; query = ""; $("search").value = "";
+  promptScope = id || "*";
+  loadPrompts();
   closePanel(); setView("board"); renderSelects(); render(); renderAreas();
 }
 function editArea(id = "") {
@@ -2966,13 +2971,28 @@ function hideAt() { $("atMenu").hidden = true; atHits = []; atFrom = -1; }
 // loaded so the /slash palette works even if the manager was never opened.
 
 async function loadPrompts() {
-  try { promptLibrary = (await api("/api/prompts")).prompts || []; }
+  try {
+    const rows = (await api("/api/prompts?areaId=" + encodeURIComponent(promptScope))).prompts || [];
+    if (promptScope !== "*") {
+      const preferred = new Map();
+      rows.forEach(p => { if (!preferred.has(p.name) || p.areaId) preferred.set(p.name, p); });
+      promptLibrary = [...preferred.values()];
+    } else promptLibrary = rows;
+  }
   catch (e) { promptLibrary = promptLibrary || []; }
+}
+
+function fillPromptAreaSelect() {
+  $("plArea").innerHTML = `<option value="">All work areas</option>` +
+    areaData.areas.map(a => `<option value="${esc(a.id)}">${esc(a.name)} only</option>`).join("");
+  $("plArea").value = activeArea || "";
 }
 
 function openPrompts() {
   $("promptModal").hidden = false;
+  promptScope = activeArea || "*";
   plEditing = null;
+  fillPromptAreaSelect();
   clearPromptForm();
   loadPrompts().then(renderPrompts);
   $("plName").focus();
@@ -2982,6 +3002,7 @@ function closePrompts() { $("promptModal").hidden = true; }
 function clearPromptForm() {
   plEditing = null;
   $("plName").value = ""; $("plDesc").value = ""; $("plBody").value = "";
+  $("plArea").value = activeArea || "";
   $("plErr").textContent = "";
   $("plNew").hidden = true;
 }
@@ -2991,6 +3012,7 @@ function fillPromptForm(name) {
   plEditing = p.name;
   $("plName").value = p.name; $("plDesc").value = p.description || "";
   $("plBody").value = p.body || ""; $("plErr").textContent = "";
+  $("plArea").value = p.areaId || "";
   $("plNew").hidden = false;
   $("plBody").focus();
 }
@@ -2999,6 +3021,7 @@ function renderPrompts() {
   $("plList").innerHTML = promptLibrary.map(p =>
     `<div class="mrow" data-plrow="${esc(p.name)}">` +
     `<div class="mtop"><span class="mname">/${esc(p.name)}</span>` +
+    `<span class="mfacts">${esc(p.areaId ? (areaData.areas.find(a => a.id === p.areaId)?.name || "Area") : "All areas")}</span>` +
     `<span class="mfacts">${esc(p.description || "no description")}</span>` +
     `<span class="macts">` +
     `<button data-plact="edit" data-plname="${esc(p.name)}">Edit</button>` +
@@ -3015,7 +3038,7 @@ async function savePrompt() {
   if (!name) { $("plErr").textContent = "Give it a name — that is the /name you will type."; return; }
   if (!body) { $("plErr").textContent = "Give it a body — the text /name expands to."; return; }
   const r = await post("/api/prompts/save",
-    {name, description: $("plDesc").value.trim(), body});
+    {name, description: $("plDesc").value.trim(), body, areaId: $("plArea").value});
   if (r && r.error) { $("plErr").textContent = r.error; return; }
   promptLibrary = (r && r.prompts) || promptLibrary;
   clearPromptForm();
@@ -3024,7 +3047,8 @@ async function savePrompt() {
 }
 
 async function deletePrompt(name) {
-  const r = await post("/api/prompts/delete", {name});
+  const p = promptLibrary.find(x => x.name === name);
+  const r = await post("/api/prompts/delete", {name, areaId: p?.areaId || ""});
   promptLibrary = (r && r.prompts) || promptLibrary;
   if (plEditing === name) clearPromptForm();
   renderPrompts();

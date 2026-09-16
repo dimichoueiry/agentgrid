@@ -107,6 +107,82 @@ class CodexChatTests(unittest.TestCase):
         self.assertEqual(handler._send_json.call_args.args[0], 409)
         handler.chat.send.assert_not_called()
 
+    def test_a_thread_held_elsewhere_is_explained_not_echoed(self):
+        # What codex-cli 0.153.4 prints when `exec resume` meets a thread an
+        # interactive `codex` still holds: coloured tracing, then the verdict.
+        lines = [
+            '\x1b[2m2026-09-16T15:20:20.288753Z\x1b[0m \x1b[31mERROR\x1b[0m \x1b[2mcodex_core::session\x1b[0m: '
+            'Failed to create session: thread-store conflict: thread id already has an active writer',
+            'Error: thread/resume: thread/resume failed: thread id already has an active writer (code -32600)',
+        ]
+        room = chat.ChatSession('id', '/repo', 'codex')
+        channel = room.subscribe()
+        proc = mock.Mock(stdout=io.StringIO('\n'.join(lines)), returncode=1)
+        with mock.patch.object(chat.subprocess, 'Popen', return_value=proc):
+            room._run_turn('hello', 'auto')
+        event = channel.get_nowait()
+        self.assertEqual(event['type'], 'error')
+        self.assertIn('open somewhere else', event['message'])
+        self.assertIn('interactive terminal', event['message'])
+        self.assertNotIn('\x1b', event['message'])
+        self.assertTrue(channel.empty())
+
+    def test_other_exit_noise_loses_its_colour_and_prefix(self):
+        noise = '\x1b[31mERROR\x1b[0m something broke\nError: exec: model not found (code 1)\n\x1b[2mtrailing trace\x1b[0m'
+        room = chat.ChatSession('id', '/repo', 'codex')
+        channel = room.subscribe()
+        proc = mock.Mock(stdout=io.StringIO(noise), returncode=2)
+        with mock.patch.object(chat.subprocess, 'Popen', return_value=proc):
+            room._run_turn('hello', 'auto')
+        self.assertEqual(channel.get_nowait()['message'], 'exec: model not found (code 1)')
+        self.assertEqual(chat.explain_exit('codex', '', 3), 'codex exited 3')
+        self.assertEqual(chat.explain_exit('claude', '\x1b[1mError: boom\x1b[0m', 1), 'boom')
+
+    def test_route_refuses_a_session_a_terminal_holds(self):
+        handler = object.__new__(web.Handler)
+        session = SimpleNamespace(session_id='id', cwd='/repo', engine='codex',
+                                  status='done', pid=41614)
+        handler._session_by_id = mock.Mock(return_value=session)
+        handler._valid_attachments = mock.Mock(return_value=[])
+        handler._send_json = mock.Mock()
+        handler.chat = mock.Mock()
+        handler.chat.state.return_value = {'running': False}
+        handler._chat_send({'sessionId': 'id', 'message': 'hi'})
+        status, body = handler._send_json.call_args.args
+        self.assertEqual(status, 409)
+        self.assertIn('open in a terminal', body['error'])
+        handler.chat.send.assert_not_called()
+        # The same thread with its terminal closed is chattable again.
+        session.pid = None
+        handler._chat_send({'sessionId': 'id', 'message': 'hi'})
+        handler.chat.send.assert_called_once()
+        # And a claude session with a pid (its own terminal) was never in question.
+        claude = SimpleNamespace(session_id='c', cwd='/repo', engine='claude', status='idle', pid=5)
+        self.assertIsNone(web.codex_chat_block(claude, handler.chat))
+
+    def test_a_turn_this_panel_started_is_queued_not_refused(self):
+        session = SimpleNamespace(session_id='id', engine='codex', status='working', pid=41614)
+        manager = mock.Mock()
+        manager.state.return_value = {'running': True}
+        self.assertIsNone(web.codex_chat_block(session, manager))
+
+    def test_assigning_a_ticket_to_a_held_session_says_it_was_not_told(self):
+        handler = object.__new__(web.Handler)
+        session = SimpleNamespace(session_id='id', cwd='/repo', engine='codex',
+                                  status='done', pid=41614, display_title='Codex')
+        handler._session_by_id = mock.Mock(return_value=session)
+        handler._ticket_id = mock.Mock(return_value='AG-9')
+        handler._ticket_reply = mock.Mock()
+        handler.chat = mock.Mock()
+        handler.chat.state.return_value = {'running': False}
+        with mock.patch.object(web.tickets, 'assign', return_value={'id': 'AG-9'}):
+            handler._tickets_assign({'sessionId': 'id', 'ticketId': 'AG-9'})
+        handler.chat.send.assert_not_called()
+        _ticket, message = handler._ticket_reply.call_args.args
+        self.assertIn('has not been told yet', message)
+        self.assertIn('open in a terminal', message)
+        self.assertFalse(handler._ticket_reply.call_args.kwargs['told'])
+
     def test_stop_cancels_process_group_and_clears_queue(self):
         room = chat.ChatSession('id', '/repo', 'codex')
         room._proc = mock.Mock(pid=42)

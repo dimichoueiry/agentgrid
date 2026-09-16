@@ -250,6 +250,29 @@ class EventHub:
                 self._subscribers.remove(channel)
 
 
+def codex_chat_block(session, chat_manager) -> str | None:
+    """Why a chat turn must not be started on this codex session, or None.
+
+    Codex allows one writer per thread. A turn this panel started is fine to
+    queue behind, but a thread held by something else has to be refused up
+    front, with the reason: an interactive `codex` (the card carries its pid)
+    keeps the thread for as long as its terminal is open, and a headless run
+    still working outside this chat keeps it until it finishes. Sending
+    anyway would fail inside the CLI with "already has an active writer".
+    """
+    if getattr(session, "engine", "claude") != "codex":
+        return None
+    if chat_manager.state(session.session_id).get("running"):
+        return None
+    if getattr(session, "pid", None):
+        return ("This Codex session is open in a terminal, which holds its thread. "
+                "Type there (Open in Terminal), or close that terminal to chat from here.")
+    if session.status == "working":
+        return ("Codex is still running outside this chat. Wait for it to finish, "
+                "then send your message.")
+    return None
+
+
 def _overlay_chat(sessions: list[dict], chat_manager) -> list[dict]:
     """`claude agents` never reports a headless chat turn (`claude -p --resume`) as the
     session working, yet the panel is driving exactly that. The ChatManager knows, so a
@@ -1851,9 +1874,9 @@ class Handler(BaseHTTPRequestHandler):
         if session is None:
             self._send_json(404, {"error": "Unknown session."})
             return
-        if (session.engine == "codex" and session.status == "working"
-                and not self.chat.state(session.session_id).get("running")):
-            self._send_json(409, {"error": "Codex is still running outside this chat. Wait for it to finish, then send your message."})
+        blocked = codex_chat_block(session, self.chat)
+        if blocked:
+            self._send_json(409, {"error": blocked})
             return
         message = str(body.get("message") or "").strip()
         # Attachments are absolute paths this server minted at /api/chat/upload
@@ -2250,10 +2273,10 @@ class Handler(BaseHTTPRequestHandler):
             return
         told = False
         if session is not None and body.get("notify", True):
-            if (session.engine == "codex" and session.status == "working"
-                    and not self.chat.state(session.session_id).get("running")):
-                message = (f"{ticket['id']} assigned, but {assignee} is busy outside "
-                           f"this chat -- it has not been told yet.")
+            blocked = codex_chat_block(session, self.chat)
+            if blocked:
+                message = (f"{ticket['id']} assigned, but {assignee} has not been "
+                           f"told yet. {blocked}")
             else:
                 self.chat.send(session.session_id, session.cwd,
                                tickets.handoff_prompt(ticket, assignee),

@@ -29,6 +29,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+import re
 import signal
 import subprocess
 import threading
@@ -49,6 +50,31 @@ DEFAULT_POSTURE = "auto"
 
 def permission_mode(posture: str) -> str:
     return POSTURES.get(posture, POSTURES[DEFAULT_POSTURE])
+
+
+# Terminal colour and cursor codes, as codex's tracing lines carry them.
+ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+
+# Codex 0.153+ allows one writer per thread: this is what `exec resume` says
+# when an interactive `codex` (or another headless run) already holds it.
+CODEX_THREAD_HELD = "already has an active writer"
+
+
+def explain_exit(engine: str, noise: str, code: object) -> str:
+    """One readable line for a turn whose CLI died without finishing it.
+
+    The last thing the CLI printed that was not JSON is the best clue there
+    is, but raw it is a tracing line with colour codes and an `Error:` prefix.
+    The one failure with a known cause -- the thread is held elsewhere -- is
+    said in terms of what to do about it rather than echoed.
+    """
+    text = ANSI_RE.sub("", noise or "").strip()
+    if engine == "codex" and CODEX_THREAD_HELD in text:
+        return ("Codex has this thread open somewhere else -- an interactive terminal "
+                "or another codex run. Type there, or close it and send again.")
+    if text.startswith("Error:"):
+        text = text[len("Error:"):].strip()
+    return text[:200] or f"{engine} exited {code}"
 
 
 def with_attachments(message: str, attachments: list[str] | None) -> str:
@@ -344,6 +370,7 @@ class ChatSession:
             self._running = True
 
         last_noise = ""
+        hard_error = ""
         finished = False
         seen_errors = set()
         try:
@@ -354,7 +381,11 @@ class ChatSession:
                 try:
                     raw = json.loads(line)
                 except ValueError:
-                    last_noise = line               # a warning/error line, kept for context
+                    # A warning/error line, kept for context. The CLI's own
+                    # `Error:` verdict beats whatever tracing follows it.
+                    last_noise = line
+                    if ANSI_RE.sub("", line).startswith("Error"):
+                        hard_error = line
                     continue
                 if not isinstance(raw, dict):
                     continue
@@ -390,7 +421,7 @@ class ChatSession:
                 self._running = False
             if code not in (0, None) and not finished:
                 self._emit({"type": "error",
-                            "message": last_noise[:200] or f"{self.engine} exited {code}"})
+                            "message": explain_exit(self.engine, hard_error or last_noise, code)})
             elif not finished:
                 self._emit({"type": "error", "message": f"{self.engine.title()} exited without completing the turn."})
 

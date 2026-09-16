@@ -296,6 +296,16 @@ every 15 s as a heartbeat. Ids are `<run>-<n>`; reconnect with a
 `Last-Event-ID` header and the last 200 events after it are replayed, nothing
 twice. A restart is a new run, so an old id replays nothing.
 
+The companion finds the run through `~/.agentgrid/web.json`, an owner-only
+file naming the port, the token and the pid. A run claims it on start and
+re-claims it every few seconds for as long as it lives, so a second `ag --web`
+(a verification run on a spare port, say) that overwrote the file and then
+stopped, or died and left it naming a pid that is gone, cannot make the running
+board look stopped. A file held by another run that still answers
+`GET /api/ping` with its own token is left alone: the run the companion is
+already talking to stays the one it talks to. A clean stop removes the file
+only if it is still the run's own.
+
 ## Tags
 
 Free-form labels per session: at most 6 each, at most 24 characters. A

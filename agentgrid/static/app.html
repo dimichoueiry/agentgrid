@@ -855,6 +855,28 @@ details.tp-sec[open] summary::before{transform:rotate(90deg)}
 .area-card-top{display:flex;justify-content:space-between;color:#aaa;font-size:12px}
 .area-card strong{font-size:24px;font-weight:500;letter-spacing:-.5px;margin:auto 0;padding:24px 0}
 .area-card-foot{font-size:12px;color:#aaa;display:flex;gap:14px}
+/* Activity on an area card, most urgent first: needs you, replied (unread),
+   working. The card is dark in both themes, so it takes the dark palette's
+   hues. Orange still means "needs you" and blue "replied, not read", as on
+   the board; working is the board's breathing dot. The ring is the colour
+   of the most urgent state, so a scan of the grid finds it without reading. */
+.area-card{--a-needs:#d9a441;--a-replied:#5b9dd9}
+.area-card[data-state]{border-color:var(--a-ring);box-shadow:0 0 0 1px var(--a-ring)}
+.area-card[data-state=needs]{--a-ring:var(--a-needs)}
+.area-card[data-state=replied]{--a-ring:var(--a-replied)}
+.area-card[data-state=working]{--a-ring:#8e8e96}   /* reads on a light page and a dark one */
+.area-status{display:flex;flex-wrap:wrap;gap:6px;min-height:23px;margin:-8px 0 14px}
+.apill{
+  display:inline-flex;align-items:center;gap:6px;padding:3px 10px 3px 8px;border-radius:999px;
+  font-size:12px;font-weight:550;line-height:1.4;font-variant-numeric:tabular-nums;white-space:nowrap;
+}
+.adot{width:6px;height:6px;border-radius:50%;flex:0 0 auto}
+.apill.needs{color:#f2cd86;background:rgba(217,164,65,.17)}
+.apill.needs .adot{background:var(--a-needs)}
+.apill.replied{color:#aed0f1;background:rgba(91,157,217,.2)}
+.apill.replied .adot{background:var(--a-replied)}
+.apill.working{color:#d4d4d8;background:rgba(255,255,255,.08)}
+.apill.working .adot{background:#fafafa;animation:breathe 1.8s ease-in-out infinite}
 .area-add{background:transparent;color:var(--text-2);border:1px dashed var(--line-2);align-items:center;justify-content:center;gap:10px}
 .area-add:hover{background:var(--card-hover)}
 .area-add span:first-child{font-size:28px;font-weight:300}
@@ -867,7 +889,7 @@ details.tp-sec[open] summary::before{transform:rotate(90deg)}
 body.area-overview #views,body.area-overview #projectSel,body.area-overview #tagSel,body.area-overview #toggles,body.area-overview #search,body.area-overview #newBtn{display:none}
 @media(max-width:900px){.area-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.areas{padding:28px 20px}.area-card{min-height:190px}.bar{overflow-x:auto;flex-shrink:0}.bar>*{flex-shrink:0}}
 @media(max-width:540px){.area-grid{grid-template-columns:1fr;gap:16px}.areas-heading{align-items:flex-start;flex-wrap:wrap}.area-trail .hint{display:none}}
-@media(prefers-reduced-motion:reduce){.area-card{transition:none}.area-card:hover{transform:none}}
+@media(prefers-reduced-motion:reduce){.area-card{transition:none}.area-card:hover{transform:none}.apill .adot{animation:none}}
 
 </style>
 </head>
@@ -1531,6 +1553,31 @@ let editingArea = "", agentStarterPrompt = "";
 function areaSessions(id) {
   return sessions.filter(s => id === "" || (id === "unassigned" ? !areaData.members[s.sessionId] : areaData.members[s.sessionId] === id));
 }
+// replied and not yet opened: the board's blue stub and the area card's blue
+// badge both read this, so the two can never disagree
+function isUnreadReply(s) {
+  return (s.status === "done" || s.status === "stopped") && !!s.unread;
+}
+// what an area card says about its agents, most urgent first; the card's ring
+// takes the first one present. Colours mean what they mean on the board.
+const AREA_SIGNALS = [
+  {key: "needs",   match: s => s.status === "blocked" || s.status === "failed",
+   short: n => `${n} need${n === 1 ? "s" : ""} you`,
+   long: n => `${n} agent${n === 1 ? " is" : "s are"} waiting on you`},
+  {key: "replied", match: isUnreadReply,
+   short: n => `${n} replied`,
+   long: n => `${n} agent${n === 1 ? "" : "s"} replied — not read yet`},
+  {key: "working", match: s => s.status === "working",
+   short: n => `${n} working`,
+   long: n => `${n} agent${n === 1 ? " is" : "s are"} working right now`},
+];
+function areaActivity(members) {
+  const found = AREA_SIGNALS.map(g => ({...g, n: members.filter(g.match).length})).filter(g => g.n);
+  const pills = found.map(g =>
+    `<span class="apill ${g.key}" title="${esc(g.long(g.n))}"><span class="adot" aria-hidden="true"></span>${esc(g.short(g.n))}</span>`).join("");
+  // the row is there even when empty, so names line up across a row of cards
+  return {state: found.length ? found[0].key : "", html: `<span class="area-status">${pills}</span>`};
+}
 function areaOptions(selected) {
   return '<option value="">Unassigned</option>' + areaData.areas.map(a => `<option value="${esc(a.id)}" ${selected === a.id ? 'selected' : ''}>${esc(a.name)}</option>`).join("");
 }
@@ -1544,9 +1591,8 @@ function renderAreas() {
   const cards = [...areaData.areas, {id: "unassigned", name: "Unassigned"}];
   const markup = cards.map((a, i) => {
     const members = areaSessions(a.id);
-    const working = members.filter(s => s.status === "working").length;
-    const waiting = members.filter(s => ["blocked", "failed"].includes(s.status)).length;
-    return `<button class="area-card" data-area="${esc(a.id)}"><span class="area-card-top"><span>${String(i + 1).padStart(2, "0")} / WORK AREA</span><span aria-hidden="true">↗</span></span><strong>${esc(a.name)}</strong><span class="area-card-foot"><span>${members.length} agent${members.length === 1 ? "" : "s"}</span>${working ? `<span>${working} working</span>` : ''}${waiting ? `<span>${waiting} need you</span>` : ''}</span></button>`;
+    const act = areaActivity(members);
+    return `<button class="area-card" data-area="${esc(a.id)}"${act.state ? ` data-state="${act.state}"` : ""}><span class="area-card-top"><span>${String(i + 1).padStart(2, "0")} / WORK AREA</span><span aria-hidden="true">↗</span></span><strong>${esc(a.name)}</strong>${act.html}<span class="area-card-foot"><span>${members.length} agent${members.length === 1 ? "" : "s"}</span></span></button>`;
   }).join("") + '<button class="area-card area-add" data-add-area><span aria-hidden="true">+</span><span>Create a work area</span></button>';
   if ($("areaGrid")._markup !== markup) {
     $("areaGrid")._markup = markup; $("areaGrid").innerHTML = markup;
@@ -1645,7 +1691,6 @@ function cardFor(s) {
   }
   const subs = s.subagents || [];
   const running = subs.filter(a => a.status === "working").length;
-  const settled = s.status === "done" || s.status === "stopped";
   // rebuilding innerHTML every poll destroys hover and drags — a signature of
   // everything displayed guards it
   const stale = staleAge(s);
@@ -1679,7 +1724,7 @@ function cardFor(s) {
   // className is set unconditionally — cheap, and it carries selection state
   el.className = "card" +
     ((s.status === "blocked" || s.status === "failed") ? " needs" : "") +
-    (settled && s.unread ? " fresh" : "") +
+    (isUnreadReply(s) ? " fresh" : "") +
     (openId === s.sessionId ? " sel" : "");
   el.draggable = s.status !== "working";   // a genuinely working card is not draggable
   return el;

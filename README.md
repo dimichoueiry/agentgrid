@@ -328,7 +328,16 @@ board works on the result. The system prompt rides inside the task as a
 framed preamble, because neither CLI documents a version-stable
 system-prompt flag for detached runs.
 The model options follow the engine; Default always means "let the CLI's own
-config decide". `Cmd/Ctrl+Enter` in the task field starts. `Enter` in the
+config decide". They come from the CLIs' own files (Codex's model cache,
+Claude Code's settings, `/model` picker and per-project usage) and from the
+sessions on the board, so a model appears once you have used it. Claude
+models read as names (**Claude Opus 5**). A model a session has actually
+answered with is kept in `~/.agentgrid/models.json`, so it stays listed after
+the session ends; the placeholder `<synthetic>` that Claude Code writes on an
+API error, and models Codex marks hidden, are never offered. **Custom
+model…** takes any exact ID. A model ID with a space, a leading `-` or a
+character outside `A-Z a-z 0-9 . _ : / @ [ ] -` is refused before anything
+runs. `Cmd/Ctrl+Enter` in the task field starts. `Enter` in the
 name field advances rather than submitting — the task is required, and
 submitting from the name box would start an agent with nothing to do.
 
@@ -341,8 +350,17 @@ in the same directory; Codex prints no job id to wait on, so the name is held
 against the directory and applied to the first Codex session that appears
 there.
 
-**Session: Interactive** (Claude only, macOS) instead opens a Terminal.app tab
-running an ordinary `claude <prompt>` you can watch and type into — the same
+Neither detached shape says at launch that a model is wrong: `claude --bg`
+exits 0 and the session's first reply is the refusal, and `codex exec` fails
+after it has been detached. So a model that is not in the list is checked:
+for up to ten seconds Agent Grid watches the session's screen (`claude logs`)
+or the Codex run's error output, and if the CLI refuses the model it says so
+and starts nothing (a refused Claude session did no work and is removed with
+`claude rm`). A model in the list starts straight away. The start message
+names the model: "Started in drawcal on claude-opus-5."
+
+**Session: Interactive** (macOS) instead opens a Terminal.app tab
+running an ordinary `claude <prompt>` (or `codex <prompt>`) you can watch and type into — the same
 session shape you would get from running `claude` yourself. Every part of the
 shell line is quoted, so a prompt full of quotes or shell metacharacters runs
 as one argument, not as commands. An interactive session lives and dies with

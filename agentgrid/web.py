@@ -36,6 +36,7 @@ import secrets
 import shlex
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.parse
@@ -818,6 +819,9 @@ def spawn_agent(cwd: str, prompt: str, model: str | None,
         return False, "Give the agent something to do.", None
     if cwd not in {project["path"] for project in allowed}:
         return False, "That directory is not one of the known projects.", None
+    model = (model or "").strip() or None
+    if model and not models.valid(model):
+        return False, f'"{model[:60]}" is not a model ID.', None
 
     # The library's system prompt rides inside the task rather than through a
     # CLI flag: neither `claude --bg` nor `codex exec` documents a
@@ -833,6 +837,11 @@ def spawn_agent(cwd: str, prompt: str, model: str | None,
         # <prompt>` each start a watch-and-type-into session.
         return spawn_interactive(cwd, prompt, model, engine, agent_name)
 
+    # A model this machine has no record of may be a typo. Neither detached
+    # shape says so at launch, so wait briefly for the refusal.
+    check = bool(model) and not models.listed(engine, model)
+    on = f" on {model}" if model else ""
+
     if engine == "codex":
         # codex exec runs the whole task and only then exits, so it cannot be
         # waited on the way `claude --bg` can -- it is detached outright and
@@ -841,21 +850,31 @@ def spawn_agent(cwd: str, prompt: str, model: str | None,
         argv = ([chat.codex_binary(), "exec", "--cd", cwd, "-s", "workspace-write",
                  "--skip-git-repo-check"]
                 + (["-m", model] if model else []) + [prompt])
+        # Its output is discarded, except while an unknown model is checked:
+        # then stderr goes to an unlinked temp file, which the run keeps
+        # writing to and the system frees when it exits.
+        log = tempfile.TemporaryFile() if check else None
         try:
-            subprocess.Popen(
+            proc = subprocess.Popen(
                 argv,
                 cwd=cwd,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stderr=log or subprocess.DEVNULL,
                 start_new_session=True,
                 env=agent_env(agent_name),
             )
+            refused = _codex_refusal(proc, log) if log else None
         except FileNotFoundError:
             return False, "codex CLI not found on PATH.", None
         except OSError as error:
             return False, f"could not start codex: {error}", None
-        return True, f"Started codex in {Path(cwd).name}.", None
+        finally:
+            if log:
+                log.close()
+        if refused:
+            return False, f"codex stopped straight away: {refused}", None
+        return True, f"Started codex in {Path(cwd).name}{on}.", None
 
     argv = ["claude", "--bg"] + (["--model", model] if model else []) + [prompt]
     try:
@@ -882,7 +901,75 @@ def spawn_agent(cwd: str, prompt: str, model: str | None,
     plain = ANSI_RE.sub("", done.stdout or "")
     first = plain.splitlines()[0] if plain.splitlines() else ""
     found = JOB_ID_RE.search(first)
-    return True, f"Started in {Path(cwd).name}.", (found.group(1) if found else None)
+    job_id = found.group(1) if found else None
+    if check and job_id and _claude_refused(job_id, model, cwd):
+        return False, (f"Claude did not accept the model {model}: it may not exist, or this "
+                       f"account can't use it. Nothing was started."), None
+    return True, f"Started in {Path(cwd).name}{on}.", job_id
+
+
+# How long a launch with an unknown model waits to be refused. Both CLIs fail
+# on their first request, within a few seconds; a model that works just runs.
+MODEL_CHECK_SECONDS = 10.0
+# Cursor moves in a TUI screen dump: a forward move stands in for spaces.
+CURSOR_FORWARD_RE = re.compile(r"\x1b\[\d*C")
+TERMINAL_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+
+
+def _codex_refusal(proc, log) -> str | None:
+    """Why a detached `codex exec` exited early and unsuccessfully, if it did."""
+    deadline = time.monotonic() + MODEL_CHECK_SECONDS
+    while time.monotonic() < deadline:
+        code = proc.poll()
+        if code is not None:
+            if code == 0:
+                return None
+            log.seek(0, os.SEEK_END)
+            log.seek(max(0, log.tell() - 65536))
+            return _codex_error(log.read().decode("utf-8", "replace"))
+        time.sleep(0.25)
+    return None
+
+
+def _codex_error(text: str) -> str:
+    """The API's own message from codex's `ERROR: {json}` line, else its last line."""
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    for line in reversed(lines):
+        if line.startswith("ERROR:"):
+            rest = line[len("ERROR:"):].strip()
+            try:
+                return str(json.loads(rest)["error"]["message"])[:200]
+            except (ValueError, KeyError, TypeError):
+                return rest[:200]
+    return lines[-1][:200] if lines else "it printed nothing."
+
+
+def _claude_refused(job_id: str, model: str, cwd: str) -> bool:
+    """Whether a background session's first reply is Claude refusing its model.
+
+    `claude --bg` accepts any model and exits 0; the refusal is the session's
+    first reply, read here from its screen. A refused session did no work, so
+    it is removed rather than left on the board.
+    """
+    marker = f"issue with the selected model ({model})"
+    deadline = time.monotonic() + MODEL_CHECK_SECONDS
+    while True:
+        try:
+            screen = subprocess.run(["claude", "logs", job_id], cwd=cwd, stdin=subprocess.DEVNULL,
+                                    capture_output=True, text=True, timeout=5).stdout or ""
+        except (OSError, subprocess.SubprocessError):
+            return False
+        plain = TERMINAL_RE.sub("", CURSOR_FORWARD_RE.sub(" ", screen))
+        if marker in re.sub(r"[ \t]+", " ", plain):
+            try:
+                subprocess.run(["claude", "rm", job_id], cwd=cwd, stdin=subprocess.DEVNULL,
+                               capture_output=True, timeout=15)
+            except (OSError, subprocess.SubprocessError):
+                pass
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.5)
 
 
 def _osa_str(value: str) -> str:
@@ -1032,7 +1119,8 @@ def spawn_interactive(cwd: str, prompt: str, model: str | None,
     ok, message = _open_terminal_tab(command, first_line[:40] or label)
     if not ok:
         return False, message, None
-    return True, f"Opened an interactive {label} in {Path(cwd).name}.", None
+    return True, (f"Opened an interactive {label} in {Path(cwd).name}"
+                  f"{f' on {model}' if model else ''}."), None
 
 
 # --- @-mention file search ---------------------------------------------------

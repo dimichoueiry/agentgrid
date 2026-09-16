@@ -44,7 +44,7 @@ from datetime import date, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from agentgrid import areas, chat, discovery, models, notes, sync, teams, terminal, tickets, transcript, workflows, credentials, openrouter
+from agentgrid import areas, chat, discovery, models, notes, sync, teams, terminal, tickets, transcript, voice, workflows, credentials, openrouter
 
 STATIC = Path(__file__).resolve().parent / "static"
 POLL_SECONDS = 2.0
@@ -1291,6 +1291,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(200, {"models": openrouter.model_catalog()})
             except ValueError as error:
                 self._send_json(400, {"error": str(error)})
+        elif route == "/api/voice":
+            self._send_json(200, {"connected": bool(self.voice.key)})
         elif route == "/api/models":
             self._send_json(200, {"models": models.catalog(self.fleet.snapshot().get("sessions", []))})
         elif route == "/api/sessions":
@@ -1523,7 +1525,38 @@ class Handler(BaseHTTPRequestHandler):
         # original grouped day-scoped routes into a tuple whose handler chain
         # ended in a bare set_group default, and /api/notes/quickadd listed
         # there silently became "set group" (§7.19). No tuple, no fall-through.
-        if route == "/api/areas":
+        if route in ("/api/voice/key", "/api/voice/command", "/api/voice/speech", "/api/voice/transcribe"):
+            try:
+                if route == "/api/voice/key":
+                    self.voice.configure(body.get("key", ""))
+                    self._send_json(200, {"connected": bool(self.voice.key)})
+                elif route == "/api/voice/transcribe":
+                    self._send_json(200, self.voice.transcribe(body.get("audio"), body.get("mime")))
+                elif route == "/api/voice/command":
+                    context = self._sessions_snapshot()
+                    context["projects"] = discover_projects(self.fleet.raw())
+                    result = self.voice.command(body.get("command", ""), context)
+                    action = result.get("action")
+                    if action == "spawn":
+                        ok, message, job_id = spawn_agent(str(result["cwd"]), str(result["prompt"]), result.get("model") or None,
+                                                           context["projects"], str(result.get("engine") or "claude"), "", False)
+                        if not ok:
+                            raise ValueError(message)
+                        result["reply"] = f"Started a {str(result.get('engine') or 'Claude').title()} agent in {next((p.get('name') for p in context['projects'] if p.get('path') == result['cwd']), 'that project')}."
+                        result["jobId"] = job_id
+                    elif action == "message":
+                        session = self._session_by_id(str(result.get("sessionId") or ""))
+                        if session is None:
+                            raise ValueError("That session disappeared before I could send the message.")
+                        self.chat.send(session.session_id, session.cwd, str(result.get("message") or ""), chat.DEFAULT_POSTURE,
+                                       engine=session.engine)
+                        result["reply"] = f"Message sent to {session.display_title or 'the session'}."
+                    self._send_json(200, result)
+                else:
+                    self._send(200, self.voice.speech(body.get("text"), body.get("voice")), "audio/mpeg")
+            except ValueError as error:
+                self._send_json(400, {"error": str(error)})
+        elif route == "/api/areas":
             try:
                 self._send_json(200, areas.update(body))
             except (ValueError, OSError) as exc:
@@ -2630,6 +2663,32 @@ If you restart AgentGrid, revisit this page and re-install it.</p>
 
 # --- entry point -------------------------------------------------------------
 
+# Where a local companion (Chief of Staff) finds this run: the port and the token
+# the printed URL carries. Owner-only, written on start, removed on a clean stop.
+CONNECTION_FILE = Path.home() / ".agentgrid" / "web.json"
+
+
+def write_connection_file(port: int, token: str, path: Path = CONNECTION_FILE) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump({"url": f"http://127.0.0.1:{port}", "port": port, "token": token,
+                       "pid": os.getpid(), "started": datetime.now().isoformat(timespec="seconds")}, handle)
+        os.replace(tmp, path)
+    except OSError:
+        pass  # the printed URL still works; only the companion loses its way in
+
+
+def remove_connection_file(token: str, path: Path = CONNECTION_FILE) -> None:
+    """Remove the file only if it is still ours, so a newer run's file survives."""
+    try:
+        if json.loads(path.read_text(encoding="utf-8")).get("token") == token:
+            path.unlink()
+    except (OSError, ValueError):
+        pass
+
 
 def serve(port: int = 8787, open_browser: bool = True,
           roots: list[str] | None = None) -> None:
@@ -2644,7 +2703,7 @@ def serve(port: int = 8787, open_browser: bool = True,
     # than globals, so two servers in one process cannot share state by accident.
     handler = type("BoundHandler", (Handler,),
                    {"fleet": fleet, "token": token, "chat": chat.ChatManager(),
-                    "teams": teams.TeamManager(), "drafts": workflows.DraftManager()})
+                    "teams": teams.TeamManager(), "drafts": workflows.DraftManager(), "voice": voice.Voice()})
     # The events the fleet announces show the chat's live signal too, as /api/sessions does.
     fleet.overlay = lambda sessions: _overlay_chat(sessions, handler.chat)
     try:
@@ -2654,6 +2713,7 @@ def serve(port: int = 8787, open_browser: bool = True,
         # instead of dying.
         httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
     httpd.daemon_threads = True
+    write_connection_file(httpd.server_address[1], token)
     url = f"http://127.0.0.1:{httpd.server_address[1]}/?t={token}"
     review_url = f"http://127.0.0.1:{httpd.server_address[1]}/review?t={token}"
     print("agentgrid web UI")
@@ -2672,5 +2732,6 @@ def serve(port: int = 8787, open_browser: bool = True,
     except KeyboardInterrupt:
         print("\nstopped.")
     finally:
+        remove_connection_file(token)
         fleet.stop()
         httpd.server_close()

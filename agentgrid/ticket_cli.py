@@ -228,15 +228,46 @@ def _text(value: str) -> str:
     return sys.stdin.read().strip() if value == "-" else value
 
 
+# The global flags, and whether each swallows the token after it. Used to walk
+# past them when looking for the verb.
+GLOBAL_FLAGS = {"--json": 0, "-h": 0, "--help": 0, "--as": 1}
+
+
+def implied_list(argv: list[str], commands: set) -> bool:
+    """True when *argv* names no verb, so `list` is what was meant.
+
+    `ag tickets --mine` has to work: a bare list is the common case and the
+    word "list" is noise in it. Deciding this before parsing rather than after
+    matters, because argparse exits on the unknown option `--mine` at the top
+    level and never reaches a fallback.
+    """
+    index = 0
+    while index < len(argv):
+        token = argv[index]
+        if token in GLOBAL_FLAGS:
+            index += 1 + GLOBAL_FLAGS[token]
+            continue
+        if token.startswith("--as="):
+            index += 1
+            continue
+        if token.startswith("-"):
+            return True             # a list option, e.g. --mine: no verb given
+        return token not in commands
+    return True                     # nothing but global flags, or nothing at all
+
+
 def main(argv: list[str]) -> int:
     parser = build_parser()
+    argv = list(argv)
+    commands = {name for action in parser._actions
+                for name in getattr(action, "choices", None) or ()
+                if isinstance(getattr(action, "choices", None), dict)}
+    # Re-parsing through the subparser rather than defaulting cmd is what
+    # gives the namespace list's own options; without it a bare `ag tickets`
+    # reaches for --mine and finds nothing there.
+    if implied_list(argv, commands):
+        argv = ["list"] + argv
     args = parser.parse_args(argv)
-    # `ag tickets` with no verb means list. Re-parsing through the subparser
-    # rather than defaulting cmd is what gives the namespace list's own
-    # options; without it a bare `ag tickets` reaches for --mine and finds
-    # nothing there.
-    if not args.cmd:
-        args = parser.parse_args(["list"] + list(argv))
     who = tickets.whoami(getattr(args, "actor", ""))
     as_json = bool(getattr(args, "json", False))
     cmd = args.cmd or "list"

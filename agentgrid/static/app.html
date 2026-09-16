@@ -889,6 +889,7 @@ body.area-overview #views,body.area-overview #projectSel,body.area-overview #tag
     title="Notify when an agent needs you or replies (while this tab is open)">Alerts</button></div>
   <div class="spacer"></div>
   <button class="btn" id="promptsBtn" title="Reusable prompts — reference them in a chat with /name">/ Prompts</button>
+  <button class="btn" id="voiceBtn" popovertarget="voicePopover" title="Voice commands and spoken replies">Voice</button>
   <button class="btn" id="providersBtn" title="Connect model providers">Providers</button>
   <button class="btn" id="teamsBtn" title="Build and run agent workflows">⛓ Teams</button>
   <button class="btn" id="syncBtn" title="Sync your notes to a GitHub repo">⟳ Sync</button>
@@ -3279,7 +3280,8 @@ async function deletePrompt(name) {
 }
 
 async function exportPrompt(name) {
-  const r = await post("/api/prompts/export", {name});
+  const p = promptLibrary.find(x => x.name === name);
+  const r = await post("/api/prompts/export", {name, areaId: p?.areaId || ""});
   if (r && r.error) { toast(r.error); return; }
   toast(`Exported → ${r.path}`);
 }
@@ -5544,6 +5546,77 @@ loadNotes(false);   // first fill: padDirty is false, so this cannot clobber any
 loadTickets(false); // the review count on the tab, and the board if that view was left open
 setInterval(() => { if (!document.hidden && (view === "tickets" || tkOpen)) loadTickets(false); }, 3000);
 setInterval(() => { if (!document.hidden && view !== "tickets") loadTickets(false); }, 30000);
+</script>
+<style>
+#voicePopover{position:fixed;inset:64px 16px auto auto;margin:0;width:min(370px,calc(100vw - 32px));padding:16px;border:1px solid var(--line-2);border-radius:8px;background:var(--card);color:var(--text);box-shadow:0 8px 30px #0002;font:13.5px/1.5 var(--sans)}
+#voicePopover::backdrop{background:transparent}
+.voice-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.voice-row input{flex:1;min-width:110px;padding:8px}.voice-row button{padding:6px 9px}.voice-muted{font-size:12px;color:var(--text-2);margin:8px 0}.voice-label{display:block;margin:12px 0 6px}#voiceReply{margin:14px 0;white-space:pre-wrap}#voicePopover details{border-top:1px solid var(--line);padding-top:10px;margin-top:14px}#voicePopover .voice-commands ul{margin:10px 0 8px;padding-left:20px;color:var(--text-2)}#voicePopover .voice-commands li{margin:5px 0}#voicePopover code{font-family:var(--mono);font-size:12px;color:var(--text)}#voicePopover [hidden]{display:none!important}
+</style>
+<div id="voicePopover" popover aria-label="Voice commands">
+  <div class="voice-row"><strong>Voice commands</strong><span class="spacer"></span><span id="voiceName" class="voice-muted">Marin</span><button class="btn" popovertarget="voicePopover" popovertargetaction="hide" aria-label="Close voice commands">×</button></div>
+  <p class="voice-muted">Speak, then click Stop &amp; run. Audio is sent to OpenAI.</p>
+  <div class="voice-row"><button class="btn key" id="voiceRecord" type="button">Start listening</button><button class="btn" id="voiceDiscard" type="button" hidden>Cancel</button></div>
+  <form id="voiceCommandForm"><label class="voice-label" for="voiceCommand">Try “What needs my attention?”</label><div class="voice-row"><input id="voiceCommand" placeholder="Your command…" autocomplete="off" maxlength="300"><button class="btn key" id="voiceRun">Run</button></div></form>
+  <div id="voiceReply" aria-live="polite"></div>
+  <div class="voice-row"><button class="btn" id="voicePlay" hidden>Read aloud</button><button class="btn" id="voiceStop" hidden>Stop</button><label><input id="voiceAuto" type="checkbox" checked> Speak replies</label></div>
+  <p id="voiceStatus" class="voice-muted" role="status"></p>
+  <details id="voiceSettings"><summary>OpenAI voice settings</summary><p class="voice-muted">GPT-Transcribe + Mini TTS · AI-generated speech. Key kept in memory until this Agent Grid server stops.</p><form id="voiceKeyForm"><label class="voice-label" for="voiceKey">OpenAI API key</label><div class="voice-row"><input id="voiceKey" type="password" autocomplete="off" placeholder="sk-…"><button class="btn">Use key</button><button class="btn" id="voiceForget" type="button">Forget</button></div></form><p id="voiceKeyStatus" class="voice-muted"></p></details>
+  <details class="voice-commands"><summary>Available commands</summary><ul><li><code>What needs my attention?</code> — summarize working and blocked sessions</li><li><code>Start a Codex agent to … in AgentGrid</code> — start work in a project</li><li><code>Tell [session] to …</code> — send a follow-up</li><li><code>Status</code> — same summary</li><li><code>Use Cedar</code> / <code>Use Marin</code> — choose the spoken voice</li><li><code>Help</code> or <code>List commands</code> — read this list aloud</li></ul><p class="voice-muted">More Agent Grid controls will appear here as they are added.</p></details>
+</div>
+<script>
+(()=>{
+  const el=id=>document.getElementById(id);
+  const token=new URLSearchParams(location.search).get('t')||'';
+  let voice='marin',reply='',audio=null,url=null,busy=false;
+  async function call(path,body){const r=await fetch(path,{method:body===undefined?'GET':'POST',headers:{'Content-Type':'application/json','X-Agentgrid-Token':token},body:body===undefined?undefined:JSON.stringify(body)});if(!r.ok){const e=await r.json();throw Error(e.error||'Request failed');}return r;}
+  function stop(){if(audio)audio.pause();el('voiceStop').hidden=true;el('voiceStatus').textContent='';}
+  async function play(){if(busy||!reply)return;stop();busy=true;el('voiceRun').disabled=true;el('voicePlay').disabled=true;el('voiceStatus').textContent='Generating speech…';try{const r=await call('/api/voice/speech',{text:reply,voice});if(url)URL.revokeObjectURL(url);url=URL.createObjectURL(await r.blob());audio=new Audio(url);audio.onended=()=>{el('voiceStop').hidden=true;el('voiceStatus').textContent='';};await audio.play();el('voiceStop').hidden=false;el('voiceStatus').textContent='Speaking';}catch(e){el('voiceStatus').textContent=e.message;el('voiceSettings').open=true;}finally{busy=false;el('voiceRun').disabled=false;el('voicePlay').disabled=false;}}
+  el('voicePopover').addEventListener('toggle',async e=>{if(e.newState==='open'){el('voiceCommand').focus();try{const s=await(await call('/api/voice')).json();el('voiceKeyStatus').textContent=s.connected?'Key configured for this server session.':'Add a key to hear replies. Commands work without one.';}catch(e){el('voiceStatus').textContent=e.message;}}else stop();});
+  el('voiceCommandForm').onsubmit=async e=>{e.preventDefault();if(busy)return;const command=el('voiceCommand').value.trim();if(!command)return;stop();el('voiceRun').disabled=true;try{const result=await(await call('/api/voice/command',{command})).json();if(result.voice)voice=result.voice;reply=result.reply;el('voiceName').textContent=voice[0].toUpperCase()+voice.slice(1);el('voiceReply').textContent=reply;el('voiceCommand').value='';el('voicePlay').hidden=false;if(el('voiceAuto').checked)await play();}catch(e){el('voiceStatus').textContent=e.message;}finally{el('voiceRun').disabled=false;}};
+  el('voiceKeyForm').onsubmit=async e=>{e.preventDefault();const key=el('voiceKey').value.trim();if(!key)return;try{await call('/api/voice/key',{key});el('voiceKey').value='';el('voiceKeyStatus').textContent='Key added. Click Read aloud to test.';}catch(e){el('voiceKeyStatus').textContent=e.message;}};
+  el('voiceForget').onclick=async()=>{try{await call('/api/voice/key',{key:''});stop();el('voiceKeyStatus').textContent='Key removed.';}catch(e){el('voiceKeyStatus').textContent=e.message;}};
+
+  let recorder=null,stream=null,timer=null,generation=0,recording=false,starting=false;
+  function releaseMic(){clearTimeout(timer);if(stream)stream.getTracks().forEach(t=>t.stop());stream=null;recording=false;el('voiceRecord').textContent='Start listening';el('voiceDiscard').hidden=true;el('voiceRun').disabled=false;}
+  function cancelRecording(){generation++;if(recorder&&recorder.state!=='inactive')recorder.stop();releaseMic();}
+  async function record(){
+    if(recording){recorder.stop();return;}if(busy||starting)return;
+    const gen=++generation;starting=true;stop();
+    try{
+      const state=await(await call('/api/voice')).json();
+      if(gen!==generation)return;
+      if(!state.connected){el('voiceSettings').open=true;el('voiceKey').focus();throw Error('Add your OpenAI key below, then click Start listening.');}
+      if(!navigator.mediaDevices?.getUserMedia||!window.MediaRecorder)throw Error('Microphone recording is unavailable in this browser. You can still type a command.');
+      const mic=await navigator.mediaDevices.getUserMedia({audio:true});
+      if(gen!==generation){mic.getTracks().forEach(t=>t.stop());return;}stream=mic;
+      const mime=['audio/webm;codecs=opus','audio/mp4','audio/webm'].find(m=>MediaRecorder.isTypeSupported(m));
+      if(!mime)throw Error('This browser does not support a compatible recording format.');
+      recorder=new MediaRecorder(stream,{mimeType:mime});const parts=[];let size=0;
+      recorder.ondataavailable=e=>{if(e.data.size){parts.push(e.data);size+=e.data.size;if(size>5000000){cancelRecording();el('voiceStatus').textContent='Recording too large. Please use a shorter command.';}}};
+      recorder.onerror=()=>{cancelRecording();el('voiceStatus').textContent='Recording failed. Please try again.';};
+      recorder.onstop=async()=>{
+        releaseMic();if(gen!==generation)return;busy=true;el('voiceRecord').disabled=true;el('voiceRun').disabled=true;el('voiceStatus').textContent='Transcribing…';
+        try{
+          const blob=new Blob(parts,{type:mime});
+          const encoded=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result.split(',')[1]);reader.onerror=reject;reader.readAsDataURL(blob);});
+          if(gen!==generation)return;
+          const result=await(await call('/api/voice/transcribe',{audio:encoded,mime})).json();
+          if(gen!==generation)return;
+          el('voiceCommand').value=result.text;el('voiceStatus').textContent='';busy=false;
+          await el('voiceCommandForm').onsubmit({preventDefault(){}});
+        }catch(e){if(gen===generation)el('voiceStatus').textContent=e.message||'Transcription failed.';}
+        finally{busy=false;el('voiceRecord').disabled=false;el('voiceRun').disabled=false;}
+      };
+      recorder.start(1000);recording=true;el('voiceRun').disabled=true;el('voiceRecord').textContent='Stop & run';el('voiceDiscard').hidden=false;el('voiceStatus').textContent='Listening…';timer=setTimeout(()=>{if(recording)recorder.stop();},60000);
+    }catch(e){releaseMic();if(gen===generation)el('voiceStatus').textContent=e.name==='NotAllowedError'?'Microphone permission was denied. Allow it in your browser, or type a command.':e.message;}
+    finally{starting=false;}
+  }
+  el('voiceRecord').onclick=record;
+  el('voiceDiscard').onclick=()=>{cancelRecording();el('voiceStatus').textContent='Recording cancelled.';};
+  el('voicePopover').addEventListener('toggle',e=>{if(e.newState==='open')record();else cancelRecording();});
+  window.addEventListener('pagehide',cancelRecording);
+  el('voicePlay').onclick=play;el('voiceStop').onclick=stop;
+})();
 </script>
 
 </body>

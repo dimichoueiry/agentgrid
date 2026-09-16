@@ -184,6 +184,22 @@ class TicketCliTests(unittest.TestCase):
         _, everywhere = self.run_cli("list", "--all")
         self.assertIn("OTHE-1", everywhere)
 
+    def test_a_list_option_works_without_saying_list(self):
+        # `ag tickets --mine` is the common shape; argparse exits on an unknown
+        # top-level option, so the verb has to be implied before it parses.
+        self.run_cli("--as", "sonnet-1", "new", "Mine", "--take")
+        tickets.create("Someone else's", project="/repos/draw-cal", assignee="codex-2")
+        for argv in (["--mine", "--as", "sonnet-1"], ["--as", "sonnet-1", "--mine"]):
+            code, out = self.run_cli(*argv)
+            self.assertEqual(code, 0, argv)
+            self.assertIn("DC-1", out)
+            self.assertNotIn("DC-2", out)
+        self.assertIn("DC-2", self.run_cli("--all")[1])
+        self.assertEqual({t["id"] for t in json.loads(self.run_cli("--json")[1])},
+                         {"DC-1", "DC-2"})
+        # and a real verb is still never mistaken for a list
+        self.assertIn("Filed", self.run_cli("new", "A third")[1])
+
     def test_open_hides_done_and_json_is_machine_readable(self):
         self.run_cli("new", "One")
         self.run_cli("new", "Two")

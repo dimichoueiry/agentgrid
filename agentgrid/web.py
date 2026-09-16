@@ -39,7 +39,9 @@ import sys
 import tempfile
 import threading
 import time
+import urllib.error
 import urllib.parse
+import urllib.request
 import webbrowser
 from datetime import date, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -1426,6 +1428,12 @@ class Handler(BaseHTTPRequestHandler):
                                   "jiraBase": notes.jira_base()})
         elif route == "/api/pages":
             self._send_json(200, {"pages": notes.all_pages()})
+        elif route == "/api/ping":
+            # The cheapest proof this run is alive, for a companion checking
+            # the connection file (and for a later run deciding whether to
+            # take it over): the pid the file names, and when it started.
+            self._send_json(200, {"ok": True, "pid": os.getpid(), "run": self.fleet.events.run,
+                                  "started": STARTED_AT})
         elif route == "/api/projects":
             self._send_json(200, {"projects": discover_projects(self.fleet.raw())})
         elif route == "/api/agents":
@@ -2775,8 +2783,12 @@ If you restart AgentGrid, revisit this page and re-install it.</p>
 # --- entry point -------------------------------------------------------------
 
 # Where a local companion (Chief of Staff) finds this run: the port and the token
-# the printed URL carries. Owner-only, written on start, removed on a clean stop.
+# the printed URL carries. Owner-only. A run claims it on start and keeps it
+# claimed for as long as it runs (see keep_connection_file); it removes the
+# file on a clean stop only if the file is still its own.
 CONNECTION_FILE = Path.home() / ".agentgrid" / "web.json"
+CONNECTION_KEEP_SECONDS = 5.0
+STARTED_AT = datetime.now().isoformat(timespec="seconds")
 
 
 def write_connection_file(port: int, token: str, path: Path = CONNECTION_FILE) -> None:
@@ -2786,10 +2798,88 @@ def write_connection_file(port: int, token: str, path: Path = CONNECTION_FILE) -
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             json.dump({"url": f"http://127.0.0.1:{port}", "port": port, "token": token,
-                       "pid": os.getpid(), "started": datetime.now().isoformat(timespec="seconds")}, handle)
+                       "pid": os.getpid(), "started": STARTED_AT}, handle)
         os.replace(tmp, path)
     except OSError:
         pass  # the printed URL still works; only the companion loses its way in
+
+
+def read_connection_file(path: Path = CONNECTION_FILE) -> dict | None:
+    """The file's record, or None when it is missing or not a JSON object."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def connection_answers(record: dict, timeout: float = 1.5) -> bool:
+    """Whether the run a connection record names is alive and answers with its token.
+
+    The pid check alone is not enough: a run that died without cleaning up
+    leaves its pid to be reused, and a run that was killed mid-verification
+    leaves a file that names nothing. Only an answer to /api/ping that
+    accepts the token counts.
+    """
+    pid, url, token = record.get("pid"), record.get("url"), record.get("token")
+    if isinstance(pid, int) and pid > 0:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except OSError:
+            pass  # not ours to signal, but it exists: let the request decide
+    if not isinstance(url, str) or not isinstance(token, str) or not token:
+        return False
+    try:
+        request = urllib.request.Request(f"{url}/api/ping", headers={"X-Agentgrid-Token": token})
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return response.status == 200
+    except urllib.error.HTTPError as error:
+        # 403 is the token being refused: whatever listens there is not that
+        # run. Anything else (a 404 from a run older than /api/ping) is a run
+        # that accepted the token, so it is alive.
+        return error.code != 403
+    except (OSError, ValueError):
+        return False
+
+
+def claim_connection_file(port: int, token: str, path: Path = CONNECTION_FILE,
+                          answers=connection_answers) -> bool:
+    """Make the file name this run, unless another run that still answers holds it.
+
+    Returns whether the file names this run afterwards. A missing file, a
+    garbled one, or one left behind by a run that no longer answers is taken
+    over; one held by a live run is left alone, so a verification run on a
+    spare port never steals the companion's way in, and the run that is still
+    there is the one it keeps talking to.
+    """
+    record = read_connection_file(path)
+    if record is not None:
+        if record.get("token") == token:
+            return True
+        if record.get("pid") != os.getpid() and answers(record):
+            return False
+    write_connection_file(port, token, path)
+    return (read_connection_file(path) or {}).get("token") == token
+
+
+def keep_connection_file(port: int, token: str, stop: threading.Event,
+                         path: Path = CONNECTION_FILE, every: float = CONNECTION_KEEP_SECONDS) -> None:
+    """Re-claim the file for as long as this run lives.
+
+    Anything can take the file away while a run is up: a second `ag --web`
+    (a verification run, a second board) overwrites it and removes it when it
+    stops, or dies and leaves it naming a pid that is gone. Either way the
+    companion says agentgrid is not running while it plainly is. Checking
+    every few seconds costs one stat, and a probe only when someone else
+    holds the file.
+    """
+    while not stop.wait(every):
+        try:
+            claim_connection_file(port, token, path)
+        except Exception:  # noqa: BLE001 -- the board must outlive any fault here
+            pass
 
 
 def remove_connection_file(token: str, path: Path = CONNECTION_FILE) -> None:
@@ -2824,7 +2914,11 @@ def serve(port: int = 8787, open_browser: bool = True,
         # instead of dying.
         httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
     httpd.daemon_threads = True
-    write_connection_file(httpd.server_address[1], token)
+    claim_connection_file(httpd.server_address[1], token)
+    keeping = threading.Event()
+    keeper = threading.Thread(target=keep_connection_file, args=(httpd.server_address[1], token, keeping),
+                              daemon=True, name="connection-file")
+    keeper.start()
     url = f"http://127.0.0.1:{httpd.server_address[1]}/?t={token}"
     review_url = f"http://127.0.0.1:{httpd.server_address[1]}/review?t={token}"
     print("agentgrid web UI")
@@ -2843,6 +2937,8 @@ def serve(port: int = 8787, open_browser: bool = True,
     except KeyboardInterrupt:
         print("\nstopped.")
     finally:
+        keeping.set()
+        keeper.join(timeout=3)  # never let a claim in flight put the file back after it is removed
         remove_connection_file(token)
         fleet.stop()
         httpd.server_close()

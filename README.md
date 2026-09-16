@@ -455,6 +455,102 @@ it is joined back to the parent's `Agent` tool call by prompt text. A file
 that fails to match still appears, labelled by its own opening line — a
 subagent is never silently dropped.
 
+## Tickets
+
+The board answers "what is running"; tickets answer "what is the work". A
+fleet of agents has no common object to point at -- notes are your own
+thinking and a chat is one session's memory, neither of which survives being
+handed from one agent to another. A ticket does: an id you can say out loud, a
+state anyone can read, and one owner at a time.
+
+**Tickets** is the fourth view. Five columns, the same shape as the session
+board: Backlog, To do, In progress, In review, Done. Drag a card to re-file
+it. The count on the tab is how many sit in **In review** -- the one state
+that means a human is needed.
+
+```
+Backlog        To do          In progress    In review      Done
+               ● DC-4 ‼       ● DC-1         ■ AG-3         ◆ DC-2
+               Login drops…   Rate limiter…  Tidy makefile  Pick a queue
+               draw-cal ·     draw-cal ·     agentgrid ·    draw-cal ·
+               unassigned     sonnet-1       codex-2        sonnet-1
+```
+
+A ticket has a **type** (`task ■`, `bug ●`, `story ◆`, `spike ▲`, `chore ○`),
+a **priority**, a **project**, an **assignee**, **labels**, an optional **due
+date**, a markdown description and a comment thread. Ids are per project and
+minted from the folder name: `draw-cal` becomes `DC-1`, `DC-2`; `AgentGrid`
+becomes `AG-1`. A key is registered once and never moves, because an id that
+changed would orphan every mention of it in a commit or a chat.
+
+### Filters, lanes and layouts
+
+- **Project**, **type** and **assignee** dropdowns, each built only from what
+  exists, plus `No project` and `Unassigned` where they apply.
+- **Status toggles** with live counts: hide Done, keep the number.
+- **Lanes** split the board by project, agent, type or priority -- this is how
+  you see what each agent, or each codebase, is carrying.
+- **Board** or **List**; the list sorts by column and shows every field at once.
+- `/` searches ids, titles, descriptions, labels and assignees.
+- Every choice is remembered across restarts.
+
+### Assigning work to an agent
+
+Two ways, from the ticket panel:
+
+- **Assign to a live session.** The ticket is handed over *and the agent is
+  told in its own chat* -- the brief includes the description, the comments so
+  far and the exact `ag ticket` commands to report back. An assignment that is
+  only a label is a sticky note nobody reads.
+- **Start an agent on it.** Opens the New agent sheet with the ticket as the
+  brief and the project pre-filled. The new agent is named after the ticket,
+  the ticket moves to In progress, and `AGENTGRID_AGENT` is set in its
+  environment so everything it files is signed with that name.
+
+Assigning a bare name instead (someone not on this board) is a label only, and
+nothing is sent.
+
+### `ag ticket` — the agents' half
+
+The board is a browser page and an agent has no browser, so everything the UI
+does to a ticket, one shell line does too. Both write the same files.
+
+```bash
+ag tickets                              # this checkout's tickets
+ag ticket new "Login drops the session on refresh" --type bug --priority high
+ag ticket take DC-1                     # claim it: assigned to you, In progress
+ag ticket comment DC-1 "Cookie SameSite; fix is one line."
+ag ticket move DC-1 review              # hand it back to a human
+ag ticket done DC-1
+ag ticket list --mine --open            # what am I carrying?
+ag ticket show DC-1                     # description, comments, history
+```
+
+`--project` defaults to the git checkout the command runs in, so an agent
+working in `draw-cal/src` files into `draw-cal`. `--all` looks across every
+project. `--json` on any command gives machine-readable output. Every command
+takes `--as NAME`; without it the name comes from `AGENTGRID_AGENT` (set for
+agents the board starts), else `claude`/`codex`, else your login.
+
+The **`ag ticket`** button in the view opens the full command list with a
+one-click **Copy CLAUDE.md snippet**, which is the paragraph to paste into a
+project so its agents know the routine without being told each time.
+
+### Storage
+
+One JSON file per ticket, under `~/.agentgrid/tickets/`:
+
+```
+~/.agentgrid/tickets/DC-1.json
+~/.agentgrid/tickets/_meta.json      # project keys and the number counters
+```
+
+One file each rather than a single `tickets.json` because two agents acting at
+once is the normal case here, not the edge case: with a file apiece, two
+agents touching two tickets never contend at all. Only minting an id takes a
+lock. Writes are atomic, and the files are plain JSON you can grep, edit by
+hand or commit.
+
 ## Notes and todos
 
 The pad is the second half of the product. It exists because the board is
@@ -590,10 +686,11 @@ is one click.
 
 ## View modes
 
-Three ways to sit, remembered across restarts: **Board** (the columns alone),
-**Notes** (the pad alone), and **Split** — the pad docked under the board at
-a fixed, resizable height, for meetings where you want to watch agents run
-while you write. Switching modes never reflows the columns you were reading.
+Remembered across restarts: **Board** (the columns alone), **Notes** (the pad
+alone), **Split** — the pad docked under the board at a fixed, resizable
+height, for meetings where you want to watch agents run while you write — and
+**Tickets**, the work itself. Switching modes never reflows the columns you
+were reading.
 
 ## Filtering and search
 
@@ -605,7 +702,8 @@ while you write. Switching modes never reflows the columns you were reading.
   works alongside both dropdowns.
 - **Column toggles** for Done and Idle, with live counts.
 
-Single-key shortcuts (`n`, `/`) never fire while you are typing in any field.
+Single-key shortcuts (`n` new agent, `t` new ticket, `/` search) never fire
+while you are typing in any field.
 
 ## The terminal grid
 
@@ -716,6 +814,7 @@ Everything agentgrid itself writes lives under `~/.agentgrid/`:
 ├── tags.json           # tags per session
 ├── read.json           # how far you had read each session
 ├── note-meta.json      # page arrangement and pins
+├── tickets/            # one JSON file per ticket, plus the key counters
 ├── sync.json           # notes-sync remote, branch and last-sync time (no secrets)
 └── notes/              # the daily pads, plain markdown (a git repo once you sync)
 ```
@@ -728,13 +827,18 @@ missing or corrupt file — these are optional enrichments, and deleting
 ## Tests
 
 ```bash
-python3 -m unittest discover -s tests -v
+python3 -m unittest discover -s tests -v     # run from the repo root
+node tests/test_chat_ui.js                   # the chat composer
+node tests/test_tickets_ui.js                # the ticket board
 ```
 
 The layout tests run the real curses drawing code against a hand-written fake
 window and assert on the resulting character grid, so a card-geometry
 regression fails in CI rather than only being visible to a human squinting at
-a screen.
+a screen. The two Node tests do the same job for the browser front end: they
+evaluate the real functions out of `app.html` in a sandbox and assert on the
+HTML they return, so a broken filter or a card in the wrong column fails a
+test rather than waiting to be clicked.
 
 ## Further reading
 

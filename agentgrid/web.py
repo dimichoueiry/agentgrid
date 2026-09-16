@@ -44,7 +44,7 @@ from datetime import date, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from agentgrid import areas, chat, discovery, models, notes, sync, teams, terminal, transcript, workflows, credentials, openrouter
+from agentgrid import areas, chat, discovery, models, notes, sync, teams, terminal, tickets, transcript, workflows, credentials, openrouter
 
 STATIC = Path(__file__).resolve().parent / "static"
 POLL_SECONDS = 2.0
@@ -783,10 +783,25 @@ def export_prompt_to_claude(name: str, area_id: str = "") -> tuple[bool, str]:
     return True, str(path)
 
 
+def agent_env(agent_name: str = "") -> dict:
+    """The environment a spawned agent runs in.
+
+    AGENTGRID_AGENT is how `ag ticket` knows the name to file and claim work
+    under -- without it an agent would have to be told its own name in the
+    prompt and remember it for the whole run. OPENROUTER_API_KEY is stripped
+    for the reason it always was: the board's key is the board's, and a
+    spawned CLI has no business inheriting it.
+    """
+    env = {k: v for k, v in os.environ.items() if k != "OPENROUTER_API_KEY"}
+    if agent_name.strip():
+        env["AGENTGRID_AGENT"] = agent_name.strip()[:60]
+    return env
+
+
 def spawn_agent(cwd: str, prompt: str, model: str | None,
                 allowed: list[dict], engine: str = "claude",
                 system_prompt: str = "", interactive: bool = False,
-                ) -> tuple[bool, str, str | None]:
+                agent_name: str = "") -> tuple[bool, str, str | None]:
     """Start an agent in a known project.
 
     Three shapes: a background `claude --bg` daemon (the default, and the only
@@ -816,7 +831,7 @@ def spawn_agent(cwd: str, prompt: str, model: str | None,
         # Open a real terminal running the CLI, seeded with the task. Both
         # engines have an interactive mode: `claude <prompt>` and `codex
         # <prompt>` each start a watch-and-type-into session.
-        return spawn_interactive(cwd, prompt, model, engine)
+        return spawn_interactive(cwd, prompt, model, engine, agent_name)
 
     if engine == "codex":
         # codex exec runs the whole task and only then exits, so it cannot be
@@ -834,7 +849,7 @@ def spawn_agent(cwd: str, prompt: str, model: str | None,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 start_new_session=True,
-                env={k: v for k, v in os.environ.items() if k != "OPENROUTER_API_KEY"},
+                env=agent_env(agent_name),
             )
         except FileNotFoundError:
             return False, "codex CLI not found on PATH.", None
@@ -855,6 +870,7 @@ def spawn_agent(cwd: str, prompt: str, model: str | None,
             text=True,
             timeout=60,
             start_new_session=True,
+            env=agent_env(agent_name),
         )
     except FileNotFoundError:
         return False, "claude CLI not found on PATH.", None
@@ -981,7 +997,8 @@ def open_in_terminal(session) -> tuple[bool, str]:
 
 
 def spawn_interactive(cwd: str, prompt: str, model: str | None,
-                      engine: str = "claude") -> tuple[bool, str, None]:
+                      engine: str = "claude",
+                      agent_name: str = "") -> tuple[bool, str, None]:
     """Start a regular, watch-and-type-into CLI session in a fresh Terminal tab.
 
     The counterpart to a background spawn: rather than detaching a daemon, this
@@ -1001,7 +1018,13 @@ def spawn_interactive(cwd: str, prompt: str, model: str | None,
     else:
         argv = ["claude"] + (["--model", model] if model else []) + [prompt]
         label = "claude"
-    command = f"cd {shlex.quote(cwd)} && " + " ".join(shlex.quote(part) for part in argv)
+    # The tab is opened by AppleScript, so the board name rides in as a shell
+    # export rather than an env= argument; shlex.quote keeps a name with
+    # spaces or quotes in it from becoming shell.
+    export = (f"export AGENTGRID_AGENT={shlex.quote(agent_name.strip()[:60])} && "
+              if agent_name.strip() else "")
+    command = (f"cd {shlex.quote(cwd)} && " + export
+               + " ".join(shlex.quote(part) for part in argv))
     if sys.platform != "darwin":
         return False, (f"Starting an interactive session needs Terminal.app (macOS "
                        f"only). Run this yourself: {command}"), None
@@ -1274,6 +1297,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(200, self._sessions_snapshot())
         elif route == "/api/notes":
             self._get_notes(query)
+        elif route == "/api/tickets":
+            self._get_tickets()
         elif route == "/api/todos":
             self._get_todos(query)
         elif route == "/api/history":
@@ -1503,6 +1528,18 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(200, areas.update(body))
             except (ValueError, OSError) as exc:
                 self._send_json(400, {"error": str(exc)})
+        elif route == "/api/tickets/create":
+            self._tickets_create(body)
+        elif route == "/api/tickets/update":
+            self._tickets_update(body)
+        elif route == "/api/tickets/move":
+            self._tickets_move(body)
+        elif route == "/api/tickets/assign":
+            self._tickets_assign(body)
+        elif route == "/api/tickets/comment":
+            self._tickets_comment(body)
+        elif route == "/api/tickets/delete":
+            self._tickets_delete(body)
         elif route == "/api/notes/save":
             self._notes_save(body)
         elif route == "/api/notes/quickadd":
@@ -2068,6 +2105,144 @@ class Handler(BaseHTTPRequestHandler):
 
     # -- session routes ------------------------------------------------------
 
+    # -- tickets -------------------------------------------------------------
+    # The board and `ag ticket` write the same files, so everything here is a
+    # thin translation: validate, call the module, hand back the whole board.
+    # Returning the board rather than only the changed ticket is deliberate --
+    # a move re-ranks a column, and a client that patched one card would drift
+    # from what the next agent's CLI write already did.
+
+    def _get_tickets(self) -> None:
+        board = tickets.board()
+        # The live fleet and the known projects ride along, so opening the view
+        # costs one request rather than three the client has to join itself.
+        board["sessions"] = [
+            {"sessionId": session["sessionId"], "title": session["title"],
+             "project": session["project"], "cwd": session["cwd"],
+             "status": session["status"], "engine": session["engine"]}
+            for session in self._sessions_snapshot().get("sessions", [])
+        ]
+        board["knownProjects"] = discover_projects(self.fleet.raw())
+        self._send_json(200, board)
+
+    @staticmethod
+    def _ticket_id(body: dict) -> str:
+        return str(body.get("id") or body.get("key") or "")
+
+    def _ticket_reply(self, ticket: dict, message: str = "", **extra) -> None:
+        payload = {"ok": True, "ticket": ticket, "board": tickets.board()}
+        if message:
+            payload["message"] = message
+        payload.update(extra)
+        self._send_json(200, payload)
+
+    def _tickets_create(self, body: dict) -> None:
+        try:
+            ticket = tickets.create(
+                str(body.get("title") or ""),
+                body=str(body.get("body") or body.get("description") or ""),
+                type=str(body.get("type") or "task"),
+                status=str(body.get("status") or "todo"),
+                priority=str(body.get("priority") or "medium"),
+                project=str(body.get("project") or ""),
+                assignee=str(body.get("assignee") or ""),
+                session_id=str(body.get("sessionId") or ""),
+                reporter="you",
+                labels=body.get("labels"),
+                due=str(body.get("due") or ""),
+            )
+        except ValueError as error:
+            self._send_json(400, {"error": str(error)})
+            return
+        self._ticket_reply(ticket, f"Filed {ticket['id']}.")
+
+    def _tickets_update(self, body: dict) -> None:
+        fields = {name: body[name] for name in tickets.EDITABLE if name in body}
+        if not fields:
+            self._send_json(400, {"error": "Nothing to change."})
+            return
+        try:
+            ticket = tickets.update(self._ticket_id(body), fields, who="you")
+        except ValueError as error:
+            self._send_json(400, {"error": str(error)})
+            return
+        self._ticket_reply(ticket)
+
+    def _tickets_move(self, body: dict) -> None:
+        """A drag on the board: a new column, and a place in it.
+
+        `before` is the id of the card it was dropped above; without one it
+        lands at the bottom, which is what dropping on the empty space below a
+        column means.
+        """
+        try:
+            ticket = tickets.reorder(self._ticket_id(body),
+                                     str(body.get("status") or ""),
+                                     before=str(body.get("before") or ""),
+                                     who="you")
+        except ValueError as error:
+            self._send_json(400, {"error": str(error)})
+            return
+        self._ticket_reply(ticket)
+
+    def _tickets_comment(self, body: dict) -> None:
+        try:
+            ticket = tickets.comment(self._ticket_id(body), "you",
+                                     str(body.get("text") or ""))
+        except ValueError as error:
+            self._send_json(400, {"error": str(error)})
+            return
+        self._ticket_reply(ticket)
+
+    def _tickets_assign(self, body: dict) -> None:
+        """Hand a ticket to a live session -- and tell it, in its own chat, so
+        the assignment is an instruction rather than a label.
+
+        A bare name with no sessionId is a label only, which is what you want
+        for an agent that is not on this board, or is not running yet.
+        """
+        session_id = str(body.get("sessionId") or "")
+        session = self._session_by_id(session_id) if session_id else None
+        if session_id and session is None:
+            self._send_json(404, {"error": "That session is no longer on the board."})
+            return
+        assignee = (session.display_title if session
+                    else str(body.get("assignee") or "").strip())
+        try:
+            ticket = tickets.assign(self._ticket_id(body), assignee, who="you",
+                                    session_id=session_id,
+                                    start=bool(body.get("start")))
+        except ValueError as error:
+            self._send_json(400, {"error": str(error)})
+            return
+        told = False
+        if session is not None and body.get("notify", True):
+            if (session.engine == "codex" and session.status == "working"
+                    and not self.chat.state(session.session_id).get("running")):
+                message = (f"{ticket['id']} assigned, but {assignee} is busy outside "
+                           f"this chat -- it has not been told yet.")
+            else:
+                self.chat.send(session.session_id, session.cwd,
+                               tickets.handoff_prompt(ticket, assignee),
+                               chat.DEFAULT_POSTURE, engine=session.engine)
+                told = True
+                message = f"{ticket['id']} handed to {assignee}."
+        elif assignee:
+            message = f"{ticket['id']} assigned to {assignee}."
+        else:
+            message = f"{ticket['id']} unassigned."
+        self._ticket_reply(ticket, message, told=told)
+
+    def _tickets_delete(self, body: dict) -> None:
+        ticket_id = self._ticket_id(body)
+        try:
+            tickets.get(ticket_id)    # a bad or unknown id says so; nothing is unlinked
+        except ValueError as error:
+            self._send_json(404, {"error": str(error)})
+            return
+        tickets.delete(ticket_id)
+        self._send_json(200, {"ok": True, "board": tickets.board()})
+
     def _spawn(self, body: dict) -> None:
         area_id = str(body.get("areaId") or "")
         if area_id and not any(a["id"] == area_id for a in areas.load()["areas"]):
@@ -2078,6 +2253,22 @@ class Handler(BaseHTTPRequestHandler):
         projects = discover_projects(self.fleet.raw())
         engine = "codex" if str(body.get("engine") or "") == "codex" else "claude"
         interactive = bool(body.get("interactive"))
+        name = str(body.get("name") or "").strip()
+        prompt = str(body.get("prompt") or "")
+        # An agent started for a ticket gets the ticket as its brief, with the
+        # exact commands to report back, ahead of anything typed.
+        ticket = None
+        agent_label = ""
+        ticket_id = str(body.get("ticketKey") or body.get("ticketId") or "").strip()
+        if ticket_id:
+            try:
+                ticket = tickets.get(ticket_id)
+            except ValueError as error:
+                self._send_json(400, {"error": str(error)})
+                return
+            agent_label = name or f"{ticket['id']} · {engine}"
+            handoff = tickets.handoff_prompt(ticket, agent_label)
+            prompt = f"{handoff}\n\n{prompt.strip()}" if prompt.strip() else handoff
         if body.get("noProject"):
             # A project-less agent, like running `claude` from the Desktop. The
             # cwd is resolved here rather than trusted from the client, and only
@@ -2090,19 +2281,25 @@ class Handler(BaseHTTPRequestHandler):
             cwd = str(body.get("cwd") or "")
         ok, message, job_id = spawn_agent(
             cwd,
-            str(body.get("prompt") or ""),
+            prompt,
             str(body.get("model") or "") or None,
             projects,
             engine,
             str(body.get("systemPrompt") or ""),
             interactive,
+            agent_label or name,
         )
         if not ok:
             self._send_json(400, {"error": message})
             return
         if area_id:
             areas.await_session(area_id, cwd, engine, interactive, job_id, known, started)
-        name = str(body.get("name") or "").strip()
+        if ticket is not None:
+            try:
+                tickets.assign(ticket["id"], agent_label, who="you", start=True)
+                message += f" {ticket['id']} is in progress."
+            except ValueError as error:
+                message += f" Could not assign {ticket['id']}: {error}"
         if name:
             if job_id:
                 self.fleet.name_when_seen(job_id, name)

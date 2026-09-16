@@ -254,7 +254,50 @@ ag --cwd ~/work/fusion       # only sessions under that tree
 ag --filter "needs you"      # only the ones waiting on a human
 ```
 
-## 11. Install the hook (optional, five minutes)
+## 11. Put the work on tickets
+
+Click **Tickets**. Five columns, like the session board: Backlog, To do, In
+progress, In review, Done.
+
+Press `t` and file one:
+
+> Title: **Login drops the session on refresh**
+> Type: bug · Priority: high · Project: drawcal
+
+It appears in To do as `DC-1`. Open it and click **▷ Start an agent on it**.
+The New agent sheet opens with the ticket already the brief — description,
+comments, and the commands the agent needs to report back — and the project
+filled in. Start it. The ticket moves to In progress with the new agent's name
+on it.
+
+When the agent is done it runs `ag ticket move DC-1 review` itself, and the
+count on the Tickets tab goes up: that number is how many tickets are waiting
+on *you*, which is the same promise the Needs you column makes for sessions.
+
+To hand a ticket to an agent that is already running, open the ticket and pick
+the session from **Assignee**. It is not just a label — that agent gets the
+ticket in its chat and can start straight away.
+
+Three things worth trying once:
+
+- **Lanes → by agent.** The board splits into one lane per agent. This is the
+  "who is carrying what" view.
+- **Lanes → by project.** The same for codebases.
+- **List** layout, when you want every field at once rather than cards.
+
+Your agents do all of this from a shell. Click the **ag ticket** button for
+the full list, and use **Copy CLAUDE.md snippet** to paste the routine into a
+project so its agents pick up tickets without being asked:
+
+```bash
+ag tickets                         # what is open in this checkout
+ag ticket new "Title" --type bug   # file what you find
+ag ticket take DC-1                # claim it and start
+ag ticket comment DC-1 "…"         # leave a note on it
+ag ticket move DC-1 review         # hand it back
+```
+
+## 12. Install the hook (optional, five minutes)
 
 Needs you works without it: background agents report `blocked` directly, and
 an interactive session stopped at a question or permission prompt reports
@@ -286,7 +329,7 @@ triggers a permission prompt, leave the prompt unanswered, and watch the
 session's card turn amber on the board. Answer the prompt; the card clears
 on your next message.
 
-## 12. Odds and ends worth knowing
+## 13. Odds and ends worth knowing
 
 - **A dragged card that will not drop into Working is not broken.** Working
   is not a destination — saying a process runs does not make it run. The
@@ -299,6 +342,8 @@ on your next message.
   ~/work/clients`.
 - **Two browser tabs of the board are fine.** They share one poller on the
   server; ten tabs cost the same as one.
+- **Your tickets are just files**, one JSON each under
+  `~/.agentgrid/tickets/`. Grep them, edit them, commit them.
 - **Your notes are just files.** `grep -r "flag name" ~/.agentgrid/notes/`
   works, and so does editing a pad in vim while the board is open — the app
   picks up the change on its next read.

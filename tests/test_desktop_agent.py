@@ -54,7 +54,7 @@ class NoProjectSpawnTests(unittest.TestCase):
         captured = {}
 
         def recorder(cwd, prompt, model, allowed, engine="claude",
-                     system_prompt="", interactive=False):
+                     system_prompt="", interactive=False, agent_name=""):
             captured["cwd"] = cwd
             captured["allowed"] = [p["path"] for p in allowed]
             return True, "Started.", "job-1"

@@ -1,5 +1,5 @@
 """Command-line entry point: `ag` for the terminal grid, `ag --web` for the
-browser board.
+browser board, `ag ticket ...` for the ticket board agents drive from a shell.
 
 The two front ends are interchangeable views over the same data model, so the
 dispatch here is the whole of what this module does. The one structural
@@ -14,8 +14,22 @@ import argparse
 
 FILTERS = ("all", "active", "needs you", "recent")
 
+# `ag ticket new "..."` has to work, and argparse cannot express "a
+# subcommand, but also a bare `ag` with only flags". The verb is therefore
+# matched before the parser is built and handed off whole -- which also keeps
+# the ticket CLI's own --help from being tangled with the grid's flags.
+TICKET_VERBS = ("ticket", "tickets")
+
 
 def main(argv: list[str] | None = None) -> None:
+    import sys
+    argv = sys.argv[1:] if argv is None else list(argv)
+    if argv and argv[0] in TICKET_VERBS:
+        # Imported here for the same reason web is: the grid must not pay for
+        # a front end it is not showing.
+        from agentgrid import ticket_cli
+        raise SystemExit(ticket_cli.main(argv[1:]))
+
     parser = argparse.ArgumentParser(
         prog="ag",
         description="A local dashboard over every Claude Code session on this machine.",
@@ -36,6 +50,8 @@ def main(argv: list[str] | None = None) -> None:
                         help="do not launch a browser")
     parser.add_argument("--root", action="append", default=None, metavar="DIR",
                         help="scan DIR for projects instead of the defaults (repeatable)")
+    parser.epilog = ("Tickets: `ag tickets` lists the board; "
+                     "`ag ticket --help` shows the rest.")
     args = parser.parse_args(argv)
 
     # Accept both spellings of the two-word filter; the grid sees one.

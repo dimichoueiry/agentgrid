@@ -65,7 +65,8 @@ summary{cursor:pointer}
 /* the hidden attribute is out-specified by any class that sets display —
    every such element needs this companion or [hidden] silently does nothing */
 .board[hidden],.notes[hidden],.col[hidden],.pmenu[hidden],.modal[hidden],
-.rail[hidden],.toast[hidden],.panel[hidden],.pages[hidden]{display:none!important}
+.rail[hidden],.toast[hidden],.panel[hidden],.pages[hidden],
+.tickets[hidden],.tcol[hidden],.tboard[hidden]{display:none!important}
 
 /* ---------- top bar ---------- */
 .bar{
@@ -713,6 +714,134 @@ details.cthink[open]>summary::before{transform:rotate(90deg)}
 .tmoutput .srow{margin:8px 0}.workflow-export{margin-top:8px}
 .tmlog{max-height:55vh}.tmlog .out{overflow-wrap:anywhere}
 
+/* ---------- tickets ---------- */
+/* Same grammar as the session board: status is a column, so a card carries
+   no colour for it. Type is a glyph and priority an arrow, both in text greys.
+   The one accent marks In review — the column that is waiting on a human —
+   and the working tint marks an assignee that is running right now. */
+.tickets{flex:1 1 auto;min-height:0;display:flex;flex-direction:column}
+.tickets[hidden],.tpanel[hidden]{display:none!important}
+body.tickets-view #projectSel,body.tickets-view #tagSel,body.tickets-view #toggles,
+body.tickets-view #alertsBtn{display:none}
+.tk-bar{
+  display:flex;align-items:center;gap:8px;padding:8px 14px;flex:0 0 auto;flex-wrap:wrap;
+  border-bottom:1px solid var(--line);
+}
+.tk-bar .lbl{font-size:11.5px;color:var(--text-3);margin-left:4px}
+.tk-body{flex:1 1 auto;min-height:0;overflow:auto;display:flex;flex-direction:column}
+
+/* the grid draws every hairline with its 1px gap, like the session board */
+.tk-board{display:grid;gap:1px;background:var(--line);flex:0 0 auto}
+.tk-board.fill{flex:1 1 auto;min-height:0;grid-template-rows:auto minmax(0,1fr)}
+.tcol-head{
+  display:flex;align-items:center;gap:7px;padding:10px 14px 6px;background:var(--bg);
+  position:sticky;top:0;z-index:2;
+}
+.tcol-head[data-status=in_progress] .dot{background:var(--text-2)}
+.tcol-head[data-status=review].has .col-count{color:var(--accent);font-weight:600}
+.tcol-body{background:var(--bg);padding:4px 10px 14px;min-height:64px}
+.tk-board.fill .tcol-body{overflow-y:auto;min-height:0}
+.tcol-body.over{outline:1.5px dashed var(--line-2);outline-offset:-6px;border-radius:8px}
+/* a lane is one row of the same columns: the group name, then its cells */
+.tk-lane{
+  grid-column:1/-1;background:var(--bg);display:flex;align-items:baseline;gap:8px;
+  padding:16px 14px 4px;font-size:12.5px;font-weight:600;letter-spacing:-.01em;
+}
+.tk-lane .col-count{font-weight:400}
+
+.tcard{
+  position:relative;background:var(--card);border-radius:6px;box-shadow:var(--shadow);
+  padding:8px 11px 9px;margin:0 0 8px;cursor:pointer;
+}
+.tcard:hover{background:var(--card-hover)}
+.tcard.sel{outline:1.5px solid var(--text-3);outline-offset:-1.5px}
+.tcard.dragging{opacity:.45}
+.tcol-body[data-status=done] .tcard{opacity:.62}
+.tcol-body[data-status=done] .tcard:hover{opacity:1}
+.tcard .trow{display:flex;align-items:baseline;gap:6px}
+.tkey{font-family:var(--mono);font-size:10.5px;color:var(--text-3);flex:0 0 auto;white-space:nowrap}
+.tglyph{font-size:9px;color:var(--text-3);flex:0 0 auto;cursor:help;transform:translateY(-1px)}
+.tprio{font-size:10.5px;font-weight:600;color:var(--text-2);flex:0 0 auto;cursor:help}
+.tprio.urgent{color:var(--text)}
+.tprio.low{font-weight:400;color:var(--text-3)}
+.tlive{font-size:8px;color:var(--working);flex:0 0 auto;cursor:help}
+.tcard .ttitle{
+  font-size:13px;font-weight:550;letter-spacing:-.01em;line-height:1.35;margin:2px 0 3px;
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;
+}
+.tcard .sub .none{color:var(--text-3)}
+
+/* list: the same tickets as rows, for scanning many at once */
+.tk-table{width:100%;border-collapse:collapse;font-size:12.5px}
+.tk-table th{
+  position:sticky;top:0;z-index:1;background:var(--bg);text-align:left;
+  font-size:11px;font-weight:550;color:var(--text-3);padding:8px 10px;
+  border-bottom:1px solid var(--line-2);white-space:nowrap;
+}
+.tk-table td{padding:6px 10px;border-bottom:1px solid var(--line);vertical-align:top;color:var(--text-2)}
+.tk-table tr.trow{cursor:pointer}
+.tk-table tr.trow:hover td{background:var(--card-hover)}
+.tk-table tr.trow.sel td{background:var(--card)}
+.tk-table tr.done td{opacity:.62}
+.tk-table td.tt{color:var(--text);font-weight:500}
+.tk-table td.num{text-align:right;font-variant-numeric:tabular-nums;color:var(--text-3);white-space:nowrap}
+.tk-table td.tkey{font-size:11px;white-space:nowrap}
+.tk-table tr.grp td{
+  padding:16px 10px 4px;font-weight:600;color:var(--text);border-bottom:1px solid var(--line-2);
+}
+.tk-table select{font-size:11.5px;padding:2px 5px;color:var(--text-2)}
+
+.tk-empty{margin:auto;text-align:center;max-width:480px;padding:48px 20px;color:var(--text-2);font-size:13px}
+.tk-empty h3{font-size:15px;font-weight:600;margin:0 0 6px;color:var(--text);letter-spacing:-.015em}
+.tk-empty pre{
+  font-family:var(--mono);font-size:11.5px;line-height:1.6;background:var(--card);
+  border:1px solid var(--line);border-radius:6px;padding:9px 12px;margin:14px 0;text-align:left;
+  white-space:pre-wrap;color:var(--text-2);
+}
+.tk-empty .srow{justify-content:center;gap:8px}
+
+/* ticket panel: the same drawer as a session's, holding a form rather than a chat */
+.tpanel{width:min(560px,94vw)}
+.tp-key{font-family:var(--mono);font-size:11.5px;color:var(--text-3);flex:0 0 auto}
+.tp-title{
+  display:block;width:calc(100% + 12px);font-size:16px;font-weight:600;letter-spacing:-.015em;
+  line-height:1.3;border:1px solid transparent;background:transparent;padding:4px 6px;
+  margin:0 -6px 10px;border-radius:5px;color:var(--text);
+}
+.tp-title:hover{border-color:var(--line)}
+.tp-title:focus{border-color:var(--text-3);background:var(--card)}
+.tp-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 14px;margin:0 0 14px}
+.tp-grid label,.tp-grid .plabel{display:block;font-size:11px;color:var(--text-3);margin:0}
+.tp-grid select,.tp-grid input{display:block;width:100%;margin-top:3px;font-size:12.5px;padding:5px 8px;color:var(--text)}
+.tp-grid .span{grid-column:1/-1}
+.tp-acts{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 18px}
+.tp-sec{margin:0 0 16px}
+.tp-sec .plabel{display:flex;align-items:center;gap:8px}
+.tp-sec .plabel .btn{margin-left:auto}
+.tp-desc{cursor:text;min-height:40px}
+.tp-desc.empty{color:var(--text-3);font-style:italic}
+.tpanel .msg:hover .tp-desc{color:var(--text)}
+.tp-edit{
+  width:100%;min-height:150px;font-family:var(--mono);font-size:12px;line-height:1.6;
+  padding:8px 10px;resize:vertical;color:var(--text);
+}
+.tp-cmt{background:var(--card);border-radius:7px;padding:8px 12px;margin:0 0 8px;color:var(--text-2);overflow-wrap:anywhere}
+.tp-cmt .who{font-size:10.5px;color:var(--text-3);margin:0 0 3px}
+.tp-cmt .who b{color:var(--text-2);font-weight:600}
+.tp-cmt-in{width:100%;min-height:54px;font-size:12.5px;padding:7px 9px;resize:vertical;color:var(--text)}
+.tp-hist{font-size:11.5px;color:var(--text-3);line-height:1.75;font-variant-numeric:tabular-nums}
+.tp-hist b{color:var(--text-2);font-weight:550}
+.tp-labels{display:flex;flex-wrap:wrap;gap:4px;align-items:center}
+.tp-labels input{font-size:11.5px;padding:2px 7px;width:120px}
+.tp-foot{font-size:11px;color:var(--text-3);line-height:1.7;overflow-wrap:anywhere}
+details.tp-sec summary{list-style:none;cursor:pointer}
+details.tp-sec summary::-webkit-details-marker{display:none}
+details.tp-sec summary::before{content:"›";display:inline-block;width:10px;color:var(--text-3);transition:transform .15s var(--ease)}
+details.tp-sec[open] summary::before{transform:rotate(90deg)}
+.na-ticket{font-size:12px;color:var(--text-2);background:var(--card-hover);border-radius:6px;padding:7px 10px;margin:0 0 12px}
+.na-ticket b{color:var(--text)}
+
+
 /* Work areas sit one level above the status board. */
 .areas[hidden],.area-trail[hidden]{display:none!important}
 .areas{flex:1;min-height:0;overflow:auto;padding:48px max(24px,calc((100vw - 1280px)/2)) 64px}
@@ -751,6 +880,7 @@ body.area-overview #views,body.area-overview #projectSel,body.area-overview #tag
     <button data-view="board" aria-pressed="true">Board</button>
     <button data-view="split" aria-pressed="false">Split</button>
     <button data-view="notes" aria-pressed="false">Notes<span class="ncount" id="openCount"></span></button>
+    <button data-view="tickets" aria-pressed="false" title="The fleet's tickets  (t creates one)">Tickets<span class="ncount" id="reviewCount"></span></button>
   </div>
   <select class="ctl" id="projectSel" title="Project"></select>
   <select class="ctl" id="tagSel" title="Tag"></select>
@@ -810,6 +940,97 @@ body.area-overview #views,body.area-overview #projectSel,body.area-overview #tag
     <div class="rail-body" id="railBody"></div>
   </aside>
 </section>
+
+<section class="tickets" id="tickets" hidden>
+  <div class="tk-bar">
+    <select class="ctl" id="tkProject" title="Project"></select>
+    <select class="ctl" id="tkType" title="Type"></select>
+    <select class="ctl" id="tkAssignee" title="Assignee"></select>
+    <div class="toggles" id="tkToggles"></div>
+    <span class="spacer"></span>
+    <span class="lbl">Lanes</span>
+    <select class="ctl" id="tkGroup" title="Split the board into lanes">
+      <option value="">none</option>
+      <option value="project">by project</option>
+      <option value="assignee">by agent</option>
+      <option value="type">by type</option>
+      <option value="priority">by priority</option>
+    </select>
+    <div class="views" id="tkLayout">
+      <button data-layout="board" aria-pressed="true" title="Columns per status">Board</button>
+      <button data-layout="list" aria-pressed="false" title="One row per ticket">List</button>
+    </div>
+    <button class="btn" id="tkHelp" title="How agents file and pick up tickets from a shell">ag ticket</button>
+    <button class="btn key" id="tkNew" title="New ticket  (t)">New ticket</button>
+  </div>
+  <div class="tk-body" id="tkBody"></div>
+</section>
+
+<div class="scrim" id="tscrim"></div>
+<aside class="panel tpanel" id="tpanel" aria-label="Ticket">
+  <div class="phead">
+    <span class="tp-key" id="tpKey"></span>
+    <span class="ptitle" id="tpHeadTitle"></span>
+    <button class="btn sm danger" id="tpDelete" title="Delete this ticket for good">Delete</button>
+    <button class="x" id="tpClose" title="Close  (Esc)">&times;</button>
+  </div>
+  <div class="pbody" id="tpBody"></div>
+</aside>
+
+<div class="modal" id="ticketModal" hidden>
+  <div class="sheet">
+    <div class="stitle">New ticket</div>
+    <label>Title
+      <input id="ntTitle" maxlength="140" autocomplete="off" placeholder="What needs doing?"></label>
+    <div class="tp-grid">
+      <label>Type <select id="ntType"></select></label>
+      <label>Priority <select id="ntPriority"></select></label>
+      <label>Project <select id="ntProject"></select></label>
+      <label>Assignee <select id="ntAssignee"></select></label>
+      <label>Status <select id="ntStatus"></select></label>
+      <label>Due <input type="date" id="ntDue"></label>
+    </div>
+    <label>Description <span class="hint">optional — markdown; what an agent needs to pick this up cold</span>
+      <textarea id="ntDesc" rows="5"></textarea></label>
+    <div class="srow">
+      <span class="hint err" id="ntErr"></span>
+      <span class="spacer"></span>
+      <span class="hint">&#8984;&#9166; creates</span>
+      <button class="btn" id="ntCancel">Cancel</button>
+      <button class="btn key" id="ntCreate">Create</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal" id="tkHelpModal" hidden>
+  <div class="sheet wide">
+    <div class="stitle">Tickets from a shell</div>
+    <p class="hint" style="margin:0 0 10px">Agents drive this board with <code>ag ticket</code>. No server and no token: it writes
+      the same file the board reads, and signs with the session's name. Paste the snippet into a project's
+      <code>CLAUDE.md</code> (or an agent's system prompt) so every agent knows the routine.</p>
+<pre class="t-code" id="tkHelpText">ag ticket list [--project here|PATH] [--status S] [--type T] [--assignee A] [--mine] [--open] [--json]
+ag ticket show ID
+ag ticket new "Title" [--type bug|task|story|spike|chore] [--priority low|medium|high|urgent]
+                      [--body TEXT | --body -] [--project PATH] [--label L] [--due YYYY-MM-DD] [--take]
+ag ticket take ID                   claim it: assigned to you, In progress
+ag ticket move ID STATUS            backlog | todo | in_progress | review | done
+ag ticket done ID                   finished
+ag ticket assign ID NAME            hand it to someone ('none' unassigns)
+ag ticket comment ID "text"         leave a note
+ag ticket edit ID [--title ..] [--type ..] [--priority ..] [--body ..] [--label ..] [--due ..]
+ag ticket delete ID
+
+Every command takes --as NAME and --json. Without --as, the name is $AGENTGRID_AGENT
+(set for agents the board starts), else "claude"/"codex", else your login.
+--project defaults to the git checkout the command runs in.</pre>
+    <div class="srow">
+      <span class="hint" id="tkHelpNote"></span>
+      <span class="spacer"></span>
+      <button class="btn" id="tkHelpCopy" title="A paragraph for CLAUDE.md that teaches agents the routine">Copy CLAUDE.md snippet</button>
+      <button class="btn key" id="tkHelpClose">Close</button>
+    </div>
+  </div>
+</div>
 
 <div class="scrim" id="scrim"></div>
 <aside class="panel" id="panel">
@@ -890,9 +1111,11 @@ body.area-overview #views,body.area-overview #projectSel,body.area-overview #tag
   </div><!-- /chatCol -->
 </aside>
 
+
 <div class="modal" id="modal" hidden>
   <div class="sheet">
     <div class="stitle">New agent</div>
+    <div class="na-ticket" id="naTicket" hidden></div>
     <label>Work area<select id="naArea"></select></label>
     <label>Library <span class="hint">reusable agents — pick one to fill the sheet</span>
       <div class="librow">
@@ -3261,6 +3484,8 @@ async function openManage() {
   expandedRow = null;
   $("managePanel").classList.add("on"); $("scrim2").classList.add("on");
   await refreshManage();
+  // plain open: no ticket rides along (openNewAgentForTicket sets it after)
+  if (!tkPendingSpawnKey) { $("naTicket").hidden = true; $("naTask").placeholder = "What should it do?"; }
 }
 async function refreshManage() {
   let data;
@@ -3404,13 +3629,14 @@ function syncEngineModels() {
   // task -- available for both claude and codex.
   $("naSession").querySelector('option[value="interactive"]').disabled = false;
 }
-function closeNewAgent() { $("modal").hidden = true; }
+function closeNewAgent() { $("modal").hidden = true; tkPendingSpawnKey = ""; }
 async function startAgent() {
   if ($("naModel").value === CUSTOM_MODEL && !selectedModel("naModel")) {
     $("naErr").textContent = "Enter an exact model ID."; $("naModelCustom").focus(); return;
   }
   const prompt = $("naTask").value.trim();
-  if (!prompt) { $("naErr").textContent = "Give the agent something to do."; return; }
+  const ticketKey = tkPendingSpawnKey;   // the ticket is the brief; typed text is extra
+  if (!prompt && !ticketKey) { $("naErr").textContent = "Give the agent something to do."; return; }
   $("naStart").disabled = true;
   let r;
   try {
@@ -3422,12 +3648,14 @@ async function startAgent() {
       model: selectedModel("naModel"), name: $("naName").value.trim(),
       systemPrompt: $("naSys").value.trim(),
       interactive: $("naSession").value === "interactive",
+      ticketKey,
     });
   } finally { $("naStart").disabled = false; }
   if (r && r.error) { $("naErr").textContent = r.error; return; }
   closeNewAgent();
   toast((r && r.message) || "Started.");
   poll();
+  if (ticketKey) loadTickets(true);
 }
 
 /* --------------------------------------------------------------------- sync */
@@ -3797,19 +4025,22 @@ async function doSync() {
 
 function setView(v) {
   if (view === "notes" || view === "split") flushSave();
-  if (!["areas", "board", "split", "notes"].includes(v)) v = "areas";
+  if (!["areas", "board", "split", "notes", "tickets"].includes(v)) v = "areas";
   view = v;
-  if (v === "areas") closePanel();
+  if (v === "areas" || v === "tickets") closePanel();
   $("areas").hidden = v !== "areas";
   $("areaTrail").hidden = v === "areas";
   document.body.classList.toggle("area-overview", v === "areas");
+  document.body.classList.toggle("tickets-view", v === "tickets");
   localStorage.setItem("agentgrid.view", v);
   document.body.classList.toggle("split", v === "split");
-  $("board").hidden = v === "notes" || v === "areas";
-  $("notes").hidden = v === "board" || v === "areas";
+  $("board").hidden = v === "notes" || v === "areas" || v === "tickets";
+  $("notes").hidden = v === "board" || v === "areas" || v === "tickets";
+  $("tickets").hidden = v !== "tickets";
   $("views").querySelectorAll("button").forEach(b =>
     b.setAttribute("aria-pressed", String(b.dataset.view === v)));
-  if (v === "notes" || v === "split") loadNotes(true);
+  if (v === "tickets") loadTickets(true);
+  else if (v === "notes" || v === "split") loadNotes(true);
 }
 
 /* --------------------------------------------------------------------- poll */
@@ -4026,7 +4257,10 @@ function bindEvents() {
     if (e.key === "Enter") { e.preventDefault(); doSync(); }
     else if (e.key === "Escape") closeSync();
   }));
-  $("search").addEventListener("input", () => { query = $("search").value; render(); });
+  $("search").addEventListener("input", () => {
+    query = $("search").value; render();
+    if (view === "tickets") renderTickets();
+  });
   $("search").addEventListener("keydown", e => { if (e.key === "Escape") $("search").blur(); });
 
   // board: click selects/opens, drag re-files
@@ -4616,14 +4850,18 @@ function bindEvents() {
       if (!$("slashMenu").hidden) { hideSlash(); return; }
       if (!$("pmenu").hidden || !$("atMenu").hidden) { closeMenus(); return; }
       if (!$("gridModal").hidden) { $("gridModal").hidden = true; return; }
+      if (!$("ticketModal").hidden) { closeNewTicket(); return; }
+      if (!$("tkHelpModal").hidden) { $("tkHelpModal").hidden = true; return; }
       if (!$("promptModal").hidden) { closePrompts(); return; }
       if (!$("modal").hidden) { closeNewAgent(); return; }
       if ($("managePanel").classList.contains("on")) { closeManage(); return; }
+      if ($("tpanel").classList.contains("on")) { closeTicket(); return; }
       if ($("panel").classList.contains("on")) { closePanel(); return; }
       return;
     }
     if (isTyping()) return;
     if (e.key === "n") { e.preventDefault(); openNewAgent(); }
+    else if (e.key === "t") { e.preventDefault(); openNewTicket(); }
     else if (e.key === "/") { e.preventDefault(); $("search").focus(); $("search").select(); }
   });
 }
@@ -4636,10 +4874,660 @@ function saveTags(tags) {
   });
 }
 
+/* ----------------------------------------------------------------- tickets */
+// Tickets are the work the fleet is for. The files under ~/.agentgrid/tickets
+// are the truth and agents write them directly (`ag ticket`), so this view is
+// a reader that polls, plus the human's own edits posted back. Every reply
+// carries the whole board: a move re-ranks a column, and a client that patched
+// one card would drift from what the next agent's CLI write already did.
+
+const TK_STATUSES = [["backlog", "Backlog"], ["todo", "To do"], ["in_progress", "In progress"],
+                     ["review", "In review"], ["done", "Done"]];
+const TK_LABEL = Object.fromEntries(TK_STATUSES);
+const TK_TYPES = ["task", "bug", "story", "spike", "chore"];
+const TK_GLYPH = {bug: "●", task: "■", story: "◆", spike: "▲", chore: "○"};
+const TK_PRIOS = ["low", "medium", "high", "urgent"];
+const TK_PRIO_MARK = {urgent: "‼", high: "↑", medium: "", low: "↓"};
+// the one obvious next step from each state — the panel's big button
+const TK_NEXT = {backlog: ["todo", "Queue it"], todo: ["in_progress", "Start"],
+                 in_progress: ["review", "Send to review"], review: ["done", "Mark done"],
+                 done: ["todo", "Reopen"]};
+const TK_HINT = {backlog: "Ideas for later. Drag here to park one.", todo: "Nothing queued — press t.",
+                 in_progress: "Nothing being worked on.", review: "Nothing waiting on you.", done: ""};
+
+const tkPref = (k, d) => {
+  try { const v = localStorage.getItem("agentgrid.tk." + k); return v === null ? d : JSON.parse(v); }
+  catch (e) { return d; }
+};
+const tkSet = (k, v) => localStorage.setItem("agentgrid.tk." + k, JSON.stringify(v));
+
+let tkData = null, tkSig = "", tkOpen = null, tkPanelSig = "", tkDragging = false;
+let tkEditingBody = false, tkPendingSpawnKey = "", tkDeleteArmed = null;
+let tkLayout = tkPref("layout", "board"), tkGroup = tkPref("group", "");
+let tkProject = tkPref("project", ""), tkType = tkPref("type", ""), tkAssignee = tkPref("assignee", "");
+let tkHidden = tkPref("hidden", []);
+
+const tkAge = iso => {
+  const t = Date.parse(iso || "");
+  return isNaN(t) ? "" : ageStr(Math.max(0, (Date.now() - t) / 1000));
+};
+const tkStamp = iso => String(iso || "").replace("T", " ").slice(0, 16);
+const tkFind = id => (tkData ? tkData.tickets.find(t => t.id === id) : null);
+const tkLive = t => (t && t.sessionId ? sessions.find(s => s.sessionId === t.sessionId) : null) ||
+  (t && t.assignee ? sessions.find(s => s.title === t.assignee) : null);
+const tkComments = t => (t.activity || []).filter(a => a.kind === "comment");
+const tkHistory = t => (t.activity || []).filter(a => a.kind !== "comment");
+
+// A POST reply carries the whole board but not the live sessions or the
+// known projects; those ride on GET only, so keep the last ones we saw.
+function tkTake(board) {
+  if (!board) return;
+  const keep = tkData || {};
+  tkData = {...board, sessions: board.sessions || keep.sessions || [],
+            knownProjects: board.knownProjects || keep.knownProjects || []};
+  tkSig = ""; tkPanelSig = "";
+  const n = tkData.tickets.filter(t => t.status === "review").length;
+  $("reviewCount").textContent = n ? String(n) : "";
+  $("reviewCount").title = n ? `${n} in review — waiting on you` : "";
+}
+
+async function loadTickets(force) {
+  let data;
+  try { data = await api("/api/tickets"); } catch (e) { return; }
+  if (data.error) {
+    if (view === "tickets") {
+      $("tkBody").innerHTML = `<div class="tk-empty"><h3>Tickets unreadable</h3>${esc(data.error)}</div>`;
+    }
+    return;
+  }
+  tkTake(data);
+  if (view === "tickets" || force) renderTickets();
+  if (tkOpen) renderTicketPanel();
+}
+
+function tkFiltered() {
+  const q = query.trim().toLowerCase();
+  return (tkData ? tkData.tickets : []).filter(t => {
+    if (tkProject === "∅") { if (t.project) return false; }
+    else if (tkProject && t.project !== tkProject) return false;
+    if (tkType && t.type !== tkType) return false;
+    if (tkAssignee === "∅") { if (t.assignee) return false; }
+    else if (tkAssignee && t.assignee !== tkAssignee) return false;
+    if (q) {
+      const hay = [t.id, t.title, t.body, t.projectName, t.assignee, ...(t.labels || [])]
+        .map(x => String(x || "").toLowerCase()).join(" ");
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  });
+}
+
+function tkGroupOf(t) {
+  if (tkGroup === "project") return t.projectName || "No project";
+  if (tkGroup === "assignee") return t.assignee || "Unassigned";
+  if (tkGroup === "type") return t.type;
+  if (tkGroup === "priority") return t.priority;
+  return "";
+}
+function tkGroups(list) {
+  const map = new Map();
+  list.forEach(t => { const g = tkGroupOf(t); if (!map.has(g)) map.set(g, []); map.get(g).push(t); });
+  const order = tkGroup === "type" ? TK_TYPES : tkGroup === "priority" ? [...TK_PRIOS].reverse() : null;
+  const last = new Set(["No project", "Unassigned"]);
+  return [...map.entries()].sort(([a], [b]) => {
+    if (order) return order.indexOf(a) - order.indexOf(b);
+    if (last.has(a) !== last.has(b)) return last.has(a) ? 1 : -1;
+    return a.localeCompare(b, undefined, {sensitivity: "base"});
+  });
+}
+
+function tkDueHtml(t) {
+  if (!t.due || t.status === "done") return "";
+  return `<span class="chip ${dueClass(t.due)}" title="Due ${esc(t.due)}">${esc(dueLabel(t.due))}</span>`;
+}
+
+function tkCardHtml(t) {
+  const live = tkLive(t);
+  const who = t.assignee ? esc(t.assignee) : `<span class="none">unassigned</span>`;
+  const mark = TK_PRIO_MARK[t.priority];
+  return `<article class="tcard${t.id === tkOpen ? " sel" : ""}" draggable="true" data-id="${esc(t.id)}">` +
+    `<div class="trow"><span class="tglyph" title="${esc(t.type)}">${TK_GLYPH[t.type] || "■"}</span>` +
+    `<span class="tkey">${esc(t.id)}</span>` +
+    (mark ? `<span class="tprio ${esc(t.priority)}" title="${esc(t.priority)} priority">${mark}</span>` : "") +
+    tkDueHtml(t) +
+    `<span class="spacer"></span>` +
+    (live && live.status === "working" ? `<span class="tlive" title="${esc(t.assignee)} is working right now">●</span>` : "") +
+    `<span class="age" title="Last touched ${esc(tkStamp(t.updated))}">${tkAge(t.updated)}</span></div>` +
+    `<div class="ttitle">${esc(t.title)}</div>` +
+    `<div class="sub">${esc(t.projectName || "No project")} · ${who}</div></article>`;
+}
+
+function tkBoardHtml(list, shown) {
+  const cols = `repeat(${shown.length}, minmax(0,1fr))`;
+  const heads = shown.map(([k, name]) => {
+    const n = list.filter(t => t.status === k).length;
+    return `<div class="tcol-head${n ? " has" : ""}" data-status="${k}"><span class="dot"></span>` +
+      `<span class="col-name">${name}</span><span class="col-count">${n || ""}</span></div>`;
+  }).join("");
+  const cell = (k, items, grp) =>
+    `<div class="tcol-body" data-status="${k}"${grp === undefined ? "" : ` data-group="${esc(grp)}"`}>` +
+    (items.map(tkCardHtml).join("") ||
+      (grp === undefined && TK_HINT[k] ? `<div class="empty-col">${TK_HINT[k]}</div>` : "")) + `</div>`;
+  if (!tkGroup) {
+    return `<div class="tk-board fill" style="grid-template-columns:${cols}">${heads}` +
+      shown.map(([k]) => cell(k, list.filter(t => t.status === k))).join("") + `</div>`;
+  }
+  return `<div class="tk-board" style="grid-template-columns:${cols}">${heads}` +
+    tkGroups(list).map(([g, items]) =>
+      `<div class="tk-lane"><span>${esc(g)}</span><span class="col-count">${items.length}</span></div>` +
+      shown.map(([k]) => cell(k, items.filter(t => t.status === k), g)).join("")).join("") + `</div>`;
+}
+
+function tkListHtml(list) {
+  const rows = items => items.map(t =>
+    `<tr class="trow${t.status === "done" ? " done" : ""}${t.id === tkOpen ? " sel" : ""}" data-id="${esc(t.id)}">` +
+    `<td class="tkey">${esc(t.id)}</td>` +
+    `<td><span class="tglyph">${TK_GLYPH[t.type] || "■"}</span> ${esc(t.type)}</td>` +
+    `<td class="tt">${esc(t.title)} ${tkDueHtml(t)}</td><td>${esc(t.projectName || "—")}</td>` +
+    `<td>${esc(t.assignee || "—")}</td><td>${esc(t.priority)} ${TK_PRIO_MARK[t.priority] || ""}</td>` +
+    `<td><select class="tk-st" data-id="${esc(t.id)}" title="Move">` +
+    TK_STATUSES.map(([k, n]) => `<option value="${k}"${k === t.status ? " selected" : ""}>${n}</option>`).join("") +
+    `</select></td><td class="num" title="${esc(tkStamp(t.updated))}">${tkAge(t.updated)}</td></tr>`).join("");
+  const visible = list.filter(t => !tkHidden.includes(t.status));   // server order: column, then rank
+  const body = !tkGroup ? rows(visible) : tkGroups(visible).map(([g, items]) =>
+    `<tr class="grp"><td colspan="8">${esc(g)} <span class="col-count">${items.length}</span></td></tr>` +
+    rows(items)).join("");
+  return `<table class="tk-table"><thead><tr><th>Ticket</th><th>Type</th><th>Title</th><th>Project</th>` +
+    `<th>Assignee</th><th>Priority</th><th>Status</th><th class="num">Updated</th></tr></thead>` +
+    `<tbody>${body || `<tr><td colspan="8" class="empty-col">Every status is hidden — turn one back on above.</td></tr>`}</tbody></table>`;
+}
+
+function tkEmptyHtml(nothingMatches) {
+  if (nothingMatches) {
+    return `<div class="tk-empty"><h3>Nothing matches these filters.</h3>` +
+      `<div class="srow"><button class="btn" id="tkClear">Clear filters</button></div></div>`;
+  }
+  return `<div class="tk-empty"><h3>No tickets yet.</h3>` +
+    `Create one here, or have an agent file what it finds:` +
+    `<pre>ag ticket new "Login form drops the session on refresh" --type bug --priority high\n` +
+    `ag ticket take DC-1          # an agent claims it\nag ticket move DC-1 review   # and hands it back</pre>` +
+    `<div class="srow"><button class="btn key" id="tkEmptyNew">New ticket</button>` +
+    `<button class="btn" id="tkEmptyHelp">How agents use it</button></div></div>`;
+}
+
+function renderTicketSelects() {
+  const projects = tkData.projects || [];
+  const pSel = $("tkProject");
+  const pSig = JSON.stringify(projects.map(p => [p.path, p.name, p.open]));
+  if (pSel.dataset.sig !== pSig) {
+    pSel.dataset.sig = pSig;
+    if (tkProject && tkProject !== "∅" && !projects.some(p => p.path === tkProject)) tkProject = "";
+    pSel.innerHTML = `<option value="">All projects</option>` +
+      projects.filter(p => p.path).map(p =>
+        `<option value="${esc(p.path)}">${esc(p.name)}${p.open ? ` (${p.open})` : ""}</option>`).join("") +
+      (projects.some(p => !p.path) ? `<option value="∅">No project</option>` : "");
+    pSel.value = tkProject;
+  }
+  const open = tkData.tickets.filter(t => t.status !== "done");
+  const tSel = $("tkType");
+  const tSig = JSON.stringify(TK_TYPES.map(k => open.filter(t => t.type === k).length));
+  if (tSel.dataset.sig !== tSig) {
+    tSel.dataset.sig = tSig;
+    tSel.innerHTML = `<option value="">All types</option>` + TK_TYPES.map(k => {
+      const n = open.filter(t => t.type === k).length;
+      return `<option value="${k}">${TK_GLYPH[k]} ${k}${n ? ` (${n})` : ""}</option>`;
+    }).join("");
+    tSel.value = tkType;
+  }
+  const names = (tkData.assignees || []).map(a => a.name);
+  const aSel = $("tkAssignee");
+  const aSig = JSON.stringify([names, tkData.unassigned]);
+  if (aSel.dataset.sig !== aSig) {
+    aSel.dataset.sig = aSig;
+    if (tkAssignee && tkAssignee !== "∅" && !names.includes(tkAssignee)) tkAssignee = "";
+    aSel.innerHTML = `<option value="">Anyone</option>` +
+      names.map(n => `<option value="${esc(n)}">${esc(n)}</option>`).join("") +
+      `<option value="∅">Unassigned${tkData.unassigned ? ` (${tkData.unassigned})` : ""}</option>`;
+    aSel.value = tkAssignee;
+  }
+  $("tkGroup").value = tkGroup;
+  $("tkLayout").querySelectorAll("button").forEach(b =>
+    b.setAttribute("aria-pressed", String(b.dataset.layout === tkLayout)));
+}
+
+function renderTickets() {
+  if (!tkData || tkDragging) return;
+  renderTicketSelects();
+  const list = tkFiltered();
+  // nothing is hidden silently: a hidden status keeps its count on the toggle
+  const host = $("tkToggles");
+  const sigT = JSON.stringify(TK_STATUSES.map(([k]) => [k, list.filter(t => t.status === k).length, tkHidden.includes(k)]));
+  if (host.dataset.sig !== sigT) {
+    host.dataset.sig = sigT;
+    host.innerHTML = TK_STATUSES.map(([k, name]) => {
+      const n = list.filter(t => t.status === k).length;
+      return `<button data-st="${k}" aria-pressed="${!tkHidden.includes(k)}" title="Show or hide ${name}">${name} ${n || ""}</button>`;
+    }).join("");
+  }
+  const shown = TK_STATUSES.filter(([k]) => !tkHidden.includes(k));
+  const dataSig = tkData.tickets.map(t => t.id + t.updated + t.rank + t.status).join("|");
+  const liveSig = sessions.map(s => s.sessionId + s.status + s.title).join("|");
+  const sig = JSON.stringify([dataSig, tkLayout, tkGroup, tkProject, tkType, tkAssignee, tkHidden,
+                              query, tkOpen, liveSig, Math.floor(Date.now() / 60000)]);
+  if (sig === tkSig) return;
+  tkSig = sig;
+  const body = $("tkBody");
+  if (!tkData.tickets.length) body.innerHTML = tkEmptyHtml(false);
+  else if (!list.length) body.innerHTML = tkEmptyHtml(true);
+  else if (tkLayout === "list") body.innerHTML = tkListHtml(list);
+  else if (!shown.length) body.innerHTML = `<div class="tk-empty"><h3>Every status is hidden.</h3>Turn one back on above.</div>`;
+  else body.innerHTML = tkBoardHtml(list, shown);
+}
+
+/* ---- edits: apply locally first, then post; the server's board wins on reply */
+
+function tkLocal(id, fields) {
+  const t = tkFind(id);
+  if (t) { Object.assign(t, fields, {updated: new Date().toISOString().slice(0, 19)}); }
+  tkSig = ""; tkPanelSig = "";
+  if (view === "tickets") renderTickets();
+  if (tkOpen === id) renderTicketPanel();
+}
+function tkAfter(r, fallbackToast) {
+  if (!r || r.error) { toast((r && r.error) || "Could not reach the server."); loadTickets(true); return null; }
+  tkTake(r.board);
+  if (view === "tickets") renderTickets();
+  if (tkOpen) renderTicketPanel();
+  if (r.message) toast(r.message); else if (fallbackToast) toast(fallbackToast);
+  return r.ticket || null;
+}
+
+async function tkUpdate(id, fields) {
+  tkLocal(id, fields);
+  return tkAfter(await post("/api/tickets/update", {id, ...fields}));
+}
+async function tkMove(id, status, before) {
+  const t = tkFind(id);
+  const changed = t && t.status !== status;
+  tkLocal(id, {status});
+  return tkAfter(await post("/api/tickets/move", {id, status, before: before || ""}),
+                 changed ? `${id} → ${TK_LABEL[status]}` : "");
+}
+async function tkAssign(id, choice, opts = {}) {
+  // choice: "" | "s:<sessionId>" | "n:<name>"
+  const t = tkFind(id);
+  const body = {id, notify: true, start: !!(t && (t.status === "todo" || t.status === "backlog"))};
+  if (choice.startsWith("s:")) body.sessionId = choice.slice(2);
+  else if (choice.startsWith("n:")) body.assignee = choice.slice(2);
+  else body.assignee = "";
+  Object.assign(body, opts);
+  return tkAfter(await post("/api/tickets/assign", body));
+}
+
+/* ---- the panel */
+
+function openTicket(id) {
+  tkOpen = id; tkPanelSig = ""; tkEditingBody = false; tkDeleteArmed = null;
+  $("tpDelete").textContent = "Delete"; $("tpDelete").classList.remove("key");
+  $("tpanel").classList.add("on"); $("tscrim").classList.add("on");
+  tkSig = ""; if (view === "tickets") renderTickets();
+  renderTicketPanel();
+}
+function closeTicket() {
+  tkOpen = null; tkEditingBody = false; tkDeleteArmed = null;
+  $("tpanel").classList.remove("on"); $("tscrim").classList.remove("on");
+  tkSig = ""; if (view === "tickets") renderTickets();
+}
+
+function tkProjectOptions(selected) {
+  // every project the board knows plus every project a ticket already names
+  const seen = new Map();
+  ((tkData && tkData.knownProjects) || projectsCache || []).forEach(p => { if (!p.hidden || p.path === selected) seen.set(p.path, p.name); });
+  (tkData ? tkData.projects : []).forEach(p => { if (p.path && !seen.has(p.path)) seen.set(p.path, p.name); });
+  if (selected && !seen.has(selected)) seen.set(selected, selected.split("/").pop() || selected);
+  return [...seen.entries()].sort((a, b) => a[1].localeCompare(b[1], undefined, {sensitivity: "base"}))
+    .map(([path, name]) => `<option value="${esc(path)}"${path === selected ? " selected" : ""}>${esc(name)}</option>`).join("");
+}
+function tkAssigneeOptions(t) {
+  const liveId = t && t.sessionId && sessions.some(s => s.sessionId === t.sessionId) ? t.sessionId : "";
+  const byTitle = !liveId && t && t.assignee ? sessions.find(s => s.title === t.assignee) : null;
+  const cur = liveId ? "s:" + liveId : byTitle ? "s:" + byTitle.sessionId : t && t.assignee ? "n:" + t.assignee : "";
+  const order = {working: 0, blocked: 1, done: 2, stopped: 2, idle: 3};
+  const live = [...sessions].sort((a, b) => (order[a.status] ?? 4) - (order[b.status] ?? 4) || a.title.localeCompare(b.title));
+  const titles = new Set(live.map(s => s.title));
+  const names = (tkData ? tkData.assignees : []).map(a => a.name).filter(n => !titles.has(n));
+  if (t && t.assignee && !titles.has(t.assignee) && !names.includes(t.assignee)) names.push(t.assignee);
+  return `<option value="">Unassigned</option>` +
+    (live.length ? `<optgroup label="Sessions on the board">` + live.map(s =>
+      `<option value="s:${esc(s.sessionId)}"${"s:" + s.sessionId === cur ? " selected" : ""}>${esc(s.title)} · ${esc(s.project)}${s.status === "working" ? " · working" : ""}</option>`).join("") + `</optgroup>` : "") +
+    (names.length ? `<optgroup label="Named elsewhere">` + names.map(n =>
+      `<option value="n:${esc(n)}"${"n:" + n === cur ? " selected" : ""}>${esc(n)}</option>`).join("") + `</optgroup>` : "") +
+    `<option value="__other">Someone else…</option>`;
+}
+
+function tkActivityLine(h) {
+  const when = `<span title="${esc(h.at)}">${esc(tkStamp(h.at))}</span>`;
+  const who = `<b>${esc(h.who || "someone")}</b>`;
+  if (h.kind === "moved") return `${when} · ${who} moved it ${esc(TK_LABEL[h.from] || h.from || "")} → ${esc(TK_LABEL[h.to] || h.to || "")}`;
+  if (h.kind === "assigned") return `${when} · ${who} assigned it to ${esc(h.to || "nobody")}`;
+  if (h.kind === "edited") return `${when} · ${who} edited ${esc(h.text || "")}`;
+  return `${when} · ${who} ${esc(h.kind === "created" ? "created it" : h.text || h.kind || "")}`;
+}
+
+function tkPanelHtml(t) {
+  const opts = (arr, cur, label) => arr.map(v => {
+    const [k, n] = Array.isArray(v) ? v : [v, label ? label(v) : v];
+    return `<option value="${esc(k)}"${k === cur ? " selected" : ""}>${n}</option>`;
+  }).join("");
+  const live = tkLive(t);
+  const [nextStatus, nextLabel] = TK_NEXT[t.status] || ["todo", "Reopen"];
+  const comments = tkComments(t);
+  const commentsHtml = comments.map(c =>
+    `<div class="tp-cmt"><div class="who"><b>${esc(c.who)}</b> · <span title="${esc(c.at)}">${tkAge(c.at)}</span></div>` +
+    `<div class="msg"><div class="body">${md(c.text || "")}</div></div></div>`).join("");
+  const history = [...tkHistory(t)].reverse().map(h => `<div>${tkActivityLine(h)}</div>`).join("");
+  const labels = (t.labels || []).map(l =>
+    `<span class="tag">${esc(l)}<button class="tagx" data-label="${esc(l)}" title="Remove">×</button></span>`).join("");
+  return `<input class="tp-title" id="tpTitle" value="${esc(t.title)}" maxlength="160" title="Click to edit the title" spellcheck="false">` +
+    `<div class="tp-grid">` +
+    `<label>Status<select data-move-to>${opts(TK_STATUSES, t.status)}</select></label>` +
+    `<label>Type<select data-field="type">${opts(TK_TYPES, t.type, v => `${TK_GLYPH[v]} ${v}`)}</select></label>` +
+    `<label>Priority<select data-field="priority">${opts(TK_PRIOS, t.priority, v => `${v} ${TK_PRIO_MARK[v]}`.trim())}</select></label>` +
+    `<label>Due<input type="date" data-field="due" value="${esc(t.due || "")}"></label>` +
+    `<label class="span">Project<select data-field="project"><option value="">No project</option>${tkProjectOptions(t.project)}</select></label>` +
+    `<label class="span">Assignee <span class="hint">— a session on the board gets the ticket in its chat</span>` +
+    `<select id="tpAssign">${tkAssigneeOptions(t)}</select>` +
+    `<input id="tpAssignOther" placeholder="Name, then ⏎" autocomplete="off" hidden></label></div>` +
+    `<div class="tp-acts">` +
+    `<button class="btn key" data-move="${nextStatus}">${nextLabel}</button>` +
+    `<button class="btn" id="tpSpawn" title="Open the New agent sheet with this ticket as the brief">▷ Start an agent on it</button>` +
+    (live && live.openable ? `<button class="btn" data-open-session="${esc(live.sessionId)}" title="Open ${esc(live.title)}">Open ${esc(live.title)} ↗</button>` : "") +
+    `</div>` +
+    `<div class="tp-sec"><div class="plabel">Description` +
+    `<button class="btn sm" id="tpBodyEdit">${tkEditingBody ? "Cancel" : "Edit"}</button></div>` +
+    (tkEditingBody
+      ? `<textarea class="tp-edit" id="tpBodyIn" placeholder="Markdown. What would a cold-started agent need?">${esc(t.body)}</textarea>` +
+        `<div class="srow"><span class="spacer"></span><span class="hint">&#8984;&#9166; saves</span><button class="btn key sm" id="tpBodySave">Save</button></div>`
+      : `<div class="msg"><div class="body tp-desc${t.body ? "" : " empty"}" id="tpBodyView" title="Click to edit">` +
+        (t.body ? md(t.body) : "No description — click to say what an agent needs to pick this up cold.") + `</div></div>`) +
+    `</div>` +
+    `<div class="tp-sec"><div class="plabel">Labels</div><div class="tp-labels">${labels}` +
+    `<input id="tpLabelIn" placeholder="add label ⏎" autocomplete="off"></div></div>` +
+    `<div class="tp-sec"><div class="plabel">Comments${comments.length ? ` · ${comments.length}` : ""}</div>${commentsHtml}` +
+    `<textarea class="tp-cmt-in" id="tpCmt" placeholder="Leave a note — agents read these with ag ticket show"></textarea>` +
+    `<div class="srow"><span class="spacer"></span><span class="hint">&#8984;&#9166; posts</span><button class="btn sm" id="tpCmtGo">Comment</button></div></div>` +
+    `<details class="tp-sec"><summary class="plabel">History · ${tkHistory(t).length}</summary><div class="tp-hist">${history}</div></details>` +
+    `<div class="tp-foot">Reported by ${esc(t.reporter || "you")} · created ${esc(tkStamp(t.created))}` +
+    (t.closed ? ` · closed ${esc(tkStamp(t.closed))}` : "") +
+    (t.project ? `<br>${esc(t.project)}` : "") + `</div>`;
+}
+
+function renderTicketPanel() {
+  if (!tkOpen) return;
+  const t = tkFind(tkOpen);
+  if (!t) { if (tkData) { toast("That ticket is gone."); closeTicket(); } return; }
+  const sig = JSON.stringify([t, tkEditingBody, sessions.map(s => [s.sessionId, s.title, s.status, s.openable]),
+                              (tkData.knownProjects || []).length]);
+  if (sig === tkPanelSig) return;
+  // never clobber a field mid-edit: catch up when focus leaves the panel
+  if ($("tpBody").contains(document.activeElement) && isTyping()) return;
+  tkPanelSig = sig;
+  $("tpKey").textContent = t.id;
+  $("tpHeadTitle").textContent = t.title;
+  $("tpBody").innerHTML = tkPanelHtml(t);
+}
+
+/* ---- new ticket */
+
+function openNewTicket() {
+  $("ticketModal").hidden = false;
+  $("ntErr").textContent = "";
+  $("ntTitle").value = ""; $("ntDesc").value = ""; $("ntDue").value = "";
+  $("ntType").innerHTML = TK_TYPES.map(k => `<option value="${k}">${TK_GLYPH[k]} ${k}</option>`).join("");
+  $("ntPriority").innerHTML = TK_PRIOS.map(k => `<option value="${k}"${k === "medium" ? " selected" : ""}>${k}</option>`).join("");
+  $("ntStatus").innerHTML = TK_STATUSES.map(([k, n]) => `<option value="${k}"${k === "todo" ? " selected" : ""}>${n}</option>`).join("");
+  $("ntAssignee").innerHTML = tkAssigneeOptions(null);
+  // the filter you are looking through is almost certainly where this belongs
+  const want = (tkProject && tkProject !== "∅") ? tkProject : project || "";
+  $("ntProject").innerHTML = `<option value="">No project</option>` + tkProjectOptions(want);
+  $("ntProject").value = want && $("ntProject").querySelector(`option[value="${CSS.escape(want)}"]`) ? want : "";
+  $("ntTitle").focus();
+  if (!tkData) loadTickets(false);
+}
+function closeNewTicket() { $("ticketModal").hidden = true; }
+
+async function createTicket() {
+  const title = $("ntTitle").value.trim();
+  if (!title) { $("ntErr").textContent = "Give it a title."; $("ntTitle").focus(); return; }
+  const choice = $("ntAssignee").value;
+  $("ntCreate").disabled = true;
+  let r;
+  try {
+    r = await post("/api/tickets/create", {
+      title, type: $("ntType").value, priority: $("ntPriority").value, status: $("ntStatus").value,
+      project: $("ntProject").value, body: $("ntDesc").value.trim(), due: $("ntDue").value,
+      assignee: choice.startsWith("n:") ? choice.slice(2) : "",
+    });
+  } finally { $("ntCreate").disabled = false; }
+  if (!r || r.error) { $("ntErr").textContent = (r && r.error) || "Could not reach the server."; return; }
+  closeNewTicket();
+  const made = tkAfter(r);
+  if (!made) return;
+  if (choice.startsWith("s:")) await tkAssign(made.id, choice);
+  if (view !== "tickets") setView("tickets");
+  openTicket(made.id);
+}
+
+/* ---- start an agent for a ticket: the New agent sheet, with the ticket as the brief */
+
+async function openNewAgentForTicket(t) {
+  tkPendingSpawnKey = t.id;
+  await openNewAgent();
+  if (tkPendingSpawnKey !== t.id) return;   // closed meanwhile
+  if (t.project && $("naProject").querySelector(`option[value="${CSS.escape(t.project)}"]`)) $("naProject").value = t.project;
+  $("naName").value = `${t.id} ${t.title}`.slice(0, 60);
+  $("naTicket").hidden = false;
+  $("naTicket").innerHTML = `Brief: <b>${esc(t.id)}</b> ${esc(t.title)} — the ticket, its description and the ` +
+    `<code>ag ticket</code> commands to report back go in ahead of anything typed below.`;
+  $("naTask").placeholder = "Anything to add to the ticket's brief? Optional.";
+  $("naTask").focus();
+}
+
+/* ---- wiring */
+
+function bindTickets() {
+  $("tkNew").addEventListener("click", openNewTicket);
+  $("ntCancel").addEventListener("click", closeNewTicket);
+  $("ntCreate").addEventListener("click", createTicket);
+  $("ticketModal").addEventListener("keydown", e => {
+    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); createTicket(); }
+    else if (e.key === "Enter" && e.target === $("ntTitle")) { e.preventDefault(); createTicket(); }
+  });
+  $("tkHelp").addEventListener("click", () => { $("tkHelpModal").hidden = false; $("tkHelpNote").textContent = ""; });
+  $("tkHelpClose").addEventListener("click", () => { $("tkHelpModal").hidden = true; });
+  $("tkHelpCopy").addEventListener("click", async () => {
+    const snippet = [
+      "## Tickets",
+      "This machine runs AgentGrid; track your work with `ag ticket` (`ag ticket --help` lists everything).",
+      "- `ag ticket list --project here --open` shows this project's open tickets; `ag ticket show ID` shows one in full.",
+      "- Starting on a ticket: `ag ticket take ID`. Ready for a look: `ag ticket move ID review`. Verified: `ag ticket done ID`.",
+      "- File what you find: `ag ticket new \"title\" --type bug|task|story|spike|chore --priority low|medium|high|urgent --body \"...\"`.",
+      "- Leave progress notes with `ag ticket comment ID \"...\"`. Sign every command with `--as \"<your name>\"` unless AGENTGRID_AGENT is set.",
+      "",
+    ].join("\n");
+    try { await navigator.clipboard.writeText(snippet); $("tkHelpNote").textContent = "Copied — paste it into CLAUDE.md."; }
+    catch (e) { $("tkHelpNote").textContent = "Clipboard blocked — select the text above instead."; }
+  });
+
+  $("tkProject").addEventListener("change", () => { tkProject = $("tkProject").value; tkSet("project", tkProject); renderTickets(); });
+  $("tkType").addEventListener("change", () => { tkType = $("tkType").value; tkSet("type", tkType); renderTickets(); });
+  $("tkAssignee").addEventListener("change", () => { tkAssignee = $("tkAssignee").value; tkSet("assignee", tkAssignee); renderTickets(); });
+  $("tkGroup").addEventListener("change", () => { tkGroup = $("tkGroup").value; tkSet("group", tkGroup); renderTickets(); });
+  $("tkLayout").addEventListener("click", e => {
+    const b = e.target.closest("button[data-layout]"); if (!b) return;
+    tkLayout = b.dataset.layout; tkSet("layout", tkLayout); renderTickets();
+  });
+  $("tkToggles").addEventListener("click", e => {
+    const b = e.target.closest("button[data-st]"); if (!b) return;
+    const k = b.dataset.st;
+    tkHidden = tkHidden.includes(k) ? tkHidden.filter(x => x !== k) : [...tkHidden, k];
+    tkSet("hidden", tkHidden); $("tkToggles").dataset.sig = ""; renderTickets();
+  });
+
+  const body = $("tkBody");
+  body.addEventListener("click", e => {
+    if (e.target.closest("select")) return;
+    if (e.target.closest("#tkClear")) {
+      tkProject = tkType = tkAssignee = ""; tkHidden = []; $("search").value = ""; query = "";
+      ["project", "type", "assignee"].forEach(k => tkSet(k, "")); tkSet("hidden", []);
+      renderTickets(); return;
+    }
+    if (e.target.closest("#tkEmptyNew")) { openNewTicket(); return; }
+    if (e.target.closest("#tkEmptyHelp")) { $("tkHelp").click(); return; }
+    const card = e.target.closest("[data-id]");
+    if (card) openTicket(card.dataset.id);
+  });
+  body.addEventListener("change", e => {
+    const sel = e.target.closest("select.tk-st"); if (!sel) return;
+    tkMove(sel.dataset.id, sel.value);
+  });
+  // drag re-files, exactly like the session board: the column is the new
+  // status and the card it lands on is the position. In lanes a drop can also
+  // re-home the ticket to the lane it landed in.
+  body.addEventListener("dragstart", e => {
+    const card = e.target.closest(".tcard"); if (!card) return;
+    e.dataTransfer.setData("text/plain", card.dataset.id);
+    e.dataTransfer.effectAllowed = "move";
+    card.classList.add("dragging"); tkDragging = true;
+  });
+  body.addEventListener("dragend", e => {
+    const card = e.target.closest(".tcard");
+    if (card) card.classList.remove("dragging");
+    tkDragging = false;
+    body.querySelectorAll(".tcol-body.over").forEach(el => el.classList.remove("over"));
+    tkSig = ""; renderTickets();
+  });
+  body.addEventListener("dragover", e => {
+    const col = e.target.closest(".tcol-body"); if (!col) return;
+    e.preventDefault(); col.classList.add("over");
+  });
+  body.addEventListener("dragleave", e => {
+    const col = e.target.closest(".tcol-body"); if (col && !col.contains(e.relatedTarget)) col.classList.remove("over");
+  });
+  body.addEventListener("drop", e => {
+    const col = e.target.closest(".tcol-body"); if (!col) return;
+    e.preventDefault(); col.classList.remove("over"); tkDragging = false;
+    const id = e.dataTransfer.getData("text/plain"); const t = tkFind(id); if (!t) return;
+    const over = e.target.closest(".tcard");
+    const before = over && over.dataset.id !== id ? over.dataset.id : "";
+    const lane = col.dataset.group;
+    if (lane !== undefined && lane !== tkGroupOf(t)) {
+      if (tkGroup === "type") tkUpdate(id, {type: lane});
+      else if (tkGroup === "priority") tkUpdate(id, {priority: lane});
+      else if (tkGroup === "assignee") {
+        const name = lane === "Unassigned" ? "" : lane;
+        const live = name ? sessions.find(s => s.title === name) : null;
+        // a live session is told; a bare name is a label
+        tkAssign(id, live ? "s:" + live.sessionId : name ? "n:" + name : "", {start: false});
+      }
+    }
+    tkMove(id, col.dataset.status, before);
+  });
+
+  // panel
+  $("tpClose").addEventListener("click", closeTicket);
+  $("tscrim").addEventListener("click", closeTicket);
+  $("tpDelete").addEventListener("click", () => {
+    // two clicks, no dialog: the first arms, the second deletes; it disarms itself
+    if (tkDeleteArmed !== tkOpen) {
+      tkDeleteArmed = tkOpen;
+      $("tpDelete").textContent = "Delete for good?"; $("tpDelete").classList.add("key");
+      clearTimeout($("tpDelete")._t);
+      $("tpDelete")._t = setTimeout(() => { tkDeleteArmed = null; $("tpDelete").textContent = "Delete"; $("tpDelete").classList.remove("key"); }, 4000);
+      return;
+    }
+    const id = tkOpen;
+    post("/api/tickets/delete", {id}).then(r => {
+      if (r && r.error) { toast(r.error); return; }
+      closeTicket(); tkTake(r && r.board); toast(`Deleted ${id}.`); renderTickets();
+    });
+  });
+  const tp = $("tpBody");
+  tp.addEventListener("change", e => {
+    const t = tkFind(tkOpen); if (!t) return;
+    const move = e.target.closest("select[data-move-to]");
+    if (move) { tkMove(t.id, move.value); return; }
+    const field = e.target.closest("[data-field]");
+    if (field) { tkUpdate(t.id, {[field.dataset.field]: field.value}); return; }
+    if (e.target.id === "tpTitle") {
+      const v = e.target.value.trim();
+      if (v && v !== t.title) tkUpdate(t.id, {title: v}); else e.target.value = t.title;
+      return;
+    }
+    if (e.target.id === "tpAssign") {
+      if (e.target.value === "__other") { $("tpAssignOther").hidden = false; $("tpAssignOther").focus(); return; }
+      tkAssign(t.id, e.target.value);
+    }
+  });
+  tp.addEventListener("click", e => {
+    const t = tkFind(tkOpen); if (!t) return;
+    const move = e.target.closest("[data-move]");
+    if (move) { tkMove(t.id, move.dataset.move); return; }
+    if (e.target.closest("#tpSpawn")) { openNewAgentForTicket(t); return; }
+    const open = e.target.closest("[data-open-session]");
+    if (open) { closeTicket(); openSession(open.dataset.openSession); return; }
+    if (e.target.closest("#tpBodyEdit") || e.target.closest("#tpBodyView")) {
+      if (e.target.closest("a")) return;
+      tkEditingBody = !tkEditingBody; tkPanelSig = ""; renderTicketPanel();
+      if (tkEditingBody) { const ta = $("tpBodyIn"); if (ta) { ta.focus(); ta.selectionStart = ta.selectionEnd = ta.value.length; } }
+      return;
+    }
+    if (e.target.closest("#tpBodySave")) { tkSaveBody(); return; }
+    if (e.target.closest("#tpCmtGo")) { tkPostComment(); return; }
+    const x = e.target.closest(".tagx[data-label]");
+    if (x) tkUpdate(t.id, {labels: (t.labels || []).filter(l => l !== x.dataset.label)});
+  });
+  tp.addEventListener("keydown", e => {
+    const t = tkFind(tkOpen); if (!t) return;
+    const cmd = e.metaKey || e.ctrlKey;
+    if (e.target.id === "tpTitle" && e.key === "Enter") { e.preventDefault(); e.target.blur(); }
+    else if (e.target.id === "tpTitle" && e.key === "Escape") { e.target.value = t.title; e.target.blur(); e.stopPropagation(); }
+    else if (e.target.classList.contains("tp-edit") && e.key === "Enter" && cmd) { e.preventDefault(); tkSaveBody(); }
+    else if (e.target.id === "tpCmt" && e.key === "Enter" && cmd) { e.preventDefault(); tkPostComment(); }
+    else if (e.target.id === "tpLabelIn" && e.key === "Enter") {
+      e.preventDefault();
+      const v = e.target.value.trim(); if (!v) return;
+      e.target.value = "";
+      tkUpdate(t.id, {labels: [...(t.labels || []), v]});
+    } else if (e.target.id === "tpAssignOther" && e.key === "Enter") {
+      e.preventDefault();
+      const v = e.target.value.trim();
+      if (v) tkAssign(t.id, "n:" + v); else { tkPanelSig = ""; renderTicketPanel(); }
+    }
+  });
+  // a field lost focus: now the poll's newer copy may land
+  tp.addEventListener("focusout", () => setTimeout(renderTicketPanel, 60));
+}
+
+async function tkSaveBody() {
+  const t = tkFind(tkOpen); const ta = $("tpBody").querySelector(".tp-edit"); if (!t || !ta) return;
+  tkEditingBody = false;
+  await tkUpdate(t.id, {body: ta.value.trim()});
+}
+async function tkPostComment() {
+  const t = tkFind(tkOpen); const ta = $("tpCmt"); if (!t || !ta) return;
+  const text = ta.value.trim(); if (!text) return;
+  ta.value = "";
+  const r = await post("/api/tickets/comment", {id: t.id, text});
+  if (r && r.error) { toast(r.error); ta.value = text; return; }
+  tkAfter(r);
+}
+
 /* --------------------------------------------------------------------- init */
 
 buildColumns();
 bindEvents();
+bindTickets();
 wireCodeViewer();
 applyVisibility();
 applyRail();
@@ -4653,6 +5541,9 @@ setInterval(() => { if (!document.hidden) render(); }, 1000);          // ages t
 setInterval(() => { if (view !== "notes" && !document.hidden) loadNotes(true); },
             30000);                                                    // open count
 loadNotes(false);   // first fill: padDirty is false, so this cannot clobber anything
+loadTickets(false); // the review count on the tab, and the board if that view was left open
+setInterval(() => { if (!document.hidden && (view === "tickets" || tkOpen)) loadTickets(false); }, 3000);
+setInterval(() => { if (!document.hidden && view !== "tickets") loadTickets(false); }, 30000);
 </script>
 
 </body>

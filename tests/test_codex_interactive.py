@@ -16,7 +16,7 @@ class InteractiveRoutingTests(unittest.TestCase):
     def test_interactive_codex_no_longer_refused(self):
         captured = {}
 
-        def fake_interactive(cwd, prompt, model, engine="claude"):
+        def fake_interactive(cwd, prompt, model, engine="claude", agent_name=""):
             captured.update(cwd=cwd, prompt=prompt, model=model, engine=engine)
             return True, "Opened an interactive codex in proj.", None
 
@@ -32,7 +32,7 @@ class InteractiveRoutingTests(unittest.TestCase):
     def test_interactive_claude_still_routes_as_claude(self):
         captured = {}
 
-        def fake_interactive(cwd, prompt, model, engine="claude"):
+        def fake_interactive(cwd, prompt, model, engine="claude", agent_name=""):
             captured["engine"] = engine
             return True, "Opened an interactive claude in proj.", None
 

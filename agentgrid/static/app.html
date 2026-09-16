@@ -69,11 +69,29 @@ summary{cursor:pointer}
 .tickets[hidden],.tcol[hidden],.tboard[hidden]{display:none!important}
 
 /* ---------- top bar ---------- */
+/* Nothing in the bar shrinks or wraps its label except the search box, which
+   gives way first; past that, groups fold into menus (see the width rules at
+   the end of this sheet). A button that breaks onto two lines reads as broken. */
 .bar{
-  flex:0 0 52px;display:flex;align-items:center;gap:10px;padding:0 14px;
+  position:relative;flex:0 0 52px;display:flex;align-items:center;gap:8px;padding:0 14px;
   border-bottom:1px solid var(--line);
 }
-.brand{font-size:13.5px;font-weight:600;letter-spacing:-.015em;margin-right:2px}
+.bar>*{flex-shrink:0}
+.bar .btn,.views button{white-space:nowrap}
+/* the wordmark is also the way home, like every site's logo */
+.brand{font-size:13.5px;font-weight:600;letter-spacing:-.015em;padding:3px 6px;margin:0 4px 0 -6px;border-radius:5px}
+.brand:hover{background:var(--card-hover)}
+.tools{display:flex;gap:6px}
+/* menu triggers: an open menu keeps its button pressed */
+.btn.more{display:none;align-items:center;justify-content:center;height:29px;padding:0 8px}
+.btn.vbtn{display:none;align-items:center;gap:5px;color:var(--text);font-weight:550}
+.more[aria-expanded=true],.vbtn[aria-expanded=true],.fbtn[aria-expanded=true]{background:var(--card-hover);color:var(--text)}
+.chev{flex:0 0 auto;color:var(--text-3)}
+.viewnav{display:flex}
+/* a view the dropdown hides can still be waiting on you: its count becomes a dot */
+.viewnav:has(.views button[aria-pressed=false] .ncount:not(:empty)) .vbtn::after{
+  content:"";order:1;width:5px;height:5px;border-radius:50%;background:var(--accent)}
+.vbtn .chev{order:2}
 .views{display:flex;border:1px solid var(--line-2);border-radius:6px;overflow:hidden}
 .views button{padding:4px 11px;font-size:12.5px;color:var(--text-2)}
 .views button+button{border-left:1px solid var(--line)}
@@ -95,17 +113,42 @@ select.ctl{font-size:12.5px;padding:3px 6px;max-width:170px;color:var(--text-2)}
 .btn.key{border-color:var(--accent);color:var(--accent)}
 .btn.sm{padding:2px 8px;font-size:11.5px}
 .btn.danger:hover{color:var(--failed);border-color:var(--failed)}
-#search{width:170px;font-size:12.5px;padding:4px 9px}
+.search{position:relative;display:flex;align-items:center;flex:0 1 190px;min-width:96px;cursor:text}
+.sicon{position:absolute;left:9px;color:var(--text-3);pointer-events:none}
+#search{width:100%;font-size:12.5px;padding:4px 9px 4px 27px}
+/* Filters: one button that opens the view's options as a panel. Inline (and
+   so hidden) on a wide window; the count is how many narrow what you see. */
+.fbtn{display:none;align-items:center;gap:5px;white-space:nowrap}
+.fcount{font-size:10.5px;font-weight:600;color:var(--text);background:var(--card-hover);
+  border-radius:8px;padding:0 5px;font-variant-numeric:tabular-nums}
+.fcount:empty{display:none}
+.fbtn:has(.fcount:not(:empty)){color:var(--text);border-color:var(--text-3)}
+.flabel{display:none}
+/* .open is only ever set while the Filters button is showing, and any resize
+   closes it, so these rules never reach the inline layout */
+.fpanel.open{
+  position:absolute;top:calc(100% + 4px);z-index:25;width:min(280px,calc(100vw - 24px));
+  display:flex;flex-direction:column;align-items:stretch;gap:8px;padding:12px;
+  background:var(--card);border:1px solid var(--line-2);border-radius:8px;
+  box-shadow:0 6px 24px rgba(0,0,0,.14);
+}
+.fpanel.open select.ctl{width:100%;max-width:none;padding:5px 8px}
+.fpanel.open .toggles{flex-wrap:wrap}
+.fpanel.open .flabel,.fpanel.open .lbl{display:block;font-size:11px;color:var(--text-3);margin:4px 0 -3px}
 .stamp{font-size:11px;color:var(--text-3);font-variant-numeric:tabular-nums;min-width:56px;text-align:right}
 .stamp.err{color:var(--failed)}
 
 /* ---------- board ---------- */
 /* the 1px gap over --line draws every hairline; the columns carry no borders */
+/* a column never gets narrower than a readable card: past that the board
+   scrolls sideways (and snaps to a column) instead of crushing every name */
 .board{
   flex:1 1 auto;min-height:0;display:grid;gap:1px;background:var(--line);
-  grid-template-columns:repeat(5,minmax(0,1fr));
+  grid-template-columns:repeat(var(--cols,5),minmax(var(--colmin),1fr));
+  overflow-x:auto;overscroll-behavior-x:contain;scroll-snap-type:x proximity;
+  --colmin:200px;
 }
-.col{display:flex;flex-direction:column;min-height:0;background:var(--bg)}
+.col{display:flex;flex-direction:column;min-height:0;background:var(--bg);scroll-snap-align:start}
 .col-head{display:flex;align-items:center;gap:7px;padding:10px 14px 6px;flex:0 0 auto}
 .dot{width:6px;height:6px;border-radius:50%;background:var(--line-2);flex:0 0 auto}
 /* the working dot breathes, and nothing else animates */
@@ -184,7 +227,7 @@ select.ctl{font-size:12.5px;padding:3px 6px;max-width:170px;color:var(--text-2)}
 .empty-col{font-size:11.5px;color:var(--text-3);padding:6px 4px}
 
 /* ---------- notes ---------- */
-.notes{flex:1 1 auto;min-height:0;display:grid;grid-template-columns:minmax(0,1fr) 330px}
+.notes{flex:1 1 auto;min-height:0;display:grid;grid-template-columns:minmax(0,1fr) clamp(250px,36%,330px)}
 .notes.norail{grid-template-columns:minmax(0,1fr) 30px}
 body.split .board{flex:1 1 auto;min-height:0}
 body.split .notes{
@@ -506,7 +549,7 @@ details.cthink[open]>summary::before{transform:rotate(90deg)}
   display:block;width:100%;margin-top:3px;font-size:12.5px;padding:6px 9px;color:var(--text);
 }
 .sheet textarea{resize:vertical;font-family:var(--mono);font-size:12px;line-height:1.6}
-.srow{display:flex;align-items:center;gap:7px;margin-top:4px}
+.srow{display:flex;align-items:center;flex-wrap:wrap;gap:7px;margin-top:4px}
 .hint{font-size:11px;color:var(--text-3)}
 .hint.err{color:var(--failed)}
 
@@ -721,13 +764,22 @@ details.cthink[open]>summary::before{transform:rotate(90deg)}
    and the working tint marks an assignee that is running right now. */
 .tickets{flex:1 1 auto;min-height:0;display:flex;flex-direction:column}
 .tickets[hidden],.tpanel[hidden]{display:none!important}
-body.tickets-view #projectSel,body.tickets-view #tagSel,body.tickets-view #toggles,
-body.tickets-view #alertsBtn{display:none}
+/* the session filters mean nothing to tickets or the notes pad */
+body.tickets-view #filters,body.notes-view #filters,
+body.tickets-view #filtersBtn,body.notes-view #filtersBtn{display:none}
 .tk-bar{
-  display:flex;align-items:center;gap:8px;padding:8px 14px;flex:0 0 auto;flex-wrap:wrap;
-  border-bottom:1px solid var(--line);
+  position:relative;z-index:5;display:flex;align-items:center;gap:8px;padding:8px 14px;
+  flex:0 0 auto;border-bottom:1px solid var(--line);
 }
-.tk-bar .lbl{font-size:11.5px;color:var(--text-3);margin-left:4px}
+/* wide: the options sit inline, so the bar reads filters … lanes, layout, help, new */
+.tk-opts{display:contents}
+.tk-filters{display:flex;align-items:center;gap:8px;min-width:0;order:1}
+#tkToggles,.tk-opts .flabel{order:2}
+.tk-bar .lbl{font-size:11.5px;color:var(--text-3);order:3;margin-left:auto}
+#tkGroup{order:4}
+#tkLayout{order:5}
+#tkHelp{order:6;white-space:nowrap}
+#tkNew{order:7;white-space:nowrap}
 .tk-body{flex:1 1 auto;min-height:0;overflow:auto;display:flex;flex-direction:column}
 
 /* the grid draws every hairline with its 1px gap, like the session board */
@@ -858,44 +910,162 @@ details.tp-sec[open] summary::before{transform:rotate(90deg)}
 .area-add{background:transparent;color:var(--text-2);border:1px dashed var(--line-2);align-items:center;justify-content:center;gap:10px}
 .area-add:hover{background:var(--card-hover)}
 .area-add span:first-child{font-size:28px;font-weight:300}
-.area-trail{display:flex;align-items:center;gap:12px;padding:12px 16px;border-bottom:1px solid var(--line)}
-.area-trail strong{font-weight:550}.area-trail .hint{color:var(--text-2)}
+.area-trail{position:relative;z-index:5;display:flex;align-items:center;gap:8px 16px;padding:8px 14px;
+  min-height:43px;border-bottom:1px solid var(--line);flex:0 0 auto}
+.crumb{display:flex;align-items:center;gap:10px;min-width:0}
+.crumb .csep{color:var(--text-3)}
+.area-trail strong{font-weight:550;white-space:nowrap}.area-trail .hint{color:var(--text-2);white-space:nowrap}
+.crumb #editAreaBtn{margin-left:4px}
+.filters{display:flex;align-items:center;flex-wrap:wrap;gap:6px 8px;margin-left:auto;min-width:0}
 #areaDialog{width:min(500px,calc(100vw - 32px));padding:26px;background:var(--card);color:var(--text);border:1px solid var(--line-2);border-radius:12px}
 #areaDialog::backdrop{background:#0005}#areaDialog h2{margin:0 0 20px;font-size:20px;font-weight:550}
 #areaDialog label{display:block;margin:16px 0}#areaDialog input,#areaDialog textarea{display:block;width:100%;padding:10px;margin-top:6px}
 #areaDialog textarea{resize:vertical;min-height:150px}#areaDialog p{color:var(--text-2)}
-body.area-overview #views,body.area-overview #projectSel,body.area-overview #tagSel,body.area-overview #toggles,body.area-overview #search,body.area-overview #newBtn{display:none}
-@media(max-width:900px){.area-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.areas{padding:28px 20px}.area-card{min-height:190px}.bar{overflow-x:auto;flex-shrink:0}.bar>*{flex-shrink:0}}
-@media(max-width:540px){.area-grid{grid-template-columns:1fr;gap:16px}.areas-heading{align-items:flex-start;flex-wrap:wrap}.area-trail .hint{display:none}}
+body.area-overview .viewnav,body.area-overview #searchBox,body.area-overview #newBtn{display:none}
+@media(max-width:900px){.area-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.areas{padding:28px 20px}.area-card{min-height:190px}}
+@media(max-width:540px){.area-grid{grid-template-columns:1fr;gap:16px}.areas-heading{align-items:flex-start;flex-wrap:wrap}.area-card{min-height:150px;padding:20px}.area-card strong{padding:16px 0}}
 @media(prefers-reduced-motion:reduce){.area-card{transition:none}.area-card:hover{transform:none}}
+
+/* ---------- narrow windows ---------- */
+/* The common case is agentgrid docked beside an editor: 700–960px wide. Bars
+   never wrap: each step folds the least-used group into a menu, and nothing
+   that carries state disappears (a folded count becomes a badge or a dot).
+   1180  tickets: filters, status, lanes and help fold into Filters
+   1080  top bar: the tools fold into the ☰ menu; the refresh time hides
+    900  the view bar trims its labels; the code workspace stacks
+    800  board: project, tag, columns and alerts fold into Filters
+    760  drawers take the full width; the notes rail moves under the pad
+    640  search becomes an icon that opens across the bar
+    560  the four views become one dropdown; the board stacks into a list
+    380  New agent says New
+    330  the wordmark goes (☰ still leads to work areas) */
+@media(max-width:1180px){
+  .tk-bar .fbtn{display:inline-flex}
+  .tk-opts{display:none}
+  .tk-opts.open{left:14px}
+  .tk-opts.open .tk-filters{flex-direction:column;align-items:stretch}
+  .tk-opts.open .lbl{margin-left:0}
+  .tk-opts.open #tkHelp{align-self:flex-start;margin-top:6px}
+  #tkLayout{margin-left:auto}
+}
+@media(max-width:1080px){
+  .tools{display:none}
+  .btn.more{display:inline-flex}
+  .stamp:not(.err){display:none}
+}
+@media(max-width:900px){
+  #areaBack .lbl,#areaCount{display:none}
+  .filters select.ctl{max-width:150px}
+  /* the code + chat workspace stacks: code above, the chat below it */
+  .panel.wide{flex-direction:column}
+  .panel.wide .chatcol{flex:1 1 0;border-left:0;border-top:1px solid var(--line-2)}
+  .cvtree{flex-basis:190px}
+  /* ticket list: keep key, title, who, status */
+  .tk-table th:nth-child(2),.tk-table td:nth-child(2),
+  .tk-table th:nth-child(4),.tk-table td:nth-child(4),
+  .tk-table th:nth-child(8),.tk-table td:nth-child(8){display:none}
+}
+@media(max-width:800px){
+  #filtersBtn{display:inline-flex;margin-left:auto}
+  .filters{display:none}
+  .filters.open{right:14px}
+}
+@media(max-width:760px){
+  .panel,.tpanel{width:100%;border-left:0}
+  .notes,.notes.norail{grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(0,1fr) auto}
+  .rail{border-left:0;border-top:1px solid var(--line);max-height:40vh}
+  #railCollapse{transform:rotate(90deg)}
+  .rail.shut .rail-bar{justify-content:flex-end}
+  /* in Split the board and the pad already share the height; the rail's
+     todos are one click away in Notes */
+  body.split .rail{display:none}
+  /* tickets are fleet-wide, so the area breadcrumb says nothing about them;
+     the wordmark still leads home */
+  body.tickets-view #areaTrail{display:none}
+}
+@media(max-width:640px){
+  /* collapsed, the box is its icon; focused, it covers the bar until Escape
+     or a click elsewhere. A search still in force keeps the icon pressed. */
+  .search{flex:0 0 32px;min-width:0;cursor:pointer}
+  .search .sicon{left:9px;color:var(--text-2)}
+  .search #search{padding:4px 0 4px 30px;color:transparent;cursor:pointer}
+  .search #search::placeholder{color:transparent}
+  .search #search::-webkit-search-cancel-button{display:none}
+  .search:has(#search:not(:placeholder-shown)) #search{background:var(--card-hover);border-color:var(--text-3)}
+  .search:has(#search:not(:placeholder-shown)) .sicon{color:var(--text)}
+  .search:focus-within{position:absolute;inset:0;z-index:6;padding:0 12px;background:var(--bg)}
+  .search:focus-within .sicon{left:21px;color:var(--text-3)}
+  .search:focus-within #search{padding:6px 9px 6px 30px;color:var(--text);cursor:text;background:var(--card)}
+  .search:focus-within #search::placeholder{color:var(--text-3)}
+  .search:focus-within #search::-webkit-search-cancel-button{display:revert}
+}
+@media(max-width:600px){
+  .bar,.area-trail,.tk-bar{padding-left:12px;padding-right:12px}
+  .filters.open{right:12px}
+  .tk-opts.open{left:12px}
+  #tkGroup{max-width:none}
+  .chint{display:none}
+  .modal{padding:16px 10px}
+  .sheet,.sheet.wide{width:100%;padding:16px}
+  .trow2{flex-wrap:wrap}
+  .tk-table th:nth-child(6),.tk-table td:nth-child(6){display:none}
+}
+@media(max-width:560px){
+  #views{display:none}
+  .btn.vbtn{display:inline-flex}
+  /* one list, status as section headers; the headers stick while you scroll */
+  .board{display:block;overflow-x:hidden;overflow-y:auto;background:var(--bg)}
+  .col{border-bottom:1px solid var(--line)}
+  .col-head{position:sticky;top:0;z-index:1;background:var(--bg);padding-top:12px}
+  .col-body{overflow:visible;min-height:14px;padding-bottom:8px}
+}
+@media(max-width:380px){
+  .bar{gap:6px}
+  #newBtn .lbl{display:none}
+}
+@media(max-width:330px){
+  .brand{display:none}
+}
 
 </style>
 </head>
 <body>
 
+<!-- Global bar: where you are, where you can go, what you can start. Anything
+     that filters one view lives in that view's own bar below, so this row
+     stays one row at any width: past each breakpoint a group folds into a
+     menu rather than wrapping. -->
 <header class="bar">
-  <div class="brand">agentgrid</div>
-  <button class="btn" id="areasBtn" title="Zoom out to work areas">▦ Work areas</button>
+  <button class="brand" id="areasBtn" title="Work areas">agentgrid</button>
+  <div class="viewnav">
+  <!-- narrow windows: the four views become one dropdown -->
+  <button class="btn vbtn" id="viewBtn" aria-haspopup="menu" aria-expanded="false"
+    title="Switch view"><span id="viewName">Board</span><svg class="chev" width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M2.5 4 5 6.5 7.5 4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
   <div class="views" id="views">
     <button data-view="board" aria-pressed="true">Board</button>
     <button data-view="split" aria-pressed="false">Split</button>
     <button data-view="notes" aria-pressed="false">Notes<span class="ncount" id="openCount"></span></button>
     <button data-view="tickets" aria-pressed="false" title="The fleet's tickets  (t creates one)">Tickets<span class="ncount" id="reviewCount"></span></button>
   </div>
-  <select class="ctl" id="projectSel" title="Project"></select>
-  <select class="ctl" id="tagSel" title="Tag"></select>
-  <div class="toggles" id="toggles"></div>
-  <div class="toggles"><button id="alertsBtn" aria-pressed="false"
-    title="Notify when an agent needs you or replies (while this tab is open)">Alerts</button></div>
+  </div>
   <div class="spacer"></div>
-  <button class="btn" id="promptsBtn" title="Reusable prompts — reference them in a chat with /name">/ Prompts</button>
-  <button class="btn" id="voiceBtn" popovertarget="voicePopover" title="Voice commands and spoken replies">Voice</button>
-  <button class="btn" id="providersBtn" title="Connect model providers">Providers</button>
-  <button class="btn" id="teamsBtn" title="Build and run agent workflows">⛓ Teams</button>
-  <button class="btn" id="syncBtn" title="Sync your notes to a GitHub repo">⟳ Sync</button>
-  <button class="btn key" id="newBtn" title="Start a new agent  (n)">New agent</button>
-  <input id="search" type="search" placeholder="Search  /" autocomplete="off">
   <div class="stamp" id="stamp" title="Last refresh"></div>
+  <!-- a box when there is room, an icon that opens into the bar when not -->
+  <label class="search" id="searchBox" title="Search  (/)">
+    <svg class="sicon" width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><circle cx="6" cy="6" r="4.2" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="m9.2 9.2 3.1 3.1" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+    <input id="search" type="search" placeholder="Search  /" autocomplete="off" aria-label="Search">
+  </label>
+  <!-- secondary tools: inline when there is room, folded into the menu when not -->
+  <div class="tools" id="tools">
+    <button class="btn" id="promptsBtn" title="Reusable prompts — reference them in a chat with /name">/ Prompts</button>
+    <button class="btn" id="voiceBtn" popovertarget="voicePopover" title="Voice commands and spoken replies">Voice</button>
+    <button class="btn" id="providersBtn" title="Connect model providers">Providers</button>
+    <button class="btn" id="teamsBtn" title="Build and run agent workflows">⛓ Teams</button>
+    <button class="btn" id="syncBtn" title="Sync your notes to a GitHub repo">⟳ Sync</button>
+  </div>
+  <button class="btn more" id="moreBtn" title="Menu" aria-haspopup="menu" aria-expanded="false"
+    aria-label="Menu"><svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M2 3.5h10M2 7h10M2 10.5h10" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></button>
+  <button class="btn key" id="newBtn" title="Start a new agent  (n)">New<span class="lbl"> agent</span></button>
 </header>
 
 <section class="areas" id="areas" aria-label="Work areas" hidden>
@@ -903,7 +1073,26 @@ body.area-overview #views,body.area-overview #projectSel,body.area-overview #tag
   <div class="area-grid" id="areaGrid"></div>
   <p id="areasError" role="status" style="margin-top:20px"></p>
 </section>
-<div class="area-trail" id="areaTrail" hidden><button class="btn sm" id="areaBack">← Work areas</button><span style="color:var(--text-3)">/</span><strong id="areaName"></strong><span class="hint" id="areaCount"></span><div class="spacer"></div><button class="btn sm" id="editAreaBtn">Area settings</button></div>
+<!-- View bar: the breadcrumb, then the board's own filters. On a narrow
+     window the filters fold into one Filters dropdown. -->
+<div class="area-trail" id="areaTrail" hidden>
+  <div class="crumb">
+    <button class="btn sm" id="areaBack" title="Work areas">←<span class="lbl"> Work areas</span></button>
+    <span class="csep">/</span>
+    <strong id="areaName"></strong>
+    <span class="hint" id="areaCount"></span>
+    <button class="btn sm" id="editAreaBtn">Area settings</button>
+  </div>
+  <button class="btn sm fbtn" id="filtersBtn" aria-expanded="false" aria-controls="filters">Filters<span class="fcount" id="filtersCount"></span><svg class="chev" width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M2.5 4 5 6.5 7.5 4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+  <div class="filters fpanel" id="filters">
+    <select class="ctl" id="projectSel" title="Project"></select>
+    <select class="ctl" id="tagSel" title="Tag"></select>
+    <span class="flabel">Show</span>
+    <div class="toggles" id="toggles"></div>
+    <div class="toggles"><button id="alertsBtn" aria-pressed="false"
+      title="Notify when an agent needs you or replies (while this tab is open)">Alerts</button></div>
+  </div>
+</div>
 <main class="board" id="board"></main>
 <dialog id="areaDialog" aria-labelledby="areaDialogTitle"><form id="areaForm">
   <h2 id="areaDialogTitle">New work area</h2>
@@ -943,25 +1132,32 @@ body.area-overview #views,body.area-overview #projectSel,body.area-overview #tag
 </section>
 
 <section class="tickets" id="tickets" hidden>
+  <!-- one row at any width: when the options do not fit inline they fold
+       into the Filters dropdown, leaving layout and New ticket in the bar -->
   <div class="tk-bar">
-    <select class="ctl" id="tkProject" title="Project"></select>
-    <select class="ctl" id="tkType" title="Type"></select>
-    <select class="ctl" id="tkAssignee" title="Assignee"></select>
-    <div class="toggles" id="tkToggles"></div>
-    <span class="spacer"></span>
-    <span class="lbl">Lanes</span>
-    <select class="ctl" id="tkGroup" title="Split the board into lanes">
-      <option value="">none</option>
-      <option value="project">by project</option>
-      <option value="assignee">by agent</option>
-      <option value="type">by type</option>
-      <option value="priority">by priority</option>
-    </select>
+    <button class="btn fbtn" id="tkFiltersBtn" aria-expanded="false" aria-controls="tkOpts">Filters<span class="fcount" id="tkFiltersCount"></span><svg class="chev" width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M2.5 4 5 6.5 7.5 4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+    <div class="tk-opts fpanel" id="tkOpts">
+      <div class="tk-filters">
+        <select class="ctl" id="tkProject" title="Project"></select>
+        <select class="ctl" id="tkType" title="Type"></select>
+        <select class="ctl" id="tkAssignee" title="Assignee"></select>
+      </div>
+      <span class="flabel">Show</span>
+      <div class="toggles" id="tkToggles"></div>
+      <span class="lbl">Lanes</span>
+      <select class="ctl" id="tkGroup" title="Split the board into lanes">
+        <option value="">none</option>
+        <option value="project">by project</option>
+        <option value="assignee">by agent</option>
+        <option value="type">by type</option>
+        <option value="priority">by priority</option>
+      </select>
+      <button class="btn" id="tkHelp" title="How agents file and pick up tickets from a shell">ag ticket</button>
+    </div>
     <div class="views" id="tkLayout">
       <button data-layout="board" aria-pressed="true" title="Columns per status">Board</button>
       <button data-layout="list" aria-pressed="false" title="One row per ticket">List</button>
     </div>
-    <button class="btn" id="tkHelp" title="How agents file and pick up tickets from a shell">ag ticket</button>
     <button class="btn key" id="tkNew" title="New ticket  (t)">New ticket</button>
   </div>
   <div class="tk-body" id="tkBody"></div>
@@ -1614,7 +1810,7 @@ function buildColumns() {
 
 function applyVisibility() {
   const shown = COLUMNS.filter(c => !c.hideable || !hiddenCols.includes(c.key));
-  $("board").style.gridTemplateColumns = `repeat(${shown.length}, minmax(0,1fr))`;
+  $("board").style.setProperty("--cols", shown.length);
   document.querySelectorAll(".col").forEach(col => {
     const c = COLUMNS.find(k => k.key === col.dataset.key);
     col.hidden = !!(c.hideable && hiddenCols.includes(c.key));
@@ -1717,6 +1913,7 @@ function render() {
                {duration: 260, easing: "cubic-bezier(.32,.72,0,1)"});
   });
   renderToggles();
+  setFilterCount("filtersCount", (project ? 1 : 0) + (tag ? 1 : 0));
 }
 
 function renderToggles() {
@@ -2965,6 +3162,7 @@ function openPageMenu(name, anchorRect) {
 }
 function closeMenus() {
   $("pmenu").hidden = true; menuFor = null;
+  if (barMenuBtn) { barMenuBtn.setAttribute("aria-expanded", "false"); barMenuBtn = null; }
   hideAt();
   hideSlash();
 }
@@ -3015,6 +3213,81 @@ function refreshMenu() {
                 overflowY: m.style.overflowY};
   openPageMenu(menuFor, m.getBoundingClientRect());
   Object.assign(m.style, keep);
+}
+
+/* ---------------------------------------------------------------- bar menus */
+
+// The top bar's folded groups open in the shared popup. Rows are read off the
+// real controls, so a menu can never drift from what the wide bar shows.
+let barMenuBtn = null;
+function openBarMenu(btn, html, align) {
+  const wasOpen = barMenuBtn === btn;
+  closeMenus(); closeFilters();
+  if (wasOpen) return;                        // a second click closes
+  const m = $("pmenu");
+  m.innerHTML = html;
+  const r = btn.getBoundingClientRect();
+  placeMenu(m, r);
+  if (align === "right") m.style.left = `${Math.max(8, r.right - m.offsetWidth)}px`;
+  barMenuBtn = btn;
+  btn.setAttribute("aria-expanded", "true");
+  (m.querySelector("[aria-checked=true]") || m.querySelector("button")).focus();
+}
+function barMenuRow(attrs, glyph, label, extra = "") {
+  return `<button ${attrs}><span class="tick">${esc(glyph)}</span>${esc(label)}${extra}</button>`;
+}
+// ☰: the way home, then the tools the bar has no room for
+function openMoreMenu() {
+  const tools = [...$("tools").children].map(b => {
+    const [, glyph, label] = b.textContent.trim().match(/^(?:([^\w\s])\s+)?(.+)$/);
+    return barMenuRow(`data-tool="${b.id}" title="${esc(b.title)}"`, glyph || "", label);
+  });
+  openBarMenu($("moreBtn"),
+    barMenuRow(`data-goview="areas"`, "▦", "Work areas") + "<hr>" + tools.join(""), "right");
+}
+// the four views as one list; counts ride along, as they do on the tabs
+function openViewMenu() {
+  const rows = [...$("views").children].map(b => {
+    const on = b.getAttribute("aria-pressed") === "true";
+    const n = b.querySelector(".ncount")?.textContent || "";
+    return barMenuRow(`data-goview="${b.dataset.view}" role="menuitemradio" aria-checked="${on}"`,
+      on ? "✓" : "", b.firstChild.textContent, n ? `<span class="ncount">${esc(n)}</span>` : "");
+  });
+  openBarMenu($("viewBtn"), rows.join(""), "left");
+}
+function runTool(id) {
+  closeMenus();
+  const b = $(id);
+  // a popover invoker that is display:none is not a reliable click target
+  const pop = b.getAttribute("popovertarget");
+  if (pop) $(pop).showPopover(); else b.click();
+}
+
+/* ------------------------------------------------------------- filter panels */
+
+// Below the width where a view's options fit inline, they open as a panel
+// from its Filters button. Same elements, same handlers — only the layout moves.
+const FILTER_PANELS = [["filtersBtn", "filters"], ["tkFiltersBtn", "tkOpts"]];
+function toggleFilters(btnId, panelId) {
+  const open = !$(panelId).classList.contains("open");
+  closeMenus(); closeFilters();
+  if (!open) return;
+  $(panelId).classList.add("open");
+  $(btnId).setAttribute("aria-expanded", "true");
+}
+function closeFilters() {
+  let was = null;
+  FILTER_PANELS.forEach(([btnId, panelId]) => {
+    if (!$(panelId).classList.contains("open")) return;
+    $(panelId).classList.remove("open");
+    $(btnId).setAttribute("aria-expanded", "false");
+    was = $(btnId);
+  });
+  return was;
+}
+function setFilterCount(id, n) {
+  $(id).textContent = n ? String(n) : "";
+  $(id).title = n ? `${n} filter${n === 1 ? "" : "s"} on` : "";
 }
 
 /* -------------------------------------------------------------------- rail */
@@ -4034,13 +4307,17 @@ function setView(v) {
   $("areaTrail").hidden = v === "areas";
   document.body.classList.toggle("area-overview", v === "areas");
   document.body.classList.toggle("tickets-view", v === "tickets");
+  document.body.classList.toggle("notes-view", v === "notes");
   localStorage.setItem("agentgrid.view", v);
   document.body.classList.toggle("split", v === "split");
   $("board").hidden = v === "notes" || v === "areas" || v === "tickets";
   $("notes").hidden = v === "board" || v === "areas" || v === "tickets";
   $("tickets").hidden = v !== "tickets";
-  $("views").querySelectorAll("button").forEach(b =>
-    b.setAttribute("aria-pressed", String(b.dataset.view === v)));
+  $("views").querySelectorAll("button").forEach(b => {
+    b.setAttribute("aria-pressed", String(b.dataset.view === v));
+    if (b.dataset.view === v) $("viewName").textContent = b.firstChild.textContent;
+  });
+  closeFilters();
   if (v === "tickets") loadTickets(true);
   else if (v === "notes" || v === "split") loadNotes(true);
 }
@@ -4158,6 +4435,12 @@ function bindEvents() {
     $("toggles").dataset.sig = ""; applyVisibility(); render();
   });
   $("newBtn").addEventListener("click", openNewAgent);
+  $("moreBtn").addEventListener("click", openMoreMenu);
+  $("viewBtn").addEventListener("click", openViewMenu);
+  FILTER_PANELS.forEach(([btnId, panelId]) =>
+    $(btnId).addEventListener("click", () => toggleFilters(btnId, panelId)));
+  // a dropdown anchored to a layout that just changed would float in the wrong place
+  window.addEventListener("resize", () => { closeFilters(); if (barMenuBtn) closeMenus(); });
   $("syncBtn").addEventListener("click", openSync);
   $("syncCancel").addEventListener("click", closeSync);
   $("syncGo").addEventListener("click", doSync);
@@ -4569,12 +4852,24 @@ function bindEvents() {
 
   // page menu
   $("pmenu").addEventListener("click", e => {
+    const tool = e.target.closest("button[data-tool]");
+    if (tool) { runTool(tool.dataset.tool); return; }
+    const go = e.target.closest("button[data-goview]");
+    if (go) { closeMenus(); setView(go.dataset.goview); return; }
     const wd = e.target.closest("button[data-wd]");
     if (wd) { toggleWeekday(Number(wd.dataset.wd)); return; }
     const b = e.target.closest("button[data-act]");
     if (b) menuAction(b.dataset.act, b);
   });
   $("pmenu").addEventListener("keydown", e => {
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      const items = [...$("pmenu").querySelectorAll("button")];
+      const i = items.indexOf(document.activeElement);
+      if (i < 0 && document.activeElement.tagName === "INPUT") return;
+      e.preventDefault();
+      items[(i + (e.key === "ArrowDown" ? 1 : -1) + items.length) % items.length]?.focus();
+      return;
+    }
     if (e.target.id === "newGroupIn" && e.key === "Enter") {
       const g = e.target.value.trim();
       if (g) post("/api/notes/group", {date: day, page: menuFor, group: g})
@@ -4840,7 +5135,8 @@ function bindEvents() {
 
   // dismiss popovers on outside click
   document.addEventListener("mousedown", e => {
-    if (!$("pmenu").hidden && !e.target.closest("#pmenu")) closeMenus();
+    if (!$("pmenu").hidden && !e.target.closest("#pmenu, #moreBtn, #viewBtn")) closeMenus();
+    if (!e.target.closest(".fpanel, .fbtn")) closeFilters();
     if (!$("atFiles").hidden && !e.target.closest("#atFiles") && !e.target.closest("#cInput")) hideAtFiles();
   });
 
@@ -4850,7 +5146,14 @@ function bindEvents() {
     if (e.key === "Escape") {
       if (!$("atFiles").hidden) { hideAtFiles(); return; }
       if (!$("slashMenu").hidden) { hideSlash(); return; }
-      if (!$("pmenu").hidden || !$("atMenu").hidden) { closeMenus(); return; }
+      if (!$("pmenu").hidden || !$("atMenu").hidden) {
+        const from = barMenuBtn;
+        closeMenus();
+        if (from) from.focus();
+        return;
+      }
+      const fromFilters = closeFilters();
+      if (fromFilters) { fromFilters.focus(); return; }
       if (!$("gridModal").hidden) { $("gridModal").hidden = true; return; }
       if (!$("ticketModal").hidden) { closeNewTicket(); return; }
       if (!$("tkHelpModal").hidden) { $("tkHelpModal").hidden = true; return; }
@@ -5005,7 +5308,8 @@ function tkCardHtml(t) {
 }
 
 function tkBoardHtml(list, shown) {
-  const cols = `repeat(${shown.length}, minmax(0,1fr))`;
+  // the same floor as the session board: narrow windows scroll, not crush
+  const cols = `repeat(${shown.length}, minmax(200px,1fr))`;
   const heads = shown.map(([k, name]) => {
     const n = list.filter(t => t.status === k).length;
     return `<div class="tcol-head${n ? " has" : ""}" data-status="${k}"><span class="dot"></span>` +
@@ -5041,7 +5345,7 @@ function tkListHtml(list) {
     rows(items)).join("");
   return `<table class="tk-table"><thead><tr><th>Ticket</th><th>Type</th><th>Title</th><th>Project</th>` +
     `<th>Assignee</th><th>Priority</th><th>Status</th><th class="num">Updated</th></tr></thead>` +
-    `<tbody>${body || `<tr><td colspan="8" class="empty-col">Every status is hidden — turn one back on above.</td></tr>`}</tbody></table>`;
+    `<tbody>${body || `<tr><td colspan="8" class="empty-col">Every status is hidden — turn one back on in the filters.</td></tr>`}</tbody></table>`;
 }
 
 function tkEmptyHtml(nothingMatches) {
@@ -5112,6 +5416,8 @@ function renderTickets() {
     }).join("");
   }
   const shown = TK_STATUSES.filter(([k]) => !tkHidden.includes(k));
+  setFilterCount("tkFiltersCount",
+    [tkProject, tkType, tkAssignee].filter(Boolean).length + (tkHidden.length ? 1 : 0));
   const dataSig = tkData.tickets.map(t => t.id + t.updated + t.rank + t.status).join("|");
   const liveSig = sessions.map(s => s.sessionId + s.status + s.title).join("|");
   const sig = JSON.stringify([dataSig, tkLayout, tkGroup, tkProject, tkType, tkAssignee, tkHidden,
@@ -5122,7 +5428,7 @@ function renderTickets() {
   if (!tkData.tickets.length) body.innerHTML = tkEmptyHtml(false);
   else if (!list.length) body.innerHTML = tkEmptyHtml(true);
   else if (tkLayout === "list") body.innerHTML = tkListHtml(list);
-  else if (!shown.length) body.innerHTML = `<div class="tk-empty"><h3>Every status is hidden.</h3>Turn one back on above.</div>`;
+  else if (!shown.length) body.innerHTML = `<div class="tk-empty"><h3>Every status is hidden.</h3>Turn one back on in the filters.</div>`;
   else body.innerHTML = tkBoardHtml(list, shown);
 }
 

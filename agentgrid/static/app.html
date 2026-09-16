@@ -2843,8 +2843,9 @@ function renderPanel() {
     // background session is joined (claude attach), an interactive one has its
     // real Terminal.app tab focused — never resumed, which would fork the
     // conversation. The server explains itself with a 409 for hosts it
-    // cannot script (Cursor), and that refusal surfaces as a toast. Codex
-    // sessions report no pid, so their button says why it can do nothing.
+    // cannot script (Cursor), and that refusal surfaces as a toast. A Codex
+    // session gets a pid only while an interactive `codex` holds its rollout
+    // open in a terminal; a headless one has no tab, and its button says so.
     const openBtn = !s.openable
       ? `<button class="btn" disabled title="This session runs in its own app or terminal; there is nothing to focus from here.">Open in Terminal</button>`
       : s.attachable

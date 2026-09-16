@@ -39,6 +39,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
+from agentgrid import terminal
+
 PROJECTS_DIR = Path.home() / ".claude" / "projects"
 JOBS_DIR = Path.home() / ".claude" / "jobs"
 CODEX_SESSIONS_DIR = Path.home() / ".codex" / "sessions"
@@ -638,6 +640,8 @@ def enrich(session: Session, cache: TranscriptCache) -> Session:
 # interrupted, and a rollout whose last task completed is a reply to read.
 
 CODEX_ACTIVITY_WINDOW = 24 * 3600  # sessions older than this have left the board
+PIDS_REFRESH = 5.0                 # seconds between process scans for terminal codex runs
+OWNERS_REFRESH = 30.0              # seconds between lsof passes with no process change
 CODEX_WORKING_FRESH = 600          # an open task silent this long was interrupted
 CODEX_ROLLOUT_RE = re.compile(
     r"^rollout-(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2})-(.+)$"
@@ -686,6 +690,36 @@ class CodexCache:
 
     def __init__(self) -> None:
         self._state: dict[Path, dict] = {}
+        # Which live terminal process holds each rollout open (see
+        # terminal_owners): recomputed only when the set of codex processes
+        # with a terminal changes, or on a slow timer, because lsof is not
+        # free and a process does not change rollouts often.
+        self._owners: dict[str, int] = {}
+        self._owner_pids: frozenset = frozenset()
+        self._owners_at: float = 0.0
+        self._pids_at: float = -PIDS_REFRESH
+
+    def terminal_owners(self, now: float) -> dict[str, int]:
+        """Rollout path -> pid of the terminal-bound codex process writing it.
+
+        An interactive `codex` (the TUI) keeps its rollout file open for as
+        long as it runs, and it is the only codex process with a controlling
+        terminal that does. That open file is the one honest link from a
+        card to the tab you can type into -- nothing in the rollout names a
+        pid -- and it is what makes Open work and tells the chat to refuse
+        instead of colliding with the TUI on the thread.
+        """
+        if now - self._pids_at < PIDS_REFRESH:
+            # `ps` costs a good fraction of a poll interval on macOS; a new
+            # terminal showing up a few seconds late is the cheaper wait.
+            return self._owners
+        self._pids_at = now
+        pids = frozenset(terminal.codex_terminal_pids())
+        if pids != self._owner_pids or now - self._owners_at > OWNERS_REFRESH:
+            self._owners = terminal.rollouts_open_by(sorted(pids)) if pids else {}
+            self._owner_pids = pids
+            self._owners_at = now
+        return self._owners
 
     @staticmethod
     def _blank() -> dict:
@@ -698,6 +732,10 @@ class CodexCache:
             "tool_counts": {},
             "task_open": False,
             "last_activity": 0.0,
+            # From the first session_meta: who started the thread, and whether
+            # another thread did (a helper the CLI spawned, not a session).
+            "originator": "",
+            "subagent": False,
         }
 
     def parse(self, path: Path) -> dict:
@@ -750,6 +788,8 @@ class CodexCache:
             if not state["meta_seen"]:
                 state["meta_seen"] = True
                 state["cwd"] = str(payload.get("cwd") or "")
+                state["originator"] = str(payload.get("originator") or "")
+                state["subagent"] = is_subagent_meta(payload)
         elif entry_type == "turn_context":
             model = payload.get("model")
             if model:
@@ -760,6 +800,12 @@ class CodexCache:
                 message = str(payload.get("message") or "").strip()
                 if message:
                     state["last_prompt"] = message[:500]
+            elif event == "item_completed":
+                # The TUI (0.153+) logs what you typed as a completed
+                # UserMessage item rather than a user_message event.
+                message = user_message_text(payload.get("item"))
+                if message:
+                    state["last_prompt"] = message[:500]
             elif event == "task_started":
                 state["task_open"] = True
             elif event in ("task_complete", "turn_aborted"):
@@ -768,6 +814,39 @@ class CodexCache:
             if payload.get("type") == "function_call":
                 name = str(payload.get("name") or "tool")
                 state["tool_counts"][name] = state["tool_counts"].get(name, 0) + 1
+
+
+def is_subagent_meta(payload: dict) -> bool:
+    """Whether a rollout's session_meta says another thread spawned it.
+
+    Codex 0.153+ runs helpers -- the "guardian" that judges a risky action --
+    as threads of their own, each with its own rollout file in the parent's
+    cwd, stamped with the parent's start time. Read as sessions they are the
+    duplicate cards one launch appeared to create, and they steal the name or
+    work area meant for the real thread. They are told apart by their meta:
+    a structured `source` naming a subagent, or a parent_thread_id together
+    with a thread_source other than "user". A thread with neither is the
+    user's own, including on older CLIs that write none of these fields.
+    """
+    source = payload.get("source")
+    if isinstance(source, dict) and "subagent" in source:
+        return True
+    thread_source = payload.get("thread_source")
+    return bool(payload.get("parent_thread_id")) and thread_source not in (None, "", "user")
+
+
+def user_message_text(item: object) -> str:
+    """The typed text of a completed UserMessage item, images left out."""
+    if not isinstance(item, dict) or item.get("type") != "UserMessage":
+        return ""
+    parts = item.get("content")
+    if not isinstance(parts, list):
+        return ""
+    return " ".join(
+        str(part.get("text") or "").strip()
+        for part in parts
+        if isinstance(part, dict) and part.get("type") == "text"
+    ).strip()
 
 
 def _recent_rollouts(now: float) -> list[Path]:
@@ -804,6 +883,7 @@ def collect_codex(cache: CodexCache) -> list[Session]:
         return []
     now = time.time()
     sessions: list[Session] = []
+    owners = cache.terminal_owners(now)
     for path in _recent_rollouts(now):
         match = CODEX_ROLLOUT_RE.match(path.stem)
         if not match:
@@ -815,6 +895,10 @@ def collect_codex(cache: CodexCache) -> list[Session]:
         if now - mtime > CODEX_ACTIVITY_WINDOW:
             continue
         state = cache.parse(path)
+        if state["subagent"]:
+            # A helper thread the CLI spawned for a session already on the
+            # board: its work shows in the parent's transcript, not as a card.
+            continue
         if state["task_open"]:
             # An open task that has gone quiet was interrupted, not working.
             status = "working" if now - mtime < CODEX_WORKING_FRESH else "stopped"
@@ -834,6 +918,9 @@ def collect_codex(cache: CodexCache) -> list[Session]:
                 cwd=state["cwd"],
                 started_at=started_ms,
                 engine="codex",
+                # Only a terminal-bound codex holding the rollout open gets a
+                # pid -- the thing Open focuses and the chat must not fight.
+                pid=owners.get(str(path)),
                 title=codex_titles().get(session_id) or None,
                 last_prompt=state["last_prompt"],
                 model=state["model"] or "codex",

@@ -104,6 +104,65 @@ def describe_host(host: str | None) -> str:
     return _HOST_NAMES.get(host, host)
 
 
+_CODEX_CMD_RE = re.compile(r"(^|/)codex(\s|$)")
+
+
+def codex_terminal_pids() -> list[int]:
+    """Pids of codex processes that have a controlling terminal.
+
+    Those are the ones a person can type into: the interactive TUI, or a
+    `codex exec` someone ran by hand in a tab. The board's own headless runs
+    (chat turns, background spawns) start in a new session with no terminal
+    and show `??`, so they are left out, as are the desktop app's and the
+    editors' `app-server` children.
+    """
+    done = _run(["ps", "-Ao", "pid=,tty=,command="])
+    if done is None or done.returncode != 0:
+        return []
+    pids: list[int] = []
+    for line in (done.stdout or "").splitlines():
+        parts = line.split(None, 2)
+        if len(parts) < 3:
+            continue
+        pid, tty, command = parts
+        if tty == "??" or not _CODEX_CMD_RE.search(command):
+            continue
+        try:
+            pids.append(int(pid))
+        except ValueError:
+            continue
+    return pids
+
+
+def rollouts_open_by(pids: list[int]) -> dict[str, int]:
+    """Which codex rollout file each of `pids` holds open: path -> pid.
+
+    `lsof -F` prints one field per line -- `p<pid>` opens a process, `n<path>`
+    names an open file -- and only rollout files under a codex sessions
+    directory are kept. The exit status is ignored: lsof exits 1 when any
+    listed pid has nothing to show, which is not a failure here.
+    """
+    if not pids:
+        return {}
+    done = _run(["lsof", "-n", "-P", "-p", ",".join(str(p) for p in pids), "-Fpn"],
+                timeout=10.0)
+    if done is None:
+        return {}
+    owners: dict[str, int] = {}
+    current: int | None = None
+    for line in (done.stdout or "").splitlines():
+        if line.startswith("p"):
+            try:
+                current = int(line[1:])
+            except ValueError:
+                current = None
+        elif line.startswith("n") and current is not None:
+            path = line[1:]
+            if "/sessions/" in path and path.endswith(".jsonl") and "/rollout-" in path:
+                owners.setdefault(path, current)
+    return owners
+
+
 def attached_tty(job_id: str) -> str | None:
     """Find the tty of an existing `claude attach <job>` process, if any.
 
@@ -175,7 +234,7 @@ def focus(pid: int) -> tuple[bool, str]:
     if command is None:
         return False, ("That session's process is gone -- its terminal, if any, "
                        "closed with it.")
-    if not re.search(r"(^|/)claude(\s|$)", command):
+    if not re.search(r"(^|/)(claude|codex)(\s|$)", command):
         return False, ("That session's recorded pid now belongs to a different "
                        "process (macOS reuses pids), so its tab cannot be found. "
                        "The session itself has ended.")

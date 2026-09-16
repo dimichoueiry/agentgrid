@@ -853,7 +853,7 @@ details.tp-sec[open] summary::before{transform:rotate(90deg)}
 .area-card:hover{background:#303030;transform:translateY(-3px)}
 .area-card:focus-visible{outline:3px solid var(--accent);outline-offset:4px}
 .area-card-top{display:flex;justify-content:space-between;color:#aaa;font-size:12px}
-.area-card strong{font-size:24px;font-weight:500;letter-spacing:-.5px;margin:auto 0;padding:24px 0}
+.area-card strong{font-size:24px;font-weight:500;letter-spacing:-.5px;margin:0;padding:24px 0 16px}
 .area-card-foot{font-size:12px;color:#aaa;display:flex;gap:14px}
 /* Activity on an area card, most urgent first: needs you, replied (unread),
    working. The card is dark in both themes, so it takes the dark palette's
@@ -865,7 +865,9 @@ details.tp-sec[open] summary::before{transform:rotate(90deg)}
 .area-card[data-state=needs]{--a-ring:var(--a-needs)}
 .area-card[data-state=replied]{--a-ring:var(--a-replied)}
 .area-card[data-state=working]{--a-ring:#8e8e96}   /* reads on a light page and a dark one */
-.area-status{display:flex;flex-wrap:wrap;gap:6px;min-height:23px;margin:-8px 0 14px}
+/* names hold one height on every card; the badges and count keep to the
+   bottom, so a row of cards reads straight across even when badges wrap */
+.area-status{display:flex;flex-wrap:wrap;align-content:flex-end;gap:6px;min-height:23px;margin:auto 0 14px}
 .apill{
   display:inline-flex;align-items:center;gap:6px;padding:3px 10px 3px 8px;border-radius:999px;
   font-size:12px;font-weight:550;line-height:1.4;font-variant-numeric:tabular-nums;white-space:nowrap;
@@ -1575,7 +1577,7 @@ function areaActivity(members) {
   const found = AREA_SIGNALS.map(g => ({...g, n: members.filter(g.match).length})).filter(g => g.n);
   const pills = found.map(g =>
     `<span class="apill ${g.key}" title="${esc(g.long(g.n))}"><span class="adot" aria-hidden="true"></span>${esc(g.short(g.n))}</span>`).join("");
-  // the row is there even when empty, so names line up across a row of cards
+  // the row is there even when empty, so every card has the same shape
   return {state: found.length ? found[0].key : "", html: `<span class="area-status">${pills}</span>`};
 }
 function areaOptions(selected) {

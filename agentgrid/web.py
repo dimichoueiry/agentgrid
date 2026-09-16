@@ -44,7 +44,7 @@ from datetime import date, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from agentgrid import chat, discovery, models, notes, sync, teams, terminal, transcript, workflows, credentials, openrouter
+from agentgrid import areas, chat, discovery, models, notes, sync, teams, terminal, transcript, workflows, credentials, openrouter
 
 STATIC = Path(__file__).resolve().parent / "static"
 POLL_SECONDS = 2.0
@@ -304,6 +304,7 @@ class Fleet:
                 # Keep the last good snapshot; only the error message changes.
                 self._error = error
             else:
+                areas.resolve(sessions)
                 self._apply_pending_names(sessions)
                 self._sessions = sessions
                 self._error = None
@@ -1237,6 +1238,8 @@ class Handler(BaseHTTPRequestHandler):
         route = parsed.path
         if route == "/":
             self._send(200, (STATIC / "app.html").read_bytes(), "text/html; charset=utf-8")
+        elif route == "/api/areas":
+            self._send_json(200, areas.load())
         elif route == "/overlay.js":
             # The web-review overlay, injected onto the user's own dev site.
             self._send(200, (STATIC / "overlay.js").read_bytes(),
@@ -1488,7 +1491,12 @@ class Handler(BaseHTTPRequestHandler):
         # original grouped day-scoped routes into a tuple whose handler chain
         # ended in a bare set_group default, and /api/notes/quickadd listed
         # there silently became "set group" (§7.19). No tuple, no fall-through.
-        if route == "/api/notes/save":
+        if route == "/api/areas":
+            try:
+                self._send_json(200, areas.update(body))
+            except (ValueError, OSError) as exc:
+                self._send_json(400, {"error": str(exc)})
+        elif route == "/api/notes/save":
             self._notes_save(body)
         elif route == "/api/notes/quickadd":
             self._notes_quickadd(body)
@@ -2052,6 +2060,12 @@ class Handler(BaseHTTPRequestHandler):
     # -- session routes ------------------------------------------------------
 
     def _spawn(self, body: dict) -> None:
+        area_id = str(body.get("areaId") or "")
+        if area_id and not any(a["id"] == area_id for a in areas.load()["areas"]):
+            self._send_json(400, {"error": "Work area no longer exists."})
+            return
+        started = time.time()
+        known = [s.session_id for s in self.fleet.raw()]
         projects = discover_projects(self.fleet.raw())
         engine = "codex" if str(body.get("engine") or "") == "codex" else "claude"
         interactive = bool(body.get("interactive"))
@@ -2077,6 +2091,8 @@ class Handler(BaseHTTPRequestHandler):
         if not ok:
             self._send_json(400, {"error": message})
             return
+        if area_id:
+            areas.await_session(area_id, cwd, engine, interactive, job_id, known, started)
         name = str(body.get("name") or "").strip()
         if name:
             if job_id:

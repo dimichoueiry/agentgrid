@@ -783,3 +783,23 @@ Connect OpenRouter through **Providers** (macOS Keychain or server environment).
 Teams' **Coordinator** mode lets a separately chosen model delegate to named
 specialists across providers, with an enforced delegation limit. OpenRouter
 steps currently handle text; Claude/Codex specialists provide file and shell tools.
+
+### Work areas
+
+In the web UI, **Work areas** zooms out from the status board to department
+cards: Engineering, Marketing, Design, and Strategy, plus any areas you create.
+Open a card to see only that area's agents; **All agents** keeps the full fleet
+available. Existing agents begin in **Unassigned**. Open an agent's **Details**
+and choose **Work area** to categorize or move it without changing its status.
+
+**Area settings** lets you rename an area and save a starter prompt, pre-filled
+in the **New agent** form. The form also lets you change the destination area.
+Agents started there are assigned when their sessions appear. Launches without
+an immediate job ID use the existing directory/engine/start-time matching
+approach; manually correct the area in Details if concurrent external launches
+in the same directory are ambiguous. Deleting an area moves its agents to
+Unassigned; it does not stop or delete them.
+
+Areas, starter prompts, and membership persist in `~/.agentgrid/areas.json`.
+Notes, reusable agent templates, the prompt library, and workflows remain shared.
+Restart the web server after updating to make the new area API available.

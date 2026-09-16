@@ -712,12 +712,41 @@ details.cthink[open]>summary::before{transform:rotate(90deg)}
 .tmoutput summary{cursor:pointer;font-weight:600}.tmoutput pre{white-space:pre-wrap;overflow-wrap:anywhere;font:inherit;line-height:1.6}
 .tmoutput .srow{margin:8px 0}.workflow-export{margin-top:8px}
 .tmlog{max-height:55vh}.tmlog .out{overflow-wrap:anywhere}
+
+/* Work areas sit one level above the status board. */
+.areas[hidden],.area-trail[hidden]{display:none!important}
+.areas{flex:1;min-height:0;overflow:auto;padding:48px max(24px,calc((100vw - 1280px)/2)) 64px}
+.areas-heading{display:flex;align-items:center;gap:20px;margin-bottom:32px}
+.areas h1{font-size:30px;letter-spacing:-1px;font-weight:550;margin:0 0 6px}
+.areas p{color:var(--text-2);margin:0}
+.area-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:28px}
+.area-card{background:#232323;color:#fafafa;border:1px solid #333;border-radius:16px;min-height:215px;padding:26px;display:flex;flex-direction:column;align-items:stretch;text-align:left;transition:transform .18s var(--ease),background .18s var(--ease)}
+.area-card:hover{background:#303030;transform:translateY(-3px)}
+.area-card:focus-visible{outline:3px solid var(--accent);outline-offset:4px}
+.area-card-top{display:flex;justify-content:space-between;color:#aaa;font-size:12px}
+.area-card strong{font-size:24px;font-weight:500;letter-spacing:-.5px;margin:auto 0;padding:24px 0}
+.area-card-foot{font-size:12px;color:#aaa;display:flex;gap:14px}
+.area-add{background:transparent;color:var(--text-2);border:1px dashed var(--line-2);align-items:center;justify-content:center;gap:10px}
+.area-add:hover{background:var(--card-hover)}
+.area-add span:first-child{font-size:28px;font-weight:300}
+.area-trail{display:flex;align-items:center;gap:12px;padding:12px 16px;border-bottom:1px solid var(--line)}
+.area-trail strong{font-weight:550}.area-trail .hint{color:var(--text-2)}
+#areaDialog{width:min(500px,calc(100vw - 32px));padding:26px;background:var(--card);color:var(--text);border:1px solid var(--line-2);border-radius:12px}
+#areaDialog::backdrop{background:#0005}#areaDialog h2{margin:0 0 20px;font-size:20px;font-weight:550}
+#areaDialog label{display:block;margin:16px 0}#areaDialog input,#areaDialog textarea{display:block;width:100%;padding:10px;margin-top:6px}
+#areaDialog textarea{resize:vertical;min-height:150px}#areaDialog p{color:var(--text-2)}
+body.area-overview #views,body.area-overview #projectSel,body.area-overview #tagSel,body.area-overview #toggles,body.area-overview #search,body.area-overview #newBtn{display:none}
+@media(max-width:900px){.area-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.areas{padding:28px 20px}.area-card{min-height:190px}.bar{overflow-x:auto;flex-shrink:0}.bar>*{flex-shrink:0}}
+@media(max-width:540px){.area-grid{grid-template-columns:1fr;gap:16px}.areas-heading{align-items:flex-start;flex-wrap:wrap}.area-trail .hint{display:none}}
+@media(prefers-reduced-motion:reduce){.area-card{transition:none}.area-card:hover{transform:none}}
+
 </style>
 </head>
 <body>
 
 <header class="bar">
   <div class="brand">agentgrid</div>
+  <button class="btn" id="areasBtn" title="Zoom out to work areas">▦ Work areas</button>
   <div class="views" id="views">
     <button data-view="board" aria-pressed="true">Board</button>
     <button data-view="split" aria-pressed="false">Split</button>
@@ -738,7 +767,21 @@ details.cthink[open]>summary::before{transform:rotate(90deg)}
   <div class="stamp" id="stamp" title="Last refresh"></div>
 </header>
 
+<section class="areas" id="areas" aria-label="Work areas" hidden>
+  <div class="areas-heading"><div><h1>Work areas</h1><p>A place for every team. Open an area to focus on its agents.</p></div><div class="spacer"></div><button class="btn" id="allAgentsBtn">All agents ↗</button><button class="btn key" id="addAreaBtn">+ New area</button></div>
+  <div class="area-grid" id="areaGrid"></div>
+  <p id="areasError" role="status" style="margin-top:20px"></p>
+</section>
+<div class="area-trail" id="areaTrail" hidden><button class="btn sm" id="areaBack">← Work areas</button><span style="color:var(--text-3)">/</span><strong id="areaName"></strong><span class="hint" id="areaCount"></span><div class="spacer"></div><button class="btn sm" id="editAreaBtn">Area settings</button></div>
 <main class="board" id="board"></main>
+<dialog id="areaDialog" aria-labelledby="areaDialogTitle"><form id="areaForm">
+  <h2 id="areaDialogTitle">New work area</h2>
+  <label>Name<input id="areaNameInput" maxlength="60" required autocomplete="off" placeholder="e.g. Marketing"></label>
+  <label>Starter prompt<textarea id="areaPromptInput" maxlength="20000" placeholder="What should agents in this area work on?"></textarea></label>
+  <p>Pre-filled when you start an agent here. You can edit it for each task.</p>
+  <p id="areaFormError" role="alert"></p>
+  <div style="display:flex;gap:8px"><button class="btn danger" type="button" id="deleteAreaBtn" hidden>Delete area</button><div class="spacer"></div><button class="btn" type="button" id="cancelAreaBtn">Cancel</button><button class="btn key" id="saveAreaBtn">Save area</button></div>
+</form></dialog>
 
 <section class="notes" id="notes" hidden>
   <div class="pad-wrap">
@@ -850,6 +893,7 @@ details.cthink[open]>summary::before{transform:rotate(90deg)}
 <div class="modal" id="modal" hidden>
   <div class="sheet">
     <div class="stitle">New agent</div>
+    <label>Work area<select id="naArea"></select></label>
     <label>Library <span class="hint">reusable agents — pick one to fill the sheet</span>
       <div class="librow">
         <select id="naLib"><option value="">— none —</option></select>
@@ -1237,7 +1281,7 @@ let projectsCache = null;
 let atFileHits = [], atFileFrom = -1, atFileSel = 0, atFileTimer = null, atFileReqSeq = 0;
 
 // notes
-let view = localStorage.getItem("agentgrid.view") || "board";
+let view = localStorage.getItem("agentgrid.view") || "areas";
 let day = todayIso(), span = "day", page = "";
 let padDirty = false, saveTimer = null, jiraBase = "";
 let railOpen = localStorage.getItem("agentgrid.rail") !== "0";
@@ -1252,6 +1296,66 @@ let promptLibrary = [], plEditing = null;
 let slashFrom = -1, slashSel = 0, slashHits = [];
 // the composer's [] todo picker: your open todos, loaded when a chat opens
 let todoFrom = -1, todoSel = 0, todoHits = [], todoCache = null;
+
+let areaData = {areas: [], members: {}}, areasLoaded = false;
+let activeArea = localStorage.getItem("agentgrid.area") || "";
+let editingArea = "", agentStarterPrompt = "";
+
+function areaSessions(id) {
+  return sessions.filter(s => id === "" || (id === "unassigned" ? !areaData.members[s.sessionId] : areaData.members[s.sessionId] === id));
+}
+function areaOptions(selected) {
+  return '<option value="">Unassigned</option>' + areaData.areas.map(a => `<option value="${esc(a.id)}" ${selected === a.id ? 'selected' : ''}>${esc(a.name)}</option>`).join("");
+}
+function renderAreas() {
+  const area = areaData.areas.find(a => a.id === activeArea);
+  $("areaName").textContent = area?.name || (activeArea === "unassigned" ? "Unassigned" : "All agents");
+  const count = areaSessions(activeArea).length;
+  $("areaCount").textContent = `${count} agent${count === 1 ? "" : "s"}`;
+  $("editAreaBtn").hidden = !area;
+  if (!areasLoaded) return;
+  const cards = [...areaData.areas, {id: "unassigned", name: "Unassigned"}];
+  const markup = cards.map((a, i) => {
+    const members = areaSessions(a.id);
+    const working = members.filter(s => s.status === "working").length;
+    const waiting = members.filter(s => ["blocked", "failed"].includes(s.status)).length;
+    return `<button class="area-card" data-area="${esc(a.id)}"><span class="area-card-top"><span>${String(i + 1).padStart(2, "0")} / WORK AREA</span><span aria-hidden="true">↗</span></span><strong>${esc(a.name)}</strong><span class="area-card-foot"><span>${members.length} agent${members.length === 1 ? "" : "s"}</span>${working ? `<span>${working} working</span>` : ''}${waiting ? `<span>${waiting} need you</span>` : ''}</span></button>`;
+  }).join("") + '<button class="area-card area-add" data-add-area><span aria-hidden="true">+</span><span>Create a work area</span></button>';
+  if ($("areaGrid")._markup !== markup) {
+    $("areaGrid")._markup = markup; $("areaGrid").innerHTML = markup;
+  }
+}
+async function loadAreas() {
+  try {
+    const data = await api("/api/areas");
+    if (!Array.isArray(data.areas) || !data.members || typeof data.members !== "object") throw new Error("Invalid work area response");
+    areaData = data; areasLoaded = true;
+    $("areasError").textContent = "";
+    if (activeArea && activeArea !== "unassigned" && !areaData.areas.some(a => a.id === activeArea)) enterArea("");
+    renderAreas();
+  } catch (e) { $("areasError").textContent = "Could not load work areas. Retrying…"; }
+}
+function enterArea(id) {
+  activeArea = id; localStorage.setItem("agentgrid.area", id);
+  project = ""; tag = ""; query = ""; $("search").value = "";
+  closePanel(); setView("board"); renderSelects(); render(); renderAreas();
+}
+function editArea(id = "") {
+  if (!areasLoaded) { toast("Work areas are still loading. Please try again."); return; }
+  editingArea = id;
+  const area = areaData.areas.find(a => a.id === id);
+  $("areaDialogTitle").textContent = area ? "Area settings" : "New work area";
+  $("areaNameInput").value = area?.name || "";
+  $("areaPromptInput").value = area?.prompt || "";
+  $("areaFormError").textContent = "";
+  $("deleteAreaBtn").hidden = !area;
+  $("areaDialog").showModal(); $("areaNameInput").focus();
+}
+async function mutateArea(body) {
+  const result = await post("/api/areas", body);
+  if (!result || result.error) throw new Error(result?.error || "Could not save work area.");
+  areaData = result; metaSig = ""; renderAreas(); render();
+}
 
 // columns are data, not markup; they are built once and only cards move
 const COLUMNS = [
@@ -1290,7 +1394,7 @@ function applyVisibility() {
 
 function filtered() {
   const q = query.trim().toLowerCase();
-  return sessions.filter(s => {
+  return areaSessions(activeArea).filter(s => {
     if (project && s.cwd !== project) return false;
     if (tag === "∅") { if ((s.tags || []).length) return false; }
     else if (tag && !(s.tags || []).includes(tag)) return false;
@@ -1353,6 +1457,7 @@ function cardFor(s) {
 }
 
 function render() {
+  renderAreas();
   // FLIP 1: measure. A card in a hidden column measures 0x0 — skip it, or it
   // flies in from the corner when the column is shown.
   const before = new Map();
@@ -2246,7 +2351,7 @@ function renderPanel() {
   const sug = suggestTag(s);
   const sig = JSON.stringify([s.title, s.status, s.realStatus, s.customName, s.tags,
     s.overridden, s.unread, s.attachable, s.openable, s.engine, s.prompt, s.model,
-    s.branch, s.toolCounts, sug]);
+    s.branch, s.toolCounts, sug, areaData.members[s.sessionId], areaData.areas]);
   // never rebuild under a focused input: on a working session the tool counts
   // tick every poll, and the rebuild would eat a rename mid-word
   if (metaSig !== sig && !$("pMeta").contains(document.activeElement)
@@ -2279,6 +2384,7 @@ function renderPanel() {
       ? ""
       : `<button class="btn sm danger" id="deleteBtn" title="Clear this card off the board. A closed session stays gone; a live one returns only if it speaks again.">Delete</button>`;
     $("pMeta").innerHTML =
+      `<div class="prow"><label class="plabel" for="agentAreaSel">Work area</label><select id="agentAreaSel">${areaOptions(areaData.members[s.sessionId])}</select></div>` +
       `<div class="prow"><div class="plabel">Name</div>` +
       `<input id="renameIn" value="${esc(s.customName || "")}" placeholder="${esc(s.title || "")}" maxlength="60"></div>` +
       `<div class="prow"><div class="mvrow">${openBtn}${unreadBtn}${deleteBtn}</div></div>` +
@@ -3217,7 +3323,9 @@ function syncProjectButtons() {
 async function openNewAgent() {
   $("modal").hidden = false;
   $("naErr").textContent = "";
-  $("naTask").value = ""; $("naName").value = ""; $("naSys").value = "";
+  $("naArea").innerHTML = areaOptions(activeArea);
+  agentStarterPrompt = areaData.areas.find(a => a.id === activeArea)?.prompt || "";
+  $("naTask").value = agentStarterPrompt; $("naName").value = ""; $("naSys").value = "";
   $("naSession").value = "interactive";
   $("naAddRow").hidden = true;
   try {
@@ -3285,6 +3393,7 @@ async function startAgent() {
     const noProject = $("naProject").value === "__desktop__";
     r = await post("/api/spawn", {
       cwd: noProject ? "" : $("naProject").value, noProject, prompt,
+      areaId: $("naArea").value,
       engine: $("naEngine").value,
       model: selectedModel("naModel"), name: $("naName").value.trim(),
       systemPrompt: $("naSys").value.trim(),
@@ -3664,14 +3773,19 @@ async function doSync() {
 
 function setView(v) {
   if (view === "notes" || view === "split") flushSave();
+  if (!["areas", "board", "split", "notes"].includes(v)) v = "areas";
   view = v;
+  if (v === "areas") closePanel();
+  $("areas").hidden = v !== "areas";
+  $("areaTrail").hidden = v === "areas";
+  document.body.classList.toggle("area-overview", v === "areas");
   localStorage.setItem("agentgrid.view", v);
   document.body.classList.toggle("split", v === "split");
-  $("board").hidden = v === "notes";
-  $("notes").hidden = v === "board";
+  $("board").hidden = v === "notes" || v === "areas";
+  $("notes").hidden = v === "board" || v === "areas";
   $("views").querySelectorAll("button").forEach(b =>
     b.setAttribute("aria-pressed", String(b.dataset.view === v)));
-  if (v !== "board") loadNotes(true);
+  if (v === "notes" || v === "split") loadNotes(true);
 }
 
 /* --------------------------------------------------------------------- poll */
@@ -3724,6 +3838,7 @@ async function poll() {
   stamp.textContent = fleetError ||
     (polledAt ? new Date(polledAt * 1000).toLocaleTimeString() : "");
   stamp.title = fleetError || "Last refresh";
+  await loadAreas();
   renderSelects(); render();
   // While a live turn streams, the SSE owns #tScroll — skip the disk refresh so
   // it can't clobber the in-flight nodes; once the turn lands the poll resumes
@@ -3734,6 +3849,43 @@ async function poll() {
 /* ------------------------------------------------------------------- events */
 
 function bindEvents() {
+  $("areasBtn").onclick = $("areaBack").onclick = () => setView("areas");
+  $("allAgentsBtn").onclick = () => enterArea("");
+  $("addAreaBtn").onclick = () => editArea();
+  $("editAreaBtn").onclick = () => editArea(activeArea);
+  $("cancelAreaBtn").onclick = () => $("areaDialog").close();
+  $("areaGrid").onclick = e => {
+    const card = e.target.closest("[data-area]");
+    if (card) enterArea(card.dataset.area);
+    if (e.target.closest("[data-add-area]")) editArea();
+  };
+  $("areaForm").onsubmit = async e => {
+    e.preventDefault(); $("saveAreaBtn").disabled = true;
+    try {
+      await mutateArea({action: "save", id: editingArea, name: $("areaNameInput").value, prompt: $("areaPromptInput").value});
+      $("areaDialog").close();
+    } catch (err) { $("areaFormError").textContent = err.message; }
+    finally { $("saveAreaBtn").disabled = false; }
+  };
+  $("deleteAreaBtn").onclick = async () => {
+    if (!confirm("Delete this work area? Its agents will move to Unassigned.")) return;
+    try {
+      await mutateArea({action: "delete", id: editingArea});
+      $("areaDialog").close(); activeArea = ""; localStorage.setItem("agentgrid.area", ""); setView("areas"); render();
+    } catch (err) { $("areaFormError").textContent = err.message; }
+  };
+  document.addEventListener("change", async e => {
+    if (e.target.id !== "agentAreaSel") return;
+    const sid = openId;
+    try { await mutateArea({action: "assign", sessionId: sid, id: e.target.value}); toast("Agent moved."); }
+    catch (err) { e.target.value = areaData.members[sid] || ""; toast(err.message); }
+  });
+  $("naArea").onchange = () => {
+    const prompt = areaData.areas.find(a => a.id === $("naArea").value)?.prompt || "";
+    if (!$("naTask").value.trim() || $("naTask").value === agentStarterPrompt) $("naTask").value = prompt;
+    agentStarterPrompt = prompt;
+  };
+
   // bar
   $("views").addEventListener("click", e => {
     const b = e.target.closest("button[data-view]");
@@ -4478,5 +4630,6 @@ setInterval(() => { if (view !== "notes" && !document.hidden) loadNotes(true); }
             30000);                                                    // open count
 loadNotes(false);   // first fill: padDirty is false, so this cannot clobber anything
 </script>
+
 </body>
 </html>

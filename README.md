@@ -505,18 +505,23 @@ Backlog        To do          In progress    In review      Done
 ```
 
 A ticket has a **type** (`task ■`, `bug ●`, `story ◆`, `spike ▲`, `chore ○`),
-a **priority**, a **project**, an **assignee**, **labels**, an optional **due
-date**, a markdown description and a comment thread. Ids are per project and
+a **priority**, a **project**, a **work area**, an **assignee**, **labels**, an
+optional **due date**, a markdown description and a comment thread. Ids are per project and
 minted from the folder name: `draw-cal` becomes `DC-1`, `DC-2`; `AgentGrid`
-becomes `AG-1`. A key is registered once and never moves, because an id that
-changed would orphan every mention of it in a commit or a chat.
+becomes `AG-1`. **Prefixes** (in the ticket filters, or `ag ticket prefix NEW`)
+renames a project's key and its tickets with it: `COSM-2` becomes `COS-2`. The
+old key stays on as an alias, so a mention already written into a commit or a
+chat still finds its ticket.
 
 ### Filters, lanes and layouts
 
-- **Project**, **type** and **assignee** dropdowns, each built only from what
+- Inside a work area, the **area chip** at the start of the bar scopes the
+  board to that area's tickets in one click; click it again for everything.
+  It stacks with every other filter, and a new ticket defaults to that area.
+- **Work area**, **project**, **type** and **assignee** dropdowns, each built only from what
   exists, plus `No project` and `Unassigned` where they apply.
 - **Status toggles** with live counts: hide Done, keep the number.
-- **Lanes** split the board by project, agent, type or priority -- this is how
+- **Lanes** split the board by work area, project, agent, type or priority -- this is how
   you see what each agent, or each codebase, is carrying.
 - **Board** or **List**; the list sorts by column and shows every field at once.
 - `/` searches ids, titles, descriptions, labels and assignees.

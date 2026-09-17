@@ -306,8 +306,8 @@ First, once: **Providers** → paste your OpenRouter key → **Connect**. That k
 is what an orchestrator thinks with; the agents it starts still run on your
 Claude Code and Codex logins.
 
-Now open a work area and click **+ Orchestrator** in the strip above the
-columns:
+Now open a work area, click **Orchestrators** in the breadcrumb (next to Area
+settings) and pick **+ New orchestrator**:
 
 > Name: **Shipper** · Work area: Engineering · Model: `openai/gpt-5`
 > Starts agents in: drawcal

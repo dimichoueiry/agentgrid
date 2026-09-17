@@ -1,6 +1,6 @@
 // Run with: node tests/test_orchestrator_ui.js
 //
-// The orchestrator strip and panel, checked the way the rest of the UI is: the
+// The orchestrator menu and panel, checked the way the rest of the UI is: the
 // page's own script is parsed, then the orchestrator section is run in a
 // sandbox with stubbed elements. What matters here is that state reaches the
 // screen -- a waiting orchestrator reads as needing you, an approval offers
@@ -56,9 +56,9 @@ vm.runInContext(`activeArea = 'unassigned'`, ctx);
 assert.deepEqual(vm.runInContext('visibleOrchestrators().map(o => o.name)', ctx), ['Chief']);
 vm.runInContext(`activeArea = 'engineering'`, ctx);
 
-// --- the strip -------------------------------------------------------------
+// --- the breadcrumb menu ---------------------------------------------------
 vm.runInContext('renderOrchestrators()', ctx);
-const strip = elements.orchStrip.innerHTML;
+const strip = elements.orchMenu.innerHTML;
 assert.ok(strip.includes('data-orch="1"') && strip.includes('data-orch="2"'), strip);
 assert.ok(!strip.includes('data-orch="3"'), 'another area’s orchestrator is not shown');
 assert.ok(strip.includes('data-add-orch'), 'creating one is always one click away');
@@ -69,18 +69,30 @@ assert.ok(strip.includes('2 agents') && strip.includes('$0.12'), strip);
 const waiting = strip.match(/<button class="ocard needs"[^]*?<\/button>/)[0];
 assert.ok(waiting.includes('Approve?'), waiting);
 assert.ok(waiting.includes('Chief'), waiting);
+// The badge counts what is waiting on you, not how many exist.
+assert.equal(elements.orchCount.textContent, '1', 'one of the two is waiting');
+assert.ok(elements.orchCount.title.includes('waiting on you'), elements.orchCount.title);
 // Repainting unchanged data must not touch the DOM: it would kill hover/focus.
-elements.orchStrip.innerHTML = 'browser-normalized';
+elements.orchMenu.innerHTML = 'browser-normalized';
 vm.runInContext('renderOrchestrators()', ctx);
-assert.equal(elements.orchStrip.innerHTML, 'browser-normalized');
+assert.equal(elements.orchMenu.innerHTML, 'browser-normalized');
 vm.runInContext(`orchestrators[0].status = 'waiting'; renderOrchestrators()`, ctx);
-assert.ok(elements.orchStrip.innerHTML.includes('Needs you'), 'a status change repaints');
+assert.ok(elements.orchMenu.innerHTML.includes('Needs you'), 'a status change repaints');
+assert.equal(elements.orchCount.textContent, '2');
 vm.runInContext(`orchestrators[0].status = 'running'`, ctx);
-// The strip belongs to the board, not to notes or tickets.
+// The button belongs to the board, not to notes or tickets.
+elements.orchMenu.classList = {remove() {}};
 vm.runInContext(`view = 'tickets'; renderOrchestrators()`, ctx);
-assert.equal(elements.orchStrip.hidden, true);
+assert.equal(elements.orchBtn.hidden, true);
 vm.runInContext(`view = 'board'; renderOrchestrators()`, ctx);
-assert.equal(elements.orchStrip.hidden, false);
+assert.equal(elements.orchBtn.hidden, false);
+// With none at all, the menu still explains itself and offers one.
+vm.runInContext(`const kept = orchestrators; orchestrators = []; renderOrchestrators();
+                 orchestrators = kept;`, ctx);
+assert.ok(elements.orchMenu.innerHTML.includes('starts the agents to do it'), elements.orchMenu.innerHTML);
+assert.ok(elements.orchMenu.innerHTML.includes('data-add-orch'));
+assert.equal(elements.orchCount.textContent, '', 'nothing waiting, no badge');
+vm.runInContext('renderOrchestrators()', ctx);
 
 // --- the panel -------------------------------------------------------------
 elements.orchPanel = {...element(), open: true, showModal() { this.open = true; },
@@ -151,9 +163,9 @@ assert.equal(elements.orchStop.hidden, true);
 
 // --- escaping --------------------------------------------------------------
 vm.runInContext(`orchestrators[1].name = '<img src=x>'; renderOrchestrators()`, ctx);
-assert.ok(!elements.orchStrip.innerHTML.includes('<img src=x>'), 'names are escaped');
+assert.ok(!elements.orchMenu.innerHTML.includes('<img src=x>'), 'names are escaped');
 vm.runInContext(`orchEvents = [{at: 1, type: 'message', text: '<script>bad()</script>'}];
   openOrch = '2'; orchTab = 'chat'; renderOrchPanel()`, ctx);
 assert.ok(!elements.orchBody.innerHTML.includes('<script>bad()'), 'messages are escaped');
 
-console.log('Orchestrator UI: scope, strip, panel tabs, approvals and escaping checks passed');
+console.log('Orchestrator UI: scope, menu, badge, panel tabs, approvals and escaping checks passed');

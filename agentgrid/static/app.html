@@ -1008,23 +1008,39 @@ body.area-overview .viewnav,body.area-overview #searchBox,body.area-overview #ne
    not a session, and the one thing that must never be missed -- an approval
    -- gets a fixed place instead of moving between columns. It also keeps a
    parent directly above the agents it started. */
-.orchstrip{display:flex;gap:8px;align-items:stretch;flex-wrap:wrap;padding:0 14px 10px}
-.ocard{position:relative;flex:0 1 240px;min-width:0;text-align:left;font:inherit;color:inherit;
-  background:var(--card);border:1px solid var(--line);border-radius:8px;box-shadow:var(--shadow);
-  padding:8px 11px;cursor:pointer;display:flex;flex-direction:column;gap:3px}
+/* The entry point sits in the breadcrumb beside Area settings, and the list
+   drops out of it: an orchestrator you are not currently watching should cost
+   no board space, and the board is already the tightest thing on screen. */
+.obtn{display:inline-flex;align-items:center;gap:5px;white-space:nowrap}
+.obtn[aria-expanded=true]{background:var(--card-hover);color:var(--text)}
+/* the badge counts what is waiting on you, so the button carries the urgency */
+.obtn:has(.fcount:not(:empty)){color:var(--accent);border-color:var(--accent)}
+/* The menu hangs off the button, not off the breadcrumb: an absolutely
+   positioned child of a flex row takes the row's start corner as its static
+   position, which would drop it at the far left. */
+.owrap{position:relative;display:inline-flex}
+.omenu{display:none}
+.omenu.open{
+  position:absolute;top:calc(100% + 4px);left:0;z-index:25;width:min(320px,calc(100vw - 28px));
+  display:flex;flex-direction:column;gap:2px;padding:6px;
+  background:var(--card);border:1px solid var(--line-2);border-radius:8px;
+  box-shadow:0 6px 24px rgba(0,0,0,.14);
+}
+.ocard{position:relative;width:100%;text-align:left;font:inherit;color:inherit;
+  background:transparent;border:0;border-radius:6px;padding:7px 9px;cursor:pointer;
+  display:flex;flex-direction:column;gap:2px}
 .ocard:hover{background:var(--card-hover)}
-.ocard.needs{border-color:var(--accent)}
-.ocard .orow{display:flex;align-items:baseline;gap:6px}
+.ocard .orow{display:flex;align-items:baseline;gap:8px}
 .ocard .oname{font-size:12.5px;font-weight:560;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .ocard .ostate{margin-left:auto;flex:0 0 auto;font-size:10.5px;color:var(--text-2)}
-.ocard.needs .ostate{color:var(--accent);font-weight:560}
+.ocard.needs .ostate{color:var(--accent);font-weight:600}
 .ocard .ostate.working{color:var(--working)}
 .ocard .osub{font-size:11px;color:var(--text-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.ocard .okind{font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--text-3)}
-.oadd{flex:0 0 auto;align-self:center;font:inherit;font-size:12px;color:var(--text-2);
-  background:transparent;border:1px dashed var(--line-2);border-radius:8px;padding:8px 12px;cursor:pointer}
-.oadd:hover{color:var(--text);border-color:var(--text-3)}
-body.area-overview .orchstrip,body.tickets-view .orchstrip,body.notes-view .orchstrip{display:none}
+.omenu .osep{height:1px;margin:4px 2px;background:var(--line)}
+.oadd{width:100%;text-align:left;font:inherit;font-size:12px;color:var(--text-2);
+  background:transparent;border:0;border-radius:6px;padding:7px 9px;cursor:pointer}
+.oadd:hover{color:var(--text);background:var(--card-hover)}
+.omenu .ohint{margin:2px 9px 4px;font-size:11px;color:var(--text-3)}
 
 /* the orchestrator's own window: one dialog, four tabs, one composer */
 #orchPanel{width:min(820px,calc(100vw - 24px));height:min(680px,calc(100vh - 48px));padding:0;
@@ -1081,7 +1097,8 @@ body.area-overview .orchstrip,body.tickets-view .orchstrip,body.notes-view .orch
 #orchDialog summary{font-size:12.5px;color:var(--text-2);cursor:pointer}
 .orchlimits{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 12px}
 .orchlimits label{margin:10px 0;font-size:11.5px;color:var(--text-2)}
-@media(max-width:640px){.orchlimits{grid-template-columns:1fr}.ocard{flex:1 1 100%}}
+@media(max-width:640px){.orchlimits{grid-template-columns:1fr}
+  .omenu.open{left:auto;right:0}}
 
 /* ---------- narrow windows ---------- */
 /* The common case is agentgrid docked beside an editor: 700–960px wide. Bars
@@ -1239,6 +1256,11 @@ body.area-overview .orchstrip,body.tickets-view .orchstrip,body.notes-view .orch
     <strong id="areaName"></strong>
     <span class="hint" id="areaCount"></span>
     <button class="btn sm" id="editAreaBtn">Area settings</button>
+    <span class="owrap">
+      <button class="btn sm obtn" id="orchBtn" aria-expanded="false" aria-controls="orchMenu"
+        title="Orchestrators — standing agents that start agents for you">Orchestrators<span class="fcount" id="orchCount"></span><svg class="chev" width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M2.5 4 5 6.5 7.5 4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+      <div class="omenu" id="orchMenu"></div>
+    </span>
   </div>
   <button class="btn sm fbtn" id="filtersBtn" aria-expanded="false" aria-controls="filters">Filters<span class="fcount" id="filtersCount"></span><svg class="chev" width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M2.5 4 5 6.5 7.5 4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
   <div class="filters fpanel" id="filters">
@@ -1250,7 +1272,6 @@ body.area-overview .orchstrip,body.tickets-view .orchstrip,body.notes-view .orch
       title="Notify when an agent needs you or replies (while this tab is open)">Alerts</button></div>
   </div>
 </div>
-<div class="orchstrip" id="orchStrip" hidden aria-label="Orchestrators"></div>
 <main class="board" id="board"></main>
 <dialog id="orchPanel" aria-labelledby="orchPanelName">
   <div class="op-head">
@@ -3715,7 +3736,8 @@ function runTool(id) {
 
 // Below the width where a view's options fit inline, they open as a panel
 // from its Filters button. Same elements, same handlers — only the layout moves.
-const FILTER_PANELS = [["filtersBtn", "filters"], ["tkFiltersBtn", "tkOpts"]];
+const FILTER_PANELS = [["filtersBtn", "filters"], ["tkFiltersBtn", "tkOpts"],
+                       ["orchBtn", "orchMenu"]];
 function toggleFilters(btnId, panelId) {
   const open = !$(panelId).classList.contains("open");
   closeMenus(); closeFilters();
@@ -4849,11 +4871,12 @@ async function poll() {
 
 /* ----------------------------------------------------------- orchestrators */
 /* An orchestrator is a standing agent on an OpenRouter model whose only power
-   is starting real agents. It gets its own strip above the columns because it
-   is not a session: the columns describe what a session is doing, while an
-   orchestrator is the thing that made the session. Keeping it in one fixed
-   place also means an approval -- the one thing here that must never be
-   missed -- never moves, and a parent always sits above its children.
+   is starting real agents. It is not a session, so it is not a card in the
+   status columns -- those describe what a session is doing, and an
+   orchestrator is the thing that made the session. It lives in the breadcrumb
+   instead, beside Area settings: a dropdown costs no board space, which is
+   the scarcest thing on this screen, and the count on the button carries the
+   one signal that must never be missed -- how many are waiting on you.
 
    Everything drawn here comes from two server reads: the snapshot list (state,
    counters, the pending approval) and the journal (what it has done, replayed
@@ -4905,7 +4928,7 @@ async function loadOrchestrators() {
 }
 
 function renderOrchestrators() {
-  const host = $("orchStrip");
+  const host = $("orchMenu");
   const mine = visibleOrchestrators();
   const markup = mine.map(o => {
     const state = orchFor(o);
@@ -4915,14 +4938,24 @@ function renderOrchestrators() {
     if (o.costUsd) bits.push(orchMoney(o.costUsd));
     return `<button class="ocard${orchNeedsYou(o) ? " needs" : ""}" data-orch="${esc(o.id)}"
       title="${esc(o.reason || o.goal || "Open this orchestrator")}">
-      <span class="okind">orchestrator</span>
       <span class="orow"><span class="oname">${esc(o.name)}</span>
         <span class="ostate ${state.cls}">${esc(o.pending ? "Approve?" : state.label)}</span></span>
       <span class="osub">${esc(bits.join(" · "))}</span></button>`;
   }).join("") +
-    `<button class="oadd" data-add-orch>+ Orchestrator</button>`;
+    (mine.length ? `<div class="osep"></div>` :
+      `<p class="ohint">An orchestrator takes a goal and starts the agents to do it.</p>`) +
+    `<button class="oadd" data-add-orch>+ New orchestrator</button>`;
   if (host._markup !== markup) { host._markup = markup; host.innerHTML = markup; }
-  host.hidden = view !== "board" && view !== "split";
+  // The button belongs to the board; the breadcrumb itself also shows over
+  // notes and tickets, where an orchestrator is not what you are looking at.
+  const onBoard = view === "board" || view === "split";
+  $("orchBtn").hidden = !onBoard;
+  if (!onBoard) $("orchMenu").classList.remove("open");
+  // The badge is what is waiting on you, the same promise the Tickets count
+  // makes -- not how many exist.
+  const waiting = mine.filter(orchNeedsYou).length;
+  $("orchCount").textContent = waiting ? String(waiting) : "";
+  $("orchCount").title = waiting ? `${waiting} orchestrator${waiting === 1 ? " is" : "s are"} waiting on you` : "";
 }
 
 /* ---- the editor: what it is, not what it is doing ---- */
@@ -5204,10 +5237,10 @@ async function orchAction(action, body, failure) {
 }
 
 function bindOrchestrators() {
-  $("orchStrip").onclick = (e) => {
+  $("orchMenu").onclick = (e) => {
     const card = e.target.closest("[data-orch]");
-    if (card) { openOrchestrator(card.dataset.orch); return; }
-    if (e.target.closest("[data-add-orch]")) editOrchestrator();
+    if (card) { closeFilters(); openOrchestrator(card.dataset.orch); return; }
+    if (e.target.closest("[data-add-orch]")) { closeFilters(); editOrchestrator(); }
   };
   $("orchForm").onsubmit = async (e) => {
     e.preventDefault();
@@ -6046,7 +6079,7 @@ function bindEvents() {
   // dismiss popovers on outside click
   document.addEventListener("mousedown", e => {
     if (!$("pmenu").hidden && !e.target.closest("#pmenu, #moreBtn, #viewBtn")) closeMenus();
-    if (!e.target.closest(".fpanel, .fbtn")) closeFilters();
+    if (!e.target.closest(".fpanel, .fbtn, .omenu, .obtn")) closeFilters();
     if (!$("atFiles").hidden && !e.target.closest("#atFiles") && !e.target.closest("#cInput")) hideAtFiles();
   });
 

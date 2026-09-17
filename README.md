@@ -412,10 +412,13 @@ produced, message an agent, file and move tickets, keep a checklist, talk to
 you, and stop. Everything it gets done, it gets done through real Claude Code
 or Codex sessions on your machine.
 
-Orchestrators live in the strip above the board's columns. **+ Orchestrator**
-creates one; it belongs either to the work area you are in — an area may have
-as many as you like — or to **All work areas**, the global orchestrator that
-can see every area and create new ones. Click a card to open its window:
+Orchestrators live behind the **Orchestrators** button in the breadcrumb,
+beside Area settings. Its badge counts how many are waiting on you, the same
+promise the Tickets count makes. The dropdown lists this area's orchestrators
+and the global one, and **+ New orchestrator** creates another: it belongs
+either to the work area you are in — an area may have as many as you like — or
+to **All work areas**, the global orchestrator that can see every area and
+create new ones. Click one to open its window:
 **Chat** (give it a goal, message it mid-run, read its reports), **Plan** (its
 own checklist), **Agents** (what it started, with live status read off the
 board) and **Activity** (every decision, tool call, approval and dollar).
@@ -481,10 +484,12 @@ that machine has to be awake. Two shapes:
 
 *Why this is the way it is.* An orchestrator is not a session, so it is not a
 card in the status columns: the columns describe what a session is doing,
-while an orchestrator is the thing that made the session. Giving it a fixed
-strip above them means the one thing here that must never be missed — an
-approval — never moves, and a parent always sits directly above the children
-it started. Starting an agent goes through exactly the same code path as the
+while an orchestrator is the thing that made the session. It sits in the
+breadcrumb rather than in a strip over the board because board space is the
+scarcest thing on this screen — the common case is agentgrid docked beside an
+editor — and a dropdown gives the same answer for free: the button's badge
+carries the one thing that must never be missed, which is how many are waiting
+on you. Starting an agent goes through exactly the same code path as the
 New agent sheet (`launch_agent` in `web.py`), which is what makes an
 orchestrator's reach reviewable: it can do what you can do from that sheet,
 including the project boundary that refuses any directory which is not one of

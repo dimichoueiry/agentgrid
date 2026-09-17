@@ -49,7 +49,9 @@ from datetime import date, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from agentgrid import areas, chat, discovery, models, notes, sync, teams, terminal, tickets, transcript, voice, workflows, credentials, openrouter
+from agentgrid import (areas, chat, credentials, discovery, models, notes, openrouter,
+                       orchestrator, orchestrator_run, sync, teams, terminal, tickets,
+                       transcript, voice, workflows)
 
 STATIC = Path(__file__).resolve().parent / "static"
 POLL_SECONDS = 2.0
@@ -1207,6 +1209,155 @@ def spawn_interactive(cwd: str, prompt: str, model: str | None,
                   f"{f' on {model}' if model else ''}."), None
 
 
+# --- one launch, two callers -------------------------------------------------
+
+
+def launch_agent(fleet, request: dict) -> dict:
+    """Start an agent the way the New agent sheet does, and say what happened.
+
+    Both callers -- the /api/spawn route and an orchestrator's `start_agent`
+    tool -- come through here, so an agent an orchestrator started is
+    indistinguishable from one you started by hand: same project boundary,
+    same ticket handoff, same work-area registration, same naming. A refusal
+    is a ValueError whose message is written to be read by whoever asked,
+    which for an orchestrator means the model sees it as a failed tool and
+    can choose differently.
+    """
+    area_id = str(request.get("areaId") or "")
+    if area_id and not any(a["id"] == area_id for a in areas.load()["areas"]):
+        raise ValueError("Work area no longer exists.")
+    started = time.time()
+    known = [session.session_id for session in fleet.raw()]
+    projects = discover_projects(fleet.raw())
+    engine = "codex" if str(request.get("engine") or "") == "codex" else "claude"
+    interactive = bool(request.get("interactive"))
+    name = str(request.get("name") or "").strip()
+    prompt = str(request.get("prompt") or "")
+    # An agent started for a ticket gets the ticket as its brief, with the
+    # exact commands to report back, ahead of anything typed.
+    ticket = None
+    agent_label = ""
+    ticket_id = str(request.get("ticketKey") or request.get("ticketId") or "").strip()
+    if ticket_id:
+        ticket = tickets.get(ticket_id)
+        agent_label = name or f"{ticket['id']} \u00b7 {engine}"
+        handoff = tickets.handoff_prompt(ticket, agent_label)
+        prompt = f"{handoff}\n\n{prompt.strip()}" if prompt.strip() else handoff
+    if request.get("noProject"):
+        # A project-less agent, like running `claude` from the Desktop. The
+        # cwd is resolved here rather than trusted from the client, and only
+        # this one server-chosen root is added to the allowlist, so the
+        # spawn boundary still holds.
+        root = freeform_root()
+        cwd = str(root)
+        projects = projects + [{"path": cwd, "name": root.name, "label": root.name}]
+    else:
+        cwd = str(request.get("cwd") or "")
+    ok, message, job_id = spawn_agent(
+        cwd,
+        prompt,
+        str(request.get("model") or "") or None,
+        projects,
+        engine,
+        str(request.get("systemPrompt") or ""),
+        interactive,
+        agent_label or name,
+    )
+    if not ok:
+        raise ValueError(message)
+    if area_id:
+        areas.await_session(area_id, cwd, engine, interactive, job_id, known, started)
+    if ticket is not None:
+        try:
+            tickets.assign(ticket["id"], agent_label, who="you", start=True)
+            message += f" {ticket['id']} is in progress."
+        except ValueError as error:
+            message += f" Could not assign {ticket['id']}: {error}"
+    if name:
+        if job_id:
+            fleet.name_when_seen(job_id, name)
+        elif engine == "codex":
+            # A codex session (exec or interactive) is found in the rollout
+            # files by cwd + time, never a job id.
+            fleet.name_codex_when_seen(cwd, name)
+        elif interactive:
+            fleet.name_interactive_when_seen(cwd, name)
+        else:
+            # Say the name was not applied rather than dropping it silently.
+            message += " Could not read its id, so the name was not applied."
+    return {"message": message, "jobId": job_id or "", "cwd": cwd,
+            "name": agent_label or name, "engine": engine,
+            "interactive": interactive, "ticket": ticket["id"] if ticket else ""}
+
+
+def host_capabilities() -> dict:
+    """What an orchestrator may ask this machine for.
+
+    An interactive session needs a scriptable Terminal.app, so anywhere but
+    macOS -- the always-on box AgentGrid can be run on so work continues with
+    the laptop shut -- background is the only shape. The orchestrator is told
+    so up front and its tool menu shrinks to match, rather than it finding out
+    by having a launch refused.
+    """
+    interactive = sys.platform == "darwin"
+    return {
+        "interactive": interactive,
+        "engines": ["claude", "codex"],
+        "note": ("" if interactive else "This host has no scriptable terminal, so every "
+                 "agent runs in the background."),
+    }
+
+
+class ServerHost(orchestrator_run.Host):
+    """The orchestrator's window onto this machine, and the whole of it.
+
+    Deliberately thin: every method is a call the board already makes for a
+    human somewhere in this file. Nothing here grants a power the UI does not
+    already have, which is what makes an orchestrator's reach reviewable.
+    """
+
+    def __init__(self, fleet, chat_manager) -> None:
+        self.fleet = fleet
+        self.chat = chat_manager
+
+    def capabilities(self) -> dict:
+        return host_capabilities()
+
+    def projects(self) -> list[dict]:
+        return [{"path": project["path"], "name": project.get("name") or project["path"]}
+                for project in discover_projects(self.fleet.raw())]
+
+    def start_agent(self, request: dict) -> dict:
+        return launch_agent(self.fleet, request)
+
+    def agents(self) -> list[dict]:
+        return self.fleet.snapshot()["sessions"]
+
+    def _session(self, session_id: str):
+        session = next((s for s in self.fleet.raw() if s.session_id == session_id), None)
+        if session is None:
+            raise ValueError("That agent is not on the board any more. Call list_agents again.")
+        return session
+
+    def read_output(self, session_id: str, chars: int) -> str:
+        session = self._session(session_id)
+        if session.transcript is None:
+            return "(this agent has written no transcript yet)"
+        blocks = transcript.render_blocks(session.transcript)
+        text = "\n".join(f"[{block.get('kind')}] {block.get('text') or ''}"
+                          for block in blocks if block.get("text"))
+        return text[-max(500, chars):]
+
+    def send_to_agent(self, session_id: str, message: str) -> str:
+        session = self._session(session_id)
+        blocked = codex_chat_block(session, self.chat)
+        if blocked:
+            raise ValueError(blocked)
+        self.chat.send(session.session_id, session.cwd, message,
+                       chat.DEFAULT_POSTURE, engine=getattr(session, "engine", "claude"))
+        return f"Queued for {session.display_title}."
+
+
 # --- @-mention file search ---------------------------------------------------
 #
 # The chat composer's `@` autocomplete needs the files under a session's cwd,
@@ -1525,6 +1676,12 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(200 if draft else 404, draft or {"error": "Draft not found."})
         elif route == "/api/teams/stream":
             self._teams_stream(query)
+        elif route == "/api/orchestrators":
+            self._orchestrators()
+        elif route == "/api/orchestrators/journal":
+            self._orchestrator_journal(query)
+        elif route == "/api/orchestrators/stream":
+            self._orchestrator_stream(query)
         elif route == "/api/transcript":
             self._get_transcript(query)
         elif route == "/api/files":
@@ -1887,6 +2044,8 @@ class Handler(BaseHTTPRequestHandler):
         elif route == "/api/teams/cancel":
             self.teams.cancel(str(body.get("name") or ""))
             self._send_json(200, {"ok": True})
+        elif route.startswith("/api/orchestrators/"):
+            self._orchestrator_action(route[len("/api/orchestrators/"):], body)
         else:
             self._send_json(404, {"error": "No such route."})
 
@@ -1982,6 +2141,112 @@ class Handler(BaseHTTPRequestHandler):
             pass
         finally:
             run.unsubscribe(channel)
+
+    # -- orchestrator routes -------------------------------------------------
+
+    def _orchestrator_run(self, body_or_query: dict, key: str = "id"):
+        """The run for the id given, with its definition freshly loaded.
+
+        Reloading the definition on every request is what makes an edit apply
+        to a run already in flight -- switching Ask me/Auto mid-run is the
+        whole point of putting that control on the running orchestrator.
+        """
+        identifier = body_or_query.get(key)
+        identifier = identifier[0] if isinstance(identifier, list) else identifier
+        return self.runs.run(orchestrator.get(str(identifier or "")))
+
+    def _orchestrators(self) -> None:
+        payload = []
+        for definition in orchestrator.list_all():
+            try:
+                payload.append(self.runs.run(definition).snapshot())
+            except (ValueError, OSError):
+                continue
+        # No provider check here on purpose: this route is polled with the
+        # board, and reading the Keychain every couple of seconds is both
+        # wasteful and a way to earn a permission prompt. The editor asks
+        # /api/providers/openrouter once, when it opens.
+        self._send_json(200, {"orchestrators": payload, "capabilities": host_capabilities()})
+
+    def _orchestrator_journal(self, query: dict) -> None:
+        try:
+            definition = orchestrator.get(self._one(query, "id"))
+        except ValueError as error:
+            self._send_json(404, {"error": str(error)})
+            return
+        self._send_json(200, {"events": orchestrator.journal(definition.id),
+                              "orchestrator": self.runs.run(definition).snapshot()})
+
+    def _orchestrator_stream(self, query: dict) -> None:
+        """SSE for one orchestrator: its journal replayed, then live events."""
+        try:
+            run = self._orchestrator_run(query)
+        except ValueError as error:
+            self._send_json(404, {"error": str(error)})
+            return
+        channel = run.subscribe()
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "keep-alive")
+            self.send_header("X-Accel-Buffering", "no")
+            self.end_headers()
+            self.wfile.write(b": connected\n\n")
+            self.wfile.flush()
+            while True:
+                try:
+                    event = channel.get(timeout=15)
+                except queue.Empty:
+                    self.wfile.write(b": ping\n\n")
+                    self.wfile.flush()
+                    continue
+                self.wfile.write(b"data: " + json.dumps(event).encode("utf-8") + b"\n\n")
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass
+        finally:
+            run.unsubscribe(channel)
+
+    def _orchestrator_action(self, action: str, body: dict) -> None:
+        """One entry point for every orchestrator POST.
+
+        They share their failure modes -- an unknown id, a refused argument, a
+        run in the wrong state -- so they share the mapping of those onto
+        status codes instead of repeating it eight times.
+        """
+        try:
+            if action == "save":
+                definition = orchestrator.save(orchestrator.load(body))
+                self._send_json(200, {"ok": True, "orchestrator": self.runs.run(definition).snapshot()})
+                return
+            if action == "delete":
+                identifier = str(body.get("id") or "")
+                orchestrator.get(identifier)          # a bad id says so; nothing is removed
+                self.runs.forget(identifier)
+                orchestrator.delete(identifier)
+                self._send_json(200, {"ok": True})
+                return
+            run = self._orchestrator_run(body)
+            if action == "start":
+                if not credentials.get_key():
+                    raise ValueError("Connect OpenRouter in Providers before starting an orchestrator.")
+                run.start(str(body.get("goal") or ""))
+            elif action == "stop":
+                run.stop(str(body.get("reason") or "Stopped by you."))
+            elif action == "send":
+                run.submit(str(body.get("text") or ""))
+            elif action == "approve":
+                edits = body.get("edits") if isinstance(body.get("edits"), dict) else {}
+                run.approve(str(body.get("approvalId") or ""), edits)
+            elif action == "decline":
+                run.decline(str(body.get("approvalId") or ""), str(body.get("reason") or ""))
+            else:
+                self._send_json(404, {"error": "No such route."})
+                return
+            self._send_json(200, {"ok": True, "orchestrator": run.snapshot()})
+        except ValueError as error:
+            self._send_json(400, {"error": str(error)})
 
     def _events_stream(self) -> None:
         """SSE of session status changes, as they are noticed. Each event is
@@ -2483,75 +2748,14 @@ class Handler(BaseHTTPRequestHandler):
         self._send_json(200, {"ok": True, "board": tickets.board()})
 
     def _spawn(self, body: dict) -> None:
-        area_id = str(body.get("areaId") or "")
-        if area_id and not any(a["id"] == area_id for a in areas.load()["areas"]):
-            self._send_json(400, {"error": "Work area no longer exists."})
+        """Start an agent from the New agent sheet. The work is in
+        `launch_agent`, which an orchestrator uses too."""
+        try:
+            launched = launch_agent(self.fleet, body)
+        except ValueError as error:
+            self._send_json(400, {"error": str(error)})
             return
-        started = time.time()
-        known = [s.session_id for s in self.fleet.raw()]
-        projects = discover_projects(self.fleet.raw())
-        engine = "codex" if str(body.get("engine") or "") == "codex" else "claude"
-        interactive = bool(body.get("interactive"))
-        name = str(body.get("name") or "").strip()
-        prompt = str(body.get("prompt") or "")
-        # An agent started for a ticket gets the ticket as its brief, with the
-        # exact commands to report back, ahead of anything typed.
-        ticket = None
-        agent_label = ""
-        ticket_id = str(body.get("ticketKey") or body.get("ticketId") or "").strip()
-        if ticket_id:
-            try:
-                ticket = tickets.get(ticket_id)
-            except ValueError as error:
-                self._send_json(400, {"error": str(error)})
-                return
-            agent_label = name or f"{ticket['id']} · {engine}"
-            handoff = tickets.handoff_prompt(ticket, agent_label)
-            prompt = f"{handoff}\n\n{prompt.strip()}" if prompt.strip() else handoff
-        if body.get("noProject"):
-            # A project-less agent, like running `claude` from the Desktop. The
-            # cwd is resolved here rather than trusted from the client, and only
-            # this one server-chosen root is added to the allowlist, so the
-            # spawn boundary still holds.
-            root = freeform_root()
-            cwd = str(root)
-            projects = projects + [{"path": cwd, "name": root.name, "label": root.name}]
-        else:
-            cwd = str(body.get("cwd") or "")
-        ok, message, job_id = spawn_agent(
-            cwd,
-            prompt,
-            str(body.get("model") or "") or None,
-            projects,
-            engine,
-            str(body.get("systemPrompt") or ""),
-            interactive,
-            agent_label or name,
-        )
-        if not ok:
-            self._send_json(400, {"error": message})
-            return
-        if area_id:
-            areas.await_session(area_id, cwd, engine, interactive, job_id, known, started)
-        if ticket is not None:
-            try:
-                tickets.assign(ticket["id"], agent_label, who="you", start=True)
-                message += f" {ticket['id']} is in progress."
-            except ValueError as error:
-                message += f" Could not assign {ticket['id']}: {error}"
-        if name:
-            if job_id:
-                self.fleet.name_when_seen(job_id, name)
-            elif engine == "codex":
-                # A codex session (exec or interactive) is found in the rollout
-                # files by cwd + time, never a job id.
-                self.fleet.name_codex_when_seen(cwd, name)
-            elif interactive:
-                self.fleet.name_interactive_when_seen(cwd, name)
-            else:
-                # Say the name was not applied rather than dropping it silently.
-                message += " Could not read its id, so the name was not applied."
-        self._send_json(200, {"ok": True, "message": message})
+        self._send_json(200, {"ok": True, "message": launched["message"]})
 
     # -- web-review overlay --------------------------------------------------
 
@@ -2978,6 +3182,16 @@ def remove_connection_file(token: str, path: Path = CONNECTION_FILE) -> None:
         pass
 
 
+def _resume_orchestrators(runs) -> None:
+    """Continue runs the last stop interrupted, and say so on stdout."""
+    try:
+        resumed = runs.resume_all()
+    except Exception:  # noqa: BLE001 -- a failed resume must not stop the server
+        return
+    if resumed:
+        print("  resumed orchestrators: " + ", ".join(resumed), flush=True)
+
+
 def serve(port: int = 8787, open_browser: bool = True,
           roots: list[str] | None = None) -> None:
     """Start the poller and the HTTP server, print the one URL that gets in."""
@@ -2989,9 +3203,12 @@ def serve(port: int = 8787, open_browser: bool = True,
     token = secrets.token_urlsafe(24)
     # Bind fleet, token and the chat manager onto a per-server subclass rather
     # than globals, so two servers in one process cannot share state by accident.
+    chat_manager = chat.ChatManager()
+    runs = orchestrator_run.RunManager(ServerHost(fleet, chat_manager))
     handler = type("BoundHandler", (Handler,),
-                   {"fleet": fleet, "token": token, "chat": chat.ChatManager(),
-                    "teams": teams.TeamManager(), "drafts": workflows.DraftManager(), "voice": voice.Voice()})
+                   {"fleet": fleet, "token": token, "chat": chat_manager,
+                    "teams": teams.TeamManager(), "drafts": workflows.DraftManager(),
+                    "voice": voice.Voice(), "runs": runs})
     # The events the fleet announces show the chat's live signal too, as /api/sessions does.
     fleet.overlay = lambda sessions: _overlay_chat(sessions, handler.chat)
     try:
@@ -3019,6 +3236,11 @@ def serve(port: int = 8787, open_browser: bool = True,
           flush=True)
     if open_browser:
         threading.Timer(0.4, lambda: webbrowser.open(url)).start()
+    # An orchestrator interrupted by the last shutdown picks up where it
+    # stopped. Off the main thread: its first step is a model call, and the
+    # board must be servable before that returns.
+    threading.Thread(target=_resume_orchestrators, args=(runs,), daemon=True,
+                     name="orchestrator-resume").start()
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

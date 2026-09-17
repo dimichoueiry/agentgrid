@@ -1003,6 +1003,103 @@ body.area-overview .viewnav,body.area-overview #searchBox,body.area-overview #ne
 @media(max-width:540px){.area-grid{grid-template-columns:1fr;gap:16px}.areas-heading{align-items:flex-start;flex-wrap:wrap}.area-card{min-height:150px;padding:20px}.area-card strong{padding:16px 0}}
 @media(prefers-reduced-motion:reduce){.area-card{transition:none}.area-card:hover{transform:none}.apill .adot{animation:none}}
 
+/* ---------- orchestrators ---------- */
+/* The strip sits above the columns rather than in them: an orchestrator is
+   not a session, and the one thing that must never be missed -- an approval
+   -- gets a fixed place instead of moving between columns. It also keeps a
+   parent directly above the agents it started. */
+/* The entry point sits in the breadcrumb beside Area settings, and the list
+   drops out of it: an orchestrator you are not currently watching should cost
+   no board space, and the board is already the tightest thing on screen. */
+.obtn{display:inline-flex;align-items:center;gap:5px;white-space:nowrap}
+.obtn[aria-expanded=true]{background:var(--card-hover);color:var(--text)}
+/* the badge counts what is waiting on you, so the button carries the urgency */
+.obtn:has(.fcount:not(:empty)){color:var(--accent);border-color:var(--accent)}
+/* The menu hangs off the button, not off the breadcrumb: an absolutely
+   positioned child of a flex row takes the row's start corner as its static
+   position, which would drop it at the far left. */
+.owrap{position:relative;display:inline-flex}
+.omenu{display:none}
+.omenu.open{
+  position:absolute;top:calc(100% + 4px);left:0;z-index:25;width:min(320px,calc(100vw - 28px));
+  display:flex;flex-direction:column;gap:2px;padding:6px;
+  background:var(--card);border:1px solid var(--line-2);border-radius:8px;
+  box-shadow:0 6px 24px rgba(0,0,0,.14);
+}
+.ocard{position:relative;width:100%;text-align:left;font:inherit;color:inherit;
+  background:transparent;border:0;border-radius:6px;padding:7px 9px;cursor:pointer;
+  display:flex;flex-direction:column;gap:2px}
+.ocard:hover{background:var(--card-hover)}
+.ocard .orow{display:flex;align-items:baseline;gap:8px}
+.ocard .oname{font-size:12.5px;font-weight:560;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ocard .ostate{margin-left:auto;flex:0 0 auto;font-size:10.5px;color:var(--text-2)}
+.ocard.needs .ostate{color:var(--accent);font-weight:600}
+.ocard .ostate.working{color:var(--working)}
+.ocard .osub{font-size:11px;color:var(--text-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.omenu .osep{height:1px;margin:4px 2px;background:var(--line)}
+.oadd{width:100%;text-align:left;font:inherit;font-size:12px;color:var(--text-2);
+  background:transparent;border:0;border-radius:6px;padding:7px 9px;cursor:pointer}
+.oadd:hover{color:var(--text);background:var(--card-hover)}
+.omenu .ohint{margin:2px 9px 4px;font-size:11px;color:var(--text-3)}
+
+/* the orchestrator's own window: one dialog, four tabs, one composer */
+#orchPanel{width:min(820px,calc(100vw - 24px));height:min(680px,calc(100vh - 48px));padding:0;
+  background:var(--bg);color:var(--text);border:1px solid var(--line-2);border-radius:12px;
+  display:flex;flex-direction:column;overflow:hidden}
+#orchPanel:not([open]){display:none}
+#orchPanel::backdrop{background:#0005}
+.op-head{display:flex;align-items:center;gap:8px;padding:12px 14px;border-bottom:1px solid var(--line-2)}
+.op-head strong{font-size:14px;font-weight:560}
+.op-head .hint{font-size:11px}
+.op-tabs{display:flex;gap:2px;padding:8px 14px 0}
+.op-tabs button{font:inherit;font-size:12px;color:var(--text-2);background:transparent;border:0;
+  border-bottom:1.5px solid transparent;padding:4px 8px;cursor:pointer}
+.op-tabs button[aria-pressed=true]{color:var(--text);border-bottom-color:var(--text)}
+.op-body{flex:1 1 auto;overflow:auto;padding:12px 14px}
+.op-composer{display:flex;gap:8px;align-items:flex-end;padding:10px 14px;border-top:1px solid var(--line-2)}
+.op-composer textarea{flex:1 1 auto;resize:vertical;min-height:40px;padding:8px 10px;font-size:12.5px}
+/* an approval is a banner, not a toast: it waits as long as the user does */
+.op-approval{border-bottom:1px solid var(--accent);background:color-mix(in srgb,var(--accent) 8%,transparent);padding:12px 14px}
+.op-approval h3{margin:0 0 4px;font-size:12.5px;font-weight:600}
+.op-approval .oa-why{font-size:11.5px;color:var(--text-2);margin:0 0 8px}
+.op-approval label{display:block;font-size:11px;color:var(--text-2);margin:0 0 6px}
+.op-approval input,.op-approval textarea{display:block;width:100%;margin-top:3px;padding:6px 8px;font-size:12px}
+.op-approval textarea{resize:vertical;min-height:52px}
+.op-approval .oa-fixed{font-size:11.5px;color:var(--text-2);margin:0 0 8px;word-break:break-all}
+.op-approval .oa-acts{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.oline{font-size:12.5px;line-height:1.5;margin:0 0 8px;white-space:pre-wrap;word-wrap:break-word}
+.oline .owho{font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--text-3);display:block}
+.oline.said{background:var(--card);border:1px solid var(--line);border-radius:6px;padding:7px 10px}
+.oline.mine{background:transparent;border:0;padding:0;color:var(--text-2)}
+.oline.err{color:var(--failed)}
+.oevent{display:flex;gap:8px;font-size:11.5px;color:var(--text-2);padding:3px 0;border-bottom:1px solid var(--line)}
+.oevent time{flex:0 0 auto;min-width:66px;white-space:nowrap;color:var(--text-3);font-variant-numeric:tabular-nums}
+.oevent .oe-name{flex:0 0 120px;color:var(--text)}
+.oevent.bad .oe-name{color:var(--failed)}
+.oagent{display:flex;gap:8px;align-items:baseline;font-size:12px;padding:5px 0;border-bottom:1px solid var(--line)}
+.oagent .oa-state{margin-left:auto;font-size:10.5px;color:var(--text-2)}
+.oplan{list-style:none;margin:0;padding:0;font-size:12.5px}
+.oplan li{padding:4px 0;border-bottom:1px solid var(--line)}
+.oplan li.done{color:var(--text-2);text-decoration:line-through}
+#orchDialog{width:min(560px,calc(100vw - 32px));padding:26px;background:var(--card);color:var(--text);
+  border:1px solid var(--line-2);border-radius:12px}
+#orchDialog::backdrop{background:#0005}
+#orchDialog h2{margin:0 0 6px;font-size:20px;font-weight:550}
+#orchDialog label{display:block;margin:16px 0}
+#orchDialog input,#orchDialog textarea,#orchDialog select{display:block;width:100%;padding:10px;margin-top:6px}
+#orchDialog textarea{resize:vertical;min-height:110px}
+#orchDialog p{color:var(--text-2);font-size:12px}
+#orchDialog fieldset{margin:16px 0;padding:10px 12px;border:1px solid var(--line-2);border-radius:8px}
+#orchDialog legend{font-size:11px;color:var(--text-2);padding:0 4px}
+#orchDialog fieldset label{display:block;margin:6px 0;font-size:12.5px}
+#orchDialog fieldset input{display:inline-block;width:auto;margin:0 6px 0 0}
+#orchDialog fieldset label span{display:block;margin-left:22px;font-size:11.5px;color:var(--text-2)}
+#orchDialog summary{font-size:12.5px;color:var(--text-2);cursor:pointer}
+.orchlimits{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 12px}
+.orchlimits label{margin:10px 0;font-size:11.5px;color:var(--text-2)}
+@media(max-width:640px){.orchlimits{grid-template-columns:1fr}
+  .omenu.open{left:auto;right:0}}
+
 /* ---------- narrow windows ---------- */
 /* The common case is agentgrid docked beside an editor: 700–960px wide. Bars
    never wrap: each step folds the least-used group into a menu, and nothing
@@ -1159,6 +1256,11 @@ body.area-overview .viewnav,body.area-overview #searchBox,body.area-overview #ne
     <strong id="areaName"></strong>
     <span class="hint" id="areaCount"></span>
     <button class="btn sm" id="editAreaBtn">Area settings</button>
+    <span class="owrap">
+      <button class="btn sm obtn" id="orchBtn" aria-expanded="false" aria-controls="orchMenu"
+        title="Orchestrators — standing agents that start agents for you">Orchestrators<span class="fcount" id="orchCount"></span><svg class="chev" width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M2.5 4 5 6.5 7.5 4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+      <div class="omenu" id="orchMenu"></div>
+    </span>
   </div>
   <button class="btn sm fbtn" id="filtersBtn" aria-expanded="false" aria-controls="filters">Filters<span class="fcount" id="filtersCount"></span><svg class="chev" width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M2.5 4 5 6.5 7.5 4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
   <div class="filters fpanel" id="filters">
@@ -1171,6 +1273,74 @@ body.area-overview .viewnav,body.area-overview #searchBox,body.area-overview #ne
   </div>
 </div>
 <main class="board" id="board"></main>
+<dialog id="orchPanel" aria-labelledby="orchPanelName">
+  <div class="op-head">
+    <div style="min-width:0">
+      <strong id="orchPanelName"></strong>
+      <div class="hint" id="orchPanelSub"></div>
+    </div>
+    <div class="spacer"></div>
+    <select class="ctl" id="orchModeLive" title="Whether it may start agents without asking you first">
+      <option value="ask">Ask me</option>
+      <option value="auto">Auto</option>
+    </select>
+    <button class="btn sm" id="orchSettings" title="Model, instructions and limits">Settings</button>
+    <button class="btn sm" id="orchStop" hidden title="Stop this run">Stop</button>
+    <button class="btn sm" id="orchClose" title="Close (Esc)">Close</button>
+  </div>
+  <div class="op-approval" id="orchApproval" hidden></div>
+  <div class="op-tabs" id="orchTabs">
+    <button type="button" data-otab="chat" aria-pressed="true">Chat</button>
+    <button type="button" data-otab="plan">Plan</button>
+    <button type="button" data-otab="agents">Agents</button>
+    <button type="button" data-otab="activity">Activity</button>
+  </div>
+  <div class="op-body" id="orchBody"></div>
+  <form class="op-composer" id="orchComposer">
+    <textarea id="orchInput" rows="2" maxlength="20000"></textarea>
+    <button class="btn key" id="orchSend">Start</button>
+  </form>
+</dialog>
+<dialog id="orchDialog" aria-labelledby="orchDialogTitle"><form id="orchForm">
+  <h2 id="orchDialogTitle">New orchestrator</h2>
+  <p>An orchestrator runs on an OpenRouter model. It has no files or shell of its own: it works by
+     starting real Claude Code or Codex agents and reading what they produce.</p>
+  <p class="err" id="orchConnHint" hidden>Connect OpenRouter under Providers first.</p>
+  <label>Name<input id="orchName" maxlength="60" required autocomplete="off" placeholder="e.g. Shipper"></label>
+  <label>Work area<select id="orchScope"></select></label>
+  <label>Model
+    <input id="orchModel" list="orchModels" required autocomplete="off" spellcheck="false"
+           placeholder="e.g. openai/gpt-5">
+    <datalist id="orchModels"></datalist></label>
+  <label>Starts agents in<select id="orchProject"></select></label>
+  <fieldset>
+    <legend>Starting agents</legend>
+    <label><input type="radio" name="orchmode" value="ask" checked> Ask me every time
+      <span>Each agent it wants to start waits here for your approval, however long that takes.</span></label>
+    <label><input type="radio" name="orchmode" value="auto"> Auto, inside the limits
+      <span>It starts agents on its own. Opening a Terminal window on your desktop still asks.</span></label>
+  </fieldset>
+  <label>Standing instructions<textarea id="orchInstructions" maxlength="20000"
+    placeholder="How should it work? What does finished look like?"></textarea></label>
+  <details id="orchAdvanced">
+    <summary>Limits</summary>
+    <div class="orchlimits">
+      <label>Agents at once<input id="orchConcurrent" type="number" min="1" max="10" step="1"></label>
+      <label>Agents per run<input id="orchSpawns" type="number" min="1" max="200" step="1"></label>
+      <label>Steps per run<input id="orchSteps" type="number" min="1" max="1000" step="1"></label>
+      <label>Spend limit, $<input id="orchSpend" type="number" min="0" max="1000" step="0.5"></label>
+    </div>
+    <p>Enforced by AgentGrid, not asked of the model. Spend covers the orchestrator's own thinking;
+       the agents it starts run on your Claude Code and Codex logins.</p>
+  </details>
+  <p class="err" id="orchFormError" role="alert"></p>
+  <div style="display:flex;gap:8px">
+    <button class="btn danger" type="button" id="orchDelete" hidden>Delete</button>
+    <div class="spacer"></div>
+    <button class="btn" type="button" id="orchCancel">Cancel</button>
+    <button class="btn key" id="orchSave">Save</button>
+  </div>
+</form></dialog>
 <dialog id="areaDialog" aria-labelledby="areaDialogTitle"><form id="areaForm">
   <h2 id="areaDialogTitle">New work area</h2>
   <label>Name<input id="areaNameInput" maxlength="60" required autocomplete="off" placeholder="e.g. Marketing"></label>
@@ -1551,7 +1721,7 @@ Every command takes --as NAME and --json. Without --as, the name is $AGENTGRID_A
 <div class="modal" id="providersModal" hidden>
   <div class="sheet">
     <div class="stitle">Model providers</div>
-    <p>Claude Code and Codex use their existing CLI logins. Connect OpenRouter for additional models in workflows.</p>
+    <p>Claude Code and Codex use their existing CLI logins. Connect OpenRouter to run orchestrators (on the board, above the columns) and to use extra models in workflows.</p>
     <label>OpenRouter API key<input type="password" id="orKey" autocomplete="off" spellcheck="false" placeholder="Paste your key"></label>
     <p class="hint">Stored in macOS Keychain. Never included in workflows or exports. OpenRouter usage is billed separately.</p>
     <p id="orStatus" class="hint" role="status"></p>
@@ -1874,7 +2044,14 @@ function renderAreas() {
   const markup = cards.map((a, i) => {
     const members = areaSessions(a.id);
     const act = areaActivity(members);
-    return `<button class="area-card" data-area="${esc(a.id)}"${act.state ? ` data-state="${act.state}"` : ""}><span class="area-card-top"><span>${String(i + 1).padStart(2, "0")} / WORK AREA</span><span aria-hidden="true">↗</span></span><strong>${esc(a.name)}</strong>${act.html}<span class="area-card-foot"><span>${members.length} agent${members.length === 1 ? "" : "s"}</span></span></button>`;
+    // An orchestrator waiting on a decision is the one thing worth saying
+    // before you have even opened the area.
+    const stuck = orchestrators.filter(o =>
+      o.scope === a.id && (o.status === "waiting" || o.status === "failed"));
+    const foot = stuck.length
+      ? `<span class="apill needs" title="An orchestrator in this area is waiting on you"><span class="adot" aria-hidden="true"></span>${stuck.length} orchestrator${stuck.length === 1 ? "" : "s"} waiting</span>`
+      : "";
+    return `<button class="area-card" data-area="${esc(a.id)}"${act.state || stuck.length ? ` data-state="${act.state || "needs"}"` : ""}><span class="area-card-top"><span>${String(i + 1).padStart(2, "0")} / WORK AREA</span><span aria-hidden="true">↗</span></span><strong>${esc(a.name)}</strong>${act.html}<span class="area-card-foot"><span>${members.length} agent${members.length === 1 ? "" : "s"}</span>${foot}</span></button>`;
   }).join("") + '<button class="area-card area-add" data-add-area><span aria-hidden="true">+</span><span>Create a work area</span></button>';
   if ($("areaGrid")._markup !== markup) {
     $("areaGrid")._markup = markup; $("areaGrid").innerHTML = markup;
@@ -1895,6 +2072,7 @@ function enterArea(id) {
   project = ""; tag = ""; query = ""; $("search").value = "";
   promptScope = id || "*";
   loadPrompts();
+  closeOrchestrator();
   closePanel(); setView("board"); renderSelects(); render(); renderAreas();
 }
 function editArea(id = "") {
@@ -3558,7 +3736,8 @@ function runTool(id) {
 
 // Below the width where a view's options fit inline, they open as a panel
 // from its Filters button. Same elements, same handlers — only the layout moves.
-const FILTER_PANELS = [["filtersBtn", "filters"], ["tkFiltersBtn", "tkOpts"]];
+const FILTER_PANELS = [["filtersBtn", "filters"], ["tkFiltersBtn", "tkOpts"],
+                       ["orchBtn", "orchMenu"]];
 function toggleFilters(btnId, panelId) {
   const open = !$(panelId).classList.contains("open");
   closeMenus(); closeFilters();
@@ -4609,6 +4788,7 @@ function setView(v) {
     if (b.dataset.view === v) $("viewName").textContent = b.firstChild.textContent;
   });
   closeFilters();
+  renderOrchestrators();
   if (v === "tickets") loadTickets(true);
   else if (v === "notes" || v === "split") loadNotes(true);
 }
@@ -4620,7 +4800,19 @@ function setView(v) {
 // problem; the notification is what closes that loop. Client-side only, so
 // alerts exist exactly while a board tab is open — no daemon, as ever.
 let alertsOn = localStorage.getItem("agentgrid.alerts") === "1";
-const prevStatus = new Map();
+const prevStatus = new Map(), prevOrchStatus = new Map();
+
+// An approval is the one thing here with a person on the critical path, so it
+// rings the same bell a blocked session does -- and clicking it lands on the
+// decision, not on the board.
+function notifyOrchestrator(o) {
+  if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
+  const n = new Notification(`${o.name} needs you`, {
+    body: o.pending ? "Waiting to start an agent" : (o.reason || "Waiting for your reply"),
+    tag: o.id,
+  });
+  n.onclick = () => { window.focus(); openOrchestrator(o.id); n.close(); };
+}
 
 function notifySession(s, line) {
   if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
@@ -4641,6 +4833,11 @@ function checkAlerts() {
     }
     prevStatus.set(s.sessionId, s.status);
   }
+  for (const o of orchestrators) {
+    const was = prevOrchStatus.get(o.id);
+    if (seeded && alertsOn && was && was !== o.status && o.status === "waiting") notifyOrchestrator(o);
+    prevOrchStatus.set(o.id, o.status);
+  }
 }
 
 function applyAlertsBtn() {
@@ -4653,7 +4850,6 @@ async function poll() {
     sessions = data.sessions || [];
     polledAt = data.polledAt || 0;
     fleetError = data.error || "";
-    checkAlerts();
   } catch (e) {
     fleetError = "server unreachable";
   }
@@ -4664,6 +4860,8 @@ async function poll() {
     (polledAt ? new Date(polledAt * 1000).toLocaleTimeString() : "");
   stamp.title = fleetError || "Last refresh";
   await loadAreas();
+  await loadOrchestrators();
+  checkAlerts();            // after both reads, so one pass sees everything
   renderSelects(); render();
   // While a live turn streams, the SSE owns #tScroll — skip the disk refresh so
   // it can't clobber the in-flight nodes; once the turn lands the poll resumes
@@ -4671,9 +4869,454 @@ async function poll() {
   if (openId) { renderPanel(); if (!chatRunning) refreshTranscript(); }
 }
 
+/* ----------------------------------------------------------- orchestrators */
+/* An orchestrator is a standing agent on an OpenRouter model whose only power
+   is starting real agents. It is not a session, so it is not a card in the
+   status columns -- those describe what a session is doing, and an
+   orchestrator is the thing that made the session. It lives in the breadcrumb
+   instead, beside Area settings: a dropdown costs no board space, which is
+   the scarcest thing on this screen, and the count on the button carries the
+   one signal that must never be missed -- how many are waiting on you.
+
+   Everything drawn here comes from two server reads: the snapshot list (state,
+   counters, the pending approval) and the journal (what it has done, replayed
+   from disk so opening the panel late still shows the whole run). While the
+   panel is open an SSE stream appends events live. */
+
+let orchestrators = [], orchCaps = {interactive: true};
+let openOrch = "", orchTab = "chat", orchEvents = [], orchSrc = null, orchEditing = "";
+
+const ORCH_STATE = {
+  idle:    {label: "Not started", cls: ""},
+  running: {label: "Working",     cls: "working"},
+  waiting: {label: "Needs you",   cls: "needs"},
+  done:    {label: "Finished",    cls: ""},
+  failed:  {label: "Stopped",     cls: "needs"},
+  stopped: {label: "Stopped",     cls: ""},
+};
+// Chat shows what was said and what changed; Activity shows everything.
+const ORCH_SPOKEN = new Set(["run_started", "user_message", "message", "run_done",
+                             "error", "approval_requested", "approval_resolved",
+                             "agent_started", "limit", "resumed"]);
+
+function orchFor(o) { return ORCH_STATE[o.status] || ORCH_STATE.idle; }
+function orchNeedsYou(o) { return o.status === "waiting" || o.status === "failed"; }
+
+// Which orchestrators belong on this view: the area's own, plus the global one
+// that spans every area. "All agents" shows the lot.
+function visibleOrchestrators() {
+  if (activeArea === "") return orchestrators;
+  if (activeArea === "unassigned") return orchestrators.filter(o => !o.scope);
+  return orchestrators.filter(o => !o.scope || o.scope === activeArea);
+}
+
+function orchScopeName(o) {
+  if (!o.scope) return "all areas";
+  return areaData.areas.find(a => a.id === o.scope)?.name || "a deleted area";
+}
+
+function orchMoney(n) { return "$" + (Number(n) || 0).toFixed(2); }
+
+async function loadOrchestrators() {
+  try {
+    const data = await api("/api/orchestrators");
+    orchestrators = data.orchestrators || [];
+    orchCaps = data.capabilities || orchCaps;
+  } catch (e) { return; }           // a failed read leaves the last known state
+  renderOrchestrators();
+  if (openOrch) renderOrchPanel();
+}
+
+function renderOrchestrators() {
+  const host = $("orchMenu");
+  const mine = visibleOrchestrators();
+  const markup = mine.map(o => {
+    const state = orchFor(o);
+    const bits = [o.model];
+    if (!o.scope && activeArea) bits.push("all areas");
+    if (o.spawns) bits.push(`${o.spawns} agent${o.spawns === 1 ? "" : "s"}`);
+    if (o.costUsd) bits.push(orchMoney(o.costUsd));
+    return `<button class="ocard${orchNeedsYou(o) ? " needs" : ""}" data-orch="${esc(o.id)}"
+      title="${esc(o.reason || o.goal || "Open this orchestrator")}">
+      <span class="orow"><span class="oname">${esc(o.name)}</span>
+        <span class="ostate ${state.cls}">${esc(o.pending ? "Approve?" : state.label)}</span></span>
+      <span class="osub">${esc(bits.join(" · "))}</span></button>`;
+  }).join("") +
+    (mine.length ? `<div class="osep"></div>` :
+      `<p class="ohint">An orchestrator takes a goal and starts the agents to do it.</p>`) +
+    `<button class="oadd" data-add-orch>+ New orchestrator</button>`;
+  if (host._markup !== markup) { host._markup = markup; host.innerHTML = markup; }
+  // The button belongs to the board; the breadcrumb itself also shows over
+  // notes and tickets, where an orchestrator is not what you are looking at.
+  const onBoard = view === "board" || view === "split";
+  $("orchBtn").hidden = !onBoard;
+  if (!onBoard) $("orchMenu").classList.remove("open");
+  // The badge is what is waiting on you, the same promise the Tickets count
+  // makes -- not how many exist.
+  const waiting = mine.filter(orchNeedsYou).length;
+  $("orchCount").textContent = waiting ? String(waiting) : "";
+  $("orchCount").title = waiting ? `${waiting} orchestrator${waiting === 1 ? " is" : "s are"} waiting on you` : "";
+}
+
+/* ---- the editor: what it is, not what it is doing ---- */
+
+async function editOrchestrator(id = "") {
+  orchEditing = id;
+  const existing = orchestrators.find(o => o.id === id);
+  $("orchDialogTitle").textContent = existing ? "Orchestrator settings" : "New orchestrator";
+  $("orchFormError").textContent = "";
+  $("orchDelete").hidden = !existing;
+  $("orchName").value = existing?.name || "";
+  $("orchModel").value = existing?.model || "";
+  $("orchInstructions").value = existing?.instructions || "";
+  const limits = existing?.limits || {};
+  $("orchConcurrent").value = limits.maxConcurrent ?? 3;
+  $("orchSpawns").value = limits.maxSpawns ?? 20;
+  $("orchSteps").value = limits.maxSteps ?? 200;
+  $("orchSpend").value = limits.maxSpendUsd ?? 5;
+  for (const radio of document.querySelectorAll('input[name=orchmode]')) {
+    radio.checked = radio.value === (existing?.mode || "ask");
+  }
+  // Scope: an area, or every area. A new one defaults to the area you are in.
+  const scope = existing ? existing.scope : (activeArea === "unassigned" ? "" : activeArea);
+  $("orchScope").innerHTML = `<option value="">All work areas (global)</option>` +
+    areaData.areas.map(a =>
+      `<option value="${esc(a.id)}"${a.id === scope ? " selected" : ""}>${esc(a.name)}</option>`).join("");
+  $("orchScope").value = scope || "";
+  $("orchDialog").showModal();
+  $("orchName").focus();
+  // Both lists are worth waiting for, but neither should block the dialog.
+  try {
+    const data = await api("/api/projects");
+    projectsCache = data.projects || projectsCache || [];
+  } catch (e) { projectsCache = projectsCache || []; }
+  const chosen = existing?.cwd || project || "";
+  $("orchProject").innerHTML = `<option value="">Let it choose from your projects</option>` +
+    projectsCache.filter(p => !p.hidden).map(p =>
+      `<option value="${esc(p.path)}"${p.path === chosen ? " selected" : ""}>${esc(p.label || p.name)}</option>`).join("");
+  await loadOpenRouterModels();
+  $("orchModels").innerHTML = workflowModelOptions("openrouter");
+  // Asked here rather than on every board poll: the answer only matters while
+  // this dialog is open, and it is a Keychain read.
+  try {
+    $("orchConnHint").hidden = !!(await api("/api/providers/openrouter")).connected;
+  } catch (e) { $("orchConnHint").hidden = true; }
+}
+
+async function saveOrchestrator() {
+  const body = {
+    id: orchEditing || undefined,
+    name: $("orchName").value,
+    scope: $("orchScope").value,
+    model: $("orchModel").value.trim(),
+    cwd: $("orchProject").value,
+    instructions: $("orchInstructions").value,
+    mode: document.querySelector('input[name=orchmode]:checked')?.value || "ask",
+    limits: {
+      maxConcurrent: $("orchConcurrent").value,
+      maxSpawns: $("orchSpawns").value,
+      maxSteps: $("orchSteps").value,
+      maxSpendUsd: $("orchSpend").value,
+    },
+  };
+  const result = await post("/api/orchestrators/save", body);
+  if (!result || result.error) {
+    $("orchFormError").textContent = result?.error || "Could not save the orchestrator.";
+    return;
+  }
+  $("orchDialog").close();
+  await loadOrchestrators();
+  const saved = result.orchestrator;
+  toast(orchEditing ? `Saved "${saved.name}".` : `Created "${saved.name}".`);
+  if (!orchEditing) openOrchestrator(saved.id);
+}
+
+/* ---- the panel: what it is doing ---- */
+
+function orchOpen() { return orchestrators.find(o => o.id === openOrch); }
+
+async function openOrchestrator(id) {
+  openOrch = id; orchTab = "chat"; orchEvents = [];
+  $("orchApproval").hidden = true;
+  $("orchInput").value = "";
+  if (!$("orchPanel").open) $("orchPanel").showModal();
+  renderOrchPanel();
+  try {
+    const data = await api(`/api/orchestrators/journal?id=${encodeURIComponent(id)}`);
+    if (data.error) throw new Error(data.error);
+    orchEvents = data.events || [];
+    if (data.orchestrator) {
+      orchestrators = orchestrators.map(o => o.id === id ? data.orchestrator : o);
+    }
+  } catch (e) { /* the stream will fill it in */ }
+  renderOrchPanel();
+  streamOrchestrator(id);
+  $("orchInput").focus();
+}
+
+function closeOrchestrator() {
+  openOrch = "";
+  if (orchSrc) { orchSrc.close(); orchSrc = null; }
+  if ($("orchPanel").open) $("orchPanel").close();
+}
+
+// One EventSource per open panel, like the chat panel's: the journal has
+// already been replayed, so this only has to append what happens next.
+function streamOrchestrator(id) {
+  if (orchSrc) { orchSrc.close(); orchSrc = null; }
+  const src = new EventSource(
+    `/api/orchestrators/stream?id=${encodeURIComponent(id)}&t=${encodeURIComponent(TOKEN)}`);
+  orchSrc = src;
+  const seen = new Set(orchEvents.map(e => `${e.at}|${e.type}`));
+  src.onmessage = (message) => {
+    if (orchSrc !== src || openOrch !== id) return;
+    let event;
+    try { event = JSON.parse(message.data); } catch (e) { return; }
+    // The stream replays the journal too, so a replayed line is not doubled.
+    const key = `${event.at}|${event.type}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    orchEvents.push(event);
+    renderOrchPanel();
+    if (event.type === "approval_requested" || event.type === "run_done") loadOrchestrators();
+  };
+  // EventSource reconnects on its own; a transient error needs no handling.
+}
+
+function renderOrchPanel() {
+  const o = orchOpen();
+  if (!o) { closeOrchestrator(); return; }
+  const state = orchFor(o);
+  $("orchPanelName").textContent = o.name;
+  const facts = [o.model, orchScopeName(o), state.label];
+  if (o.spawns) facts.push(`${o.spawns} agent${o.spawns === 1 ? "" : "s"} started`);
+  if (o.steps) facts.push(`${o.steps} step${o.steps === 1 ? "" : "s"}`);
+  if (o.costUsd) facts.push(orchMoney(o.costUsd));
+  $("orchPanelSub").textContent = facts.join(" · ");
+  $("orchModeLive").value = o.mode;
+  $("orchStop").hidden = !(o.status === "running" || o.status === "waiting");
+  const active = o.status === "running" || o.status === "waiting";
+  $("orchSend").textContent = active ? "Send" : (o.goal ? "Start again" : "Start");
+  $("orchInput").placeholder = active
+    ? "Message it — it reads this at its next step"
+    : "What should it work on? It will start agents to do it.";
+  $("orchTabs").querySelectorAll("button").forEach(b =>
+    b.setAttribute("aria-pressed", String(b.dataset.otab === orchTab)));
+  renderOrchApproval(o);
+  $("orchBody").innerHTML = orchTab === "chat" ? orchChatHTML(o)
+    : orchTab === "plan" ? orchPlanHTML(o)
+    : orchTab === "agents" ? orchAgentsHTML(o)
+    : orchActivityHTML();
+  if (orchTab === "chat" || orchTab === "activity") $("orchBody").scrollTop = $("orchBody").scrollHeight;
+}
+
+function renderOrchApproval(o) {
+  const host = $("orchApproval");
+  if (!o.pending) { host.hidden = true; host.innerHTML = ""; return; }
+  const args = o.pending.args || {};
+  const fixed = [args.project || o.cwd, args.mode || "background", args.engine || "claude",
+                 args.ticketKey].filter(Boolean).join(" · ");
+  host.hidden = false;
+  host.innerHTML =
+    `<h3>It wants to start an agent — your call</h3>
+     <p class="oa-why">Because this ${esc(o.pending.reason || "needs approval")}. Nothing runs until you answer, and this waits as long as you need.</p>
+     <p class="oa-fixed">${esc(fixed)}</p>
+     <label>Name<input id="oaName" value="${esc(args.name || "")}" maxlength="60"></label>
+     <label>Task — edit it before approving if it is not quite right
+       <textarea id="oaTask" rows="4">${esc(args.task || "")}</textarea></label>
+     <label>If you decline, why? It reads this and picks something else
+       <input id="oaReason" placeholder="e.g. wrong project — use the worktree"></label>
+     <div class="oa-acts">
+       <button class="btn key" type="button" data-oapp>Approve &amp; start</button>
+       <button class="btn" type="button" data-oapp-auto>Approve, stop asking</button>
+       <button class="btn" type="button" data-odecline>Decline</button>
+     </div>`;
+}
+
+function orchLine(event) {
+  const when = event.at ? new Date(event.at * 1000).toLocaleTimeString() : "";
+  const said = (who, text, cls = "said") =>
+    `<div class="oline ${cls}"><span class="owho">${esc(who)} · ${esc(when)}</span>${esc(text)}</div>`;
+  switch (event.type) {
+    case "run_started":         return said("goal", event.goal || "", "mine");
+    case "resumed":             return said("agentgrid", "Picked this run up after a restart.", "mine");
+    case "user_message":        return said("you", event.text || "", "mine");
+    case "message":             return said("orchestrator", event.text || "");
+    case "note":                return said("thinking", event.text || "");
+    case "agent_started":       return said("started an agent",
+      `${event.name || "agent"} · ${event.interactive ? "interactive" : "background"} · ${event.cwd || ""}\n${event.task || ""}`, "mine");
+    case "approval_requested":  return said("waiting for you",
+      `Asked for your approval: this ${event.reason || "starts a new agent"}.`, "mine");
+    case "approval_resolved":   return said(event.approved ? "you approved" : "you declined",
+      event.reason || (event.approved ? "Starting it now." : "It will choose something else."), "mine");
+    case "limit":               return said("limit reached", event.message || "", "mine");
+    case "error":               return said("failed", event.message || "", "err");
+    case "run_done":            return said(event.status === "done" ? "finished" : event.status,
+      event.reason || "", "mine");
+    default:                    return "";
+  }
+}
+
+function orchChatHTML(o) {
+  const lines = orchEvents.filter(e => ORCH_SPOKEN.has(e.type)).map(orchLine).join("");
+  if (lines) return lines;
+  return `<p class="hint">Give it a goal below. It will plan, start agents to do the work, check
+    what they produced and report back here.${o.mode === "ask"
+      ? " Every agent it wants to start will wait here for your approval."
+      : " It starts agents on its own, inside its limits."}</p>`;
+}
+
+function orchPlanHTML(o) {
+  if (!(o.plan || []).length) {
+    return `<p class="hint">Its own checklist appears here once it writes one. Work worth seeing on
+      the board goes on the ticket board instead.</p>`;
+  }
+  return `<ul class="oplan">` + o.plan.map(item =>
+    `<li class="${item.done ? "done" : ""}">${item.done ? "✓ " : "· "}${esc(item.text)}</li>`).join("") + `</ul>`;
+}
+
+// Children are matched to live cards the same way the engine does it: by job
+// id first, then by the name it was given.
+function orchChildSession(child) {
+  return sessions.find(s => (child.jobId && s.jobId === child.jobId) ||
+                            (child.sessionId && s.sessionId === child.sessionId) ||
+                            s.customName === child.name || s.title === child.name);
+}
+
+function orchAgentsHTML(o) {
+  if (!(o.children || []).length) {
+    return `<p class="hint">Agents it starts appear here, and on the board as ordinary cards.</p>`;
+  }
+  return o.children.map(child => {
+    const live = orchChildSession(child);
+    const state = live ? (COLUMNS.find(c => c.match(live))?.name || live.status) : "ended";
+    return `<div class="oagent"><span>${esc(child.name)}</span>
+      <span class="hint">${esc(child.engine)}${child.interactive ? " · interactive" : ""} · ${esc(child.cwd || "")}</span>
+      <span class="oa-state">${esc(state)}</span></div>`;
+  }).join("");
+}
+
+// Every row says something: an entry with no detail of its own would read as
+// a blank line in the one place that is supposed to explain the run.
+function orchEventDetail(event) {
+  switch (event.type) {
+    case "tool":              return `${event.name}${event.summary ? " — " + event.summary : ""}`;
+    case "plan":              return `${(event.items || []).length} step${(event.items || []).length === 1 ? "" : "s"}`;
+    case "approval_requested":return `${event.tool || "start_agent"} — ${event.reason || ""}`;
+    case "approval_resolved": return `${event.approved ? "approved" : "declined"} ${event.tool || ""}` +
+                                     `${event.reason ? " — " + event.reason : ""}`;
+    case "agent_started":     return `${event.name || ""} in ${event.cwd || ""}`;
+    case "run_done":          return `${event.status || ""}${event.reason ? " — " + event.reason : ""}`;
+    case "resumed":           return `carried on from step ${event.steps ?? 0}`;
+    default:                  return event.message || event.text || event.goal || event.name || "";
+  }
+}
+
+function orchActivityHTML() {
+  if (!orchEvents.length) return `<p class="hint">Nothing yet.</p>`;
+  return orchEvents.slice().reverse().map(event => {
+    const when = event.at
+      ? new Date(event.at * 1000).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit", second: "2-digit"})
+      : "";
+    const bad = event.type === "error" || event.ok === false;
+    return `<div class="oevent${bad ? " bad" : ""}"><time>${esc(when)}</time>
+      <span class="oe-name">${esc(event.type)}</span>
+      <span>${esc(String(orchEventDetail(event)).slice(0, 300))}</span></div>`;
+  }).join("");
+}
+
+async function orchAction(action, body, failure) {
+  const result = await post(`/api/orchestrators/${action}`, {id: openOrch, ...body});
+  if (!result || result.error) { toast(result?.error || failure); return null; }
+  if (result.orchestrator) {
+    orchestrators = orchestrators.map(o => o.id === result.orchestrator.id ? result.orchestrator : o);
+    renderOrchPanel(); renderOrchestrators();
+  }
+  loadOrchestrators();
+  return result;
+}
+
+function bindOrchestrators() {
+  $("orchMenu").onclick = (e) => {
+    const card = e.target.closest("[data-orch]");
+    if (card) { closeFilters(); openOrchestrator(card.dataset.orch); return; }
+    if (e.target.closest("[data-add-orch]")) { closeFilters(); editOrchestrator(); }
+  };
+  $("orchForm").onsubmit = async (e) => {
+    e.preventDefault();
+    $("orchSave").disabled = true;
+    try { await saveOrchestrator(); } finally { $("orchSave").disabled = false; }
+  };
+  $("orchCancel").onclick = () => $("orchDialog").close();
+  $("orchDelete").onclick = async () => {
+    const existing = orchestrators.find(o => o.id === orchEditing);
+    if (!confirm(`Delete "${existing?.name || "this orchestrator"}"? Agents it started keep running.`)) return;
+    const result = await post("/api/orchestrators/delete", {id: orchEditing});
+    if (!result || result.error) { $("orchFormError").textContent = result?.error || "Could not delete it."; return; }
+    $("orchDialog").close();
+    if (openOrch === orchEditing) closeOrchestrator();
+    await loadOrchestrators();
+    toast("Orchestrator deleted.");
+  };
+  $("orchClose").onclick = () => closeOrchestrator();
+  $("orchPanel").addEventListener("close", () => { openOrch = ""; if (orchSrc) { orchSrc.close(); orchSrc = null; } });
+  $("orchSettings").onclick = () => editOrchestrator(openOrch);
+  $("orchStop").onclick = () => orchAction("stop", {}, "Could not stop it.");
+  $("orchModeLive").onchange = async (e) => {
+    const o = orchOpen();
+    if (!o) return;
+    const result = await post("/api/orchestrators/save", {...o, mode: e.target.value});
+    if (!result || result.error) { toast(result?.error || "Could not change the mode."); return; }
+    await loadOrchestrators();
+    toast(e.target.value === "auto"
+      ? "It will start agents without asking, inside its limits."
+      : "It will ask before starting each agent.");
+  };
+  $("orchTabs").onclick = (e) => {
+    const button = e.target.closest("[data-otab]");
+    if (!button) return;
+    orchTab = button.dataset.otab;
+    renderOrchPanel();
+  };
+  $("orchComposer").onsubmit = async (e) => {
+    e.preventDefault();
+    const text = $("orchInput").value.trim();
+    if (!text) return;
+    const o = orchOpen();
+    if (!o) return;
+    const active = o.status === "running" || o.status === "waiting";
+    $("orchSend").disabled = true;
+    try {
+      const result = active
+        ? await orchAction("send", {text}, "Could not send that.")
+        : await orchAction("start", {goal: text}, "Could not start it.");
+      if (result) $("orchInput").value = "";
+    } finally { $("orchSend").disabled = false; }
+  };
+  // ⌘↩ sends, like the chat composer
+  $("orchInput").onkeydown = (e) => {
+    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); $("orchSend").click(); }
+  };
+  $("orchApproval").onclick = async (e) => {
+    const o = orchOpen();
+    if (!o || !o.pending) return;
+    const edits = {name: $("oaName")?.value || "", task: $("oaTask")?.value || ""};
+    if (e.target.closest("[data-oapp]") || e.target.closest("[data-oapp-auto]")) {
+      if (e.target.closest("[data-oapp-auto]")) {
+        await post("/api/orchestrators/save", {...o, mode: "auto"});
+      }
+      await orchAction("approve", {approvalId: o.pending.id, edits}, "Could not approve that.");
+    } else if (e.target.closest("[data-odecline]")) {
+      await orchAction("decline", {approvalId: o.pending.id, reason: $("oaReason")?.value || ""},
+                       "Could not decline that.");
+    }
+  };
+}
+
 /* ------------------------------------------------------------------- events */
 
 function bindEvents() {
+  bindOrchestrators();
   $("areasBtn").onclick = $("areaBack").onclick = () => setView("areas");
   $("allAgentsBtn").onclick = () => enterArea("");
   $("addAreaBtn").onclick = () => editArea();
@@ -5436,7 +6079,7 @@ function bindEvents() {
   // dismiss popovers on outside click
   document.addEventListener("mousedown", e => {
     if (!$("pmenu").hidden && !e.target.closest("#pmenu, #moreBtn, #viewBtn")) closeMenus();
-    if (!e.target.closest(".fpanel, .fbtn")) closeFilters();
+    if (!e.target.closest(".fpanel, .fbtn, .omenu, .obtn")) closeFilters();
     if (!$("atFiles").hidden && !e.target.closest("#atFiles") && !e.target.closest("#cInput")) hideAtFiles();
   });
 

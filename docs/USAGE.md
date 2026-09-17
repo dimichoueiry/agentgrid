@@ -297,6 +297,56 @@ ag ticket comment DC-1 "…"         # leave a note on it
 ag ticket move DC-1 review         # hand it back
 ```
 
+## 11a. Hand a long job to an orchestrator
+
+You have a goal rather than a task: "get the tickets in review shipped". You
+do not want to sit and start five agents yourself.
+
+First, once: **Providers** → paste your OpenRouter key → **Connect**. That key
+is what an orchestrator thinks with; the agents it starts still run on your
+Claude Code and Codex logins.
+
+Now open a work area, click **Orchestrators** in the breadcrumb (next to Area
+settings) and pick **+ New orchestrator**:
+
+> Name: **Shipper** · Work area: Engineering · Model: `openai/gpt-5`
+> Starts agents in: drawcal
+> Standing instructions: *One agent per ticket. Make it comment on its ticket
+> when it is done, then check the comment before you move on.*
+> Starting agents: **Ask me every time**
+
+Its window opens. Type the goal and press `⌘↩`:
+
+> Take the tickets in `review`, check each one against its description, and
+> either move it to done or hand it back with what is missing.
+
+It reads the board, then asks. The banner says *It wants to start an agent —
+your call*, with the project and mode it chose and the task it wrote. Fix the
+task if it is not quite right, then **Approve & start**. The agent appears on
+the board as an ordinary card; **Open ↗** works on it, chat works on it, it is
+a normal session that happens to have been started by something other than
+you.
+
+Once you trust it, switch the header dropdown to **Auto** — mid-run is fine —
+and it stops asking. It still asks before opening a Terminal window on your
+desktop, because that one interrupts *you*.
+
+Then leave. Close the tab. An approval waiting for you costs nothing while it
+waits; a run stopped by a restart or a closed lid picks up from its last
+completed step, and is told to look at what already exists before it starts
+anything. Come back to the **Chat** tab for what it did, **Agents** for what
+it started, and **Activity** for every decision and every dollar.
+
+Two things worth knowing:
+
+- **The limits are real.** Under Limits: agents at once, agents per run, steps,
+  and a spend ceiling. Agent Grid enforces them before each call; reaching one
+  comes back to the orchestrator as "you are out of agents, finish with what
+  you have".
+- **One per area, or one over all of them.** Set Work area to **All work
+  areas** and it can see every area and create new ones — the one to give
+  "keep the whole board moving" to, rather than one project's backlog.
+
 ## 12. Install the hook (optional, five minutes)
 
 Needs you works without it: background agents report `blocked` directly, and

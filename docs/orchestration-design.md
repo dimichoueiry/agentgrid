@@ -1,11 +1,26 @@
 # Coordinator and provider architecture
 
-Status: initial implementation available. OpenRouter connection settings,
-Keychain storage, live model suggestions, streamed text steps and bounded
-coordinator mode are implemented. The coordinator emits validated JSON
-delegate/finish decisions, uses only defined specialists, and runs them serially.
-Delegation limits are enforced; dollar budgets, durable recovery, API tools and
-parallel execution below remain design work.
+Status: two things are built on this architecture, and they are deliberately
+different tools.
+
+**Workflows (Teams)** are authored: fixed steps, or a bounded coordinator that
+delegates to named specialists in a saved definition. Order known in advance,
+one run, serial execution.
+
+**Orchestrators** are standing: an OpenRouter model with a tool menu that can
+*create* agents rather than only route between predefined ones
+(`agentgrid/orchestrator.py`, `agentgrid/orchestrator_run.py`). Implemented
+from the list below: the credential store, the live model catalogue, streamed
+text steps, the bounded coordinator, a tool-calling execution loop, per-run
+dollar and step ceilings enforced before each call, durable state with resume
+after a restart, and a human approval gate that suspends a run to disk rather
+than holding a thread.
+
+Still design work: parallel specialist execution (an orchestrator's *children*
+run concurrently, but its own steps are serial), a pre-call cost reservation
+rather than post-hoc accounting, nested delegation (an orchestrator cannot
+create another orchestrator), and cross-machine state so two hosts share one
+board.
 
 ## User experience
 
@@ -72,6 +87,14 @@ through OpenRouter and list only models returned by the connected provider.
 - Coordinator mode using explicit named specialists and delegation tools.
 - Durable state, recovery and coordinator evaluation scenarios before broader
   autonomous creation of agents or nested delegation.
+
+The approval gate turned out to carry more weight than expected. Because a
+pending decision is part of the persisted state rather than a blocked thread,
+"ask me every time" costs nothing while it waits and survives a restart --
+which is what makes it a usable default rather than a mode people switch off.
+Auto mode still escalates the one action that puts a window in front of the
+user, an interactive session, because the cost of that interruption is the
+user's attention rather than tokens.
 
 References: [OpenRouter API and model catalog](https://openrouter.ai/docs/quickstart),
 [client tool calling](https://openrouter.ai/docs/guides/features/tool-calling).

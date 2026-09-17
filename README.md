@@ -402,6 +402,99 @@ prompt is unconstrained, but the directory must be one of the discovered
 projects — that boundary is what keeps the endpoint from being a general
 "execute anything anywhere" hole.
 
+## Orchestrators
+
+An orchestrator is a standing agent that decides *which agents to start*. It
+runs on an OpenRouter model of your choosing — connect your key under
+**Providers** — and it has no filesystem, shell or editor of its own. Its only
+powers are the tools Agent Grid hands it: start an agent, read what an agent
+produced, message an agent, file and move tickets, keep a checklist, talk to
+you, and stop. Everything it gets done, it gets done through real Claude Code
+or Codex sessions on your machine.
+
+Orchestrators live behind the **Orchestrators** button in the breadcrumb,
+beside Area settings. Its badge counts how many are waiting on you, the same
+promise the Tickets count makes. The dropdown lists this area's orchestrators
+and the global one, and **+ New orchestrator** creates another: it belongs
+either to the work area you are in — an area may have as many as you like — or
+to **All work areas**, the global orchestrator that can see every area and
+create new ones. Click one to open its window:
+**Chat** (give it a goal, message it mid-run, read its reports), **Plan** (its
+own checklist), **Agents** (what it started, with live status read off the
+board) and **Activity** (every decision, tool call, approval and dollar).
+
+### Ask me, or Auto
+
+One setting decides how much rope it gets, and it can be switched while a run
+is in flight (the header of its window, or the sheet):
+
+- **Ask me** (the default) — every agent it wants to start waits for you. The
+  request appears as a banner in its window with the project, the mode and the
+  full task, **editable before you approve**; the card reads *Approve?*. Your
+  choices are Approve & start, "Approve, stop asking" (which switches it to
+  Auto), or Decline with a reason it reads and re-plans around.
+- **Auto** — it starts agents on its own, inside its limits. Opening an
+  interactive Terminal window on your desktop still asks, in either mode,
+  because that one puts a window in front of you.
+
+An approval waits as long as you do. The run is suspended to disk rather than
+held on a thread, so you can close the laptop, come back tomorrow and approve
+it then — nothing is spinning and nothing is spending in the meantime.
+
+### The limits are the fence
+
+Under **Limits** in the sheet: agents at once (default 3), agents per run
+(20), steps per run (200) and a spend ceiling ($5, covering the
+orchestrator's own thinking — the agents it starts run on your existing
+Claude Code and Codex logins). These are enforced by Agent Grid before each
+call, not asked of the model: reaching one comes back to the model as a
+failed tool telling it to finish with what it has. Instructions to a model are
+courtesy; this is the fence.
+
+### It survives a restart
+
+A run's whole state — the model conversation, its counters, its children and
+any pending approval — is written to
+`~/.agentgrid/orchestrators/<id>/state.json` after every step, with an
+append-only `journal.jsonl` beside it. Restart Agent Grid and a run that was
+mid-step is picked up where it stopped: the unfinished turn is dropped (a
+half-completed tool call must never be blindly repeated) and the model is told
+to call `list_agents` and `list_tickets` before starting anything, because an
+agent may have been started a moment before the interruption.
+
+### Running with the laptop shut
+
+The orchestrator's *thinking* is an API call, so it does not need your CLIs —
+but the agents it starts are processes on the machine running Agent Grid, and
+that machine has to be awake. Two shapes:
+
+- **On your laptop** (the default). Work stops when the machine sleeps and
+  continues when it wakes, from the last completed step.
+- **On an always-on host.** Run Agent Grid on a machine that never sleeps and
+  reach its board over an SSH tunnel
+  (`ssh -L 8787:127.0.0.1:8787 <host>`) or a private network like Tailscale —
+  keep the loopback binding and the token, and never expose the port. A host
+  with no scriptable Terminal (a Linux box) reports interactive sessions as
+  unavailable, and the tool menu the model is offered shrinks to background
+  agents only, so it cannot ask for something that cannot work. Set the key
+  with `OPENROUTER_API_KEY` there, since there is no Keychain. Note that such
+  a host is its own board: sessions, work areas and tickets live in *its*
+  `~/.agentgrid`, so it is a second board you switch to rather than a remote
+  view of this one.
+
+*Why this is the way it is.* An orchestrator is not a session, so it is not a
+card in the status columns: the columns describe what a session is doing,
+while an orchestrator is the thing that made the session. It sits in the
+breadcrumb rather than in a strip over the board because board space is the
+scarcest thing on this screen — the common case is agentgrid docked beside an
+editor — and a dropdown gives the same answer for free: the button's badge
+carries the one thing that must never be missed, which is how many are waiting
+on you. Starting an agent goes through exactly the same code path as the
+New agent sheet (`launch_agent` in `web.py`), which is what makes an
+orchestrator's reach reviewable: it can do what you can do from that sheet,
+including the project boundary that refuses any directory which is not one of
+the discovered projects, and nothing more.
+
 ## Getting into a session
 
 | Session type | `a` (grid) / **Open ↗** (board) |
@@ -834,6 +927,11 @@ stating plainly:
   `Referrer-Policy: no-referrer` — no embedding, and no referrer leakage of
   the token.
 - Per-request logging is silenced; it would scroll the launching terminal.
+- An orchestrator's model never receives a shell. It chooses from a fixed tool
+  menu that this server defines and executes, and starting an agent goes
+  through the same project boundary as the New agent sheet. The OpenRouter key
+  is read server-side only, is never sent to the browser, and is stripped from
+  the environment of every agent that gets spawned.
 
 ## State on disk
 
@@ -848,6 +946,7 @@ Everything agentgrid itself writes lives under `~/.agentgrid/`:
 ├── read.json           # how far you had read each session
 ├── note-meta.json      # page arrangement and pins
 ├── tickets/            # one JSON file per ticket, plus the key counters
+├── orchestrators/      # one directory each: definition, run state, journal
 ├── sync.json           # notes-sync remote, branch and last-sync time (no secrets)
 └── notes/              # the daily pads, plain markdown (a git repo once you sync)
 ```
@@ -863,12 +962,13 @@ missing or corrupt file — these are optional enrichments, and deleting
 python3 -m unittest discover -s tests -v     # run from the repo root
 node tests/test_chat_ui.js                   # the chat composer
 node tests/test_tickets_ui.js                # the ticket board
+node tests/test_orchestrator_ui.js           # the orchestrator strip and panel
 ```
 
 The layout tests run the real curses drawing code against a hand-written fake
 window and assert on the resulting character grid, so a card-geometry
 regression fails in CI rather than only being visible to a human squinting at
-a screen. The two Node tests do the same job for the browser front end: they
+a screen. The Node tests do the same job for the browser front end: they
 evaluate the real functions out of `app.html` in a sandbox and assert on the
 HTML they return, so a broken filter or a card in the wrong column fails a
 test rather than waiting to be clicked.
@@ -876,6 +976,8 @@ test rather than waiting to be clicked.
 ## Further reading
 
 - [docs/USAGE.md](docs/USAGE.md) — a task-oriented walkthrough
+- [docs/orchestration-design.md](docs/orchestration-design.md) — the provider
+  and coordinator architecture behind orchestrators and workflows
 
 ## License
 

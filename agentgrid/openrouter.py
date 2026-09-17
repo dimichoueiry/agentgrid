@@ -1,7 +1,15 @@
 """OpenRouter text execution and discovery via a fixed HTTPS API endpoint.
 
-No filesystem/shell tools are exposed. Workflow specialists receive the supplied
-brief and handoffs. The coordinator's delegation is validated by TeamRun.
+Two callers, one transport. `run_turn` streams a plain text turn for a workflow
+step: no tools are offered, so a specialist can only answer with prose.
+`tool_turn` is the orchestrator's single step -- one non-streamed request that
+may come back asking for tools -- and every tool it can ask for is defined and
+executed by AgentGrid, never by the model.
+
+No filesystem/shell tools are exposed here in either case. Workflow specialists
+receive the supplied brief and handoffs. The coordinator's delegation is
+validated by TeamRun; an orchestrator's tool calls are validated by
+`orchestrator_run`.
 """
 from __future__ import annotations
 
@@ -24,7 +32,7 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         raise ValueError('OpenRouter returned an unexpected redirect.')
 
 
-def request(path, key, body=None):
+def request(path, key, body=None, timeout=30):
     if not key:
         raise ValueError('Connect OpenRouter in Providers before running this step.')
     data = json.dumps(body).encode() if body is not None else None
@@ -32,7 +40,7 @@ def request(path, key, body=None):
         headers={'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json',
                  'X-OpenRouter-Title': 'AgentGrid'})
     try:
-        return urllib.request.build_opener(NoRedirect()).open(req, timeout=30)
+        return urllib.request.build_opener(NoRedirect()).open(req, timeout=timeout)
     except urllib.error.HTTPError as error:
         reasons = {401: 'The OpenRouter key was rejected.', 402: 'OpenRouter has insufficient credits.',
                    429: 'OpenRouter rate limit reached. Try again later.'}
@@ -163,3 +171,66 @@ def run_turn(room, message, model, attachments=None):
         room._api_response = None
         with room._lock:
             room._running = False
+
+
+# ---------------------------------------------------------------------------
+# One orchestrator step. Streaming is deliberately not used here: a tool call
+# arrives as fragments of a JSON argument string across many chunks, and
+# reassembling that correctly buys nothing -- an orchestrator's turn is read by
+# the harness, not watched character by character. Its prose reaches the user
+# through `message_user`, which is a tool call like any other.
+
+TOOL_TURN_TIMEOUT = 300
+
+
+def tool_turn(messages, model, tools, key=None, timeout=TOOL_TURN_TIMEOUT):
+    """Ask `model` what to do next, given the conversation and the tool menu.
+
+    Returns ``{'text', 'calls', 'raw', 'usage', 'costUsd', 'finish'}`` where
+    `calls` is a list of ``{'id', 'name', 'arguments'}`` with `arguments` left
+    as the model's raw JSON string: a malformed one has to be reported back to
+    the model as a failed tool result, not raised through the run.
+
+    `raw` is the assistant message exactly as returned, because that -- and not
+    a reconstruction of it -- is what the next request must carry as history.
+    """
+    if not str(model).strip():
+        raise ValueError('Choose an exact OpenRouter model ID for this orchestrator.')
+    body = {'model': model, 'messages': messages, 'stream': False,
+            'max_tokens': MAX_OUTPUT_TOKENS, 'usage': {'include': True}}
+    if tools:
+        body['tools'] = tools
+        body['tool_choice'] = 'auto'
+    with request('/chat/completions', key or credentials.get_key(), body, timeout) as response:
+        try:
+            payload = json.load(response)
+        except ValueError:
+            raise ValueError('OpenRouter returned a response that could not be read.') from None
+    if not isinstance(payload, dict):
+        raise ValueError('OpenRouter returned a response that could not be read.')
+    if payload.get('error'):
+        # The provider's own error text is not reflected: it can quote the
+        # request back, headers and all.
+        raise ValueError('OpenRouter reported a generation error. Check the model and provider status.')
+    choices = payload.get('choices')
+    choice = choices[0] if isinstance(choices, list) and choices and isinstance(choices[0], dict) else None
+    message = choice.get('message') if choice else None
+    if not isinstance(message, dict):
+        raise ValueError('OpenRouter returned no assistant message.')
+    finish = str(choice.get('finish_reason') or '')
+    if finish == 'length':
+        raise ValueError('The orchestrator hit the output limit mid-answer. Shorten its instructions or use a model with more output room.')
+    if finish == 'content_filter':
+        raise ValueError('OpenRouter filtered the orchestrator response.')
+    calls = []
+    for entry in message.get('tool_calls') or []:
+        function = entry.get('function') if isinstance(entry, dict) else None
+        if not isinstance(function, dict) or not isinstance(function.get('name'), str):
+            continue
+        arguments = function.get('arguments')
+        calls.append({'id': str(entry.get('id') or ''), 'name': function['name'],
+                      'arguments': arguments if isinstance(arguments, str) else json.dumps(arguments or {})})
+    usage = payload.get('usage') if isinstance(payload.get('usage'), dict) else {}
+    content = message.get('content')
+    return {'text': content if isinstance(content, str) else '', 'calls': calls, 'raw': message,
+            'usage': usage, 'costUsd': usage.get('cost'), 'finish': finish}

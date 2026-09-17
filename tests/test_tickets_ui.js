@@ -44,6 +44,7 @@ const ctx = vm.createContext({
     ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c])),
   ageStr: () => '2h', md: s => s, dueLabel: () => 'today', dueClass: () => 'now',
   tkData: {tickets: TICKETS}, tkOpen: null, query: '',
+  tkArea: '', areaData: {areas: [{id: 'a1', name: 'Marketing'}, {id: 'a2', name: 'Engineering'}], members: {}},
   tkProject: '', tkType: '', tkAssignee: '', tkGroup: '', tkHidden: [],
   sessions: [{sessionId: 's-1', title: 'sonnet-1', status: 'working', openable: true}],
 });
@@ -54,6 +55,8 @@ vm.runInContext('const tkStamp = iso => String(iso||"").replace("T"," ").slice(0
                 'const tkAge = () => "2h";' +
                 'const tkLive = t => (t.sessionId ? sessions.find(s => s.sessionId === t.sessionId) : null);', ctx);
 
+vm.runInContext(script.slice(script.indexOf('const tkAreaName'), script.indexOf('const tkSetArea')), ctx);
+
 const ids = list => list.map(t => t.id);
 const run = expr => vm.runInContext(expr, ctx);
 
@@ -63,6 +66,21 @@ assert.deepEqual(ids(run('tkFiltered()')), ['DC-1', 'DC-2', 'AG-1', 'AG-2']);
 ctx.tkProject = '/repos/AgentGrid';
 assert.deepEqual(ids(run('tkFiltered()')), ['AG-1', 'AG-2'], 'filters by project');
 ctx.tkProject = '';
+
+// a work area scopes the board; a ticket whose area was deleted reads as in none
+TICKETS[1].area = 'a1'; TICKETS[2].area = 'a2'; TICKETS[3].area = 'deleted';
+ctx.tkArea = 'a1';
+assert.deepEqual(ids(run('tkFiltered()')), ['DC-2'], 'filters by work area');
+ctx.tkArea = '∅';
+assert.deepEqual(ids(run('tkFiltered()')), ['DC-1', 'AG-2'], 'no work area is its own choice');
+ctx.tkArea = 'a2'; ctx.tkProject = '/repos/draw-cal';
+assert.deepEqual(ids(run('tkFiltered()')), [], 'the area stacks with the other filters');
+ctx.tkArea = ''; ctx.tkProject = '';
+ctx.tkGroup = 'area';
+assert.deepEqual(run('tkGroups(tkFiltered())').map(([name, items]) => [name, items.length]),
+                 [['Engineering', 1], ['Marketing', 1], ['No work area', 2]], 'lanes by work area');
+ctx.tkGroup = '';
+assert.ok(run('tkCardHtml(tkData.tickets[1])').includes('Marketing'), 'a card names its work area');
 
 ctx.tkType = 'bug';
 assert.deepEqual(ids(run('tkFiltered()')), ['DC-1'], 'filters by type');

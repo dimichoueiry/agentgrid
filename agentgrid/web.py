@@ -1751,6 +1751,8 @@ class Handler(BaseHTTPRequestHandler):
             self._tickets_comment(body)
         elif route == "/api/tickets/delete":
             self._tickets_delete(body)
+        elif route == "/api/tickets/rekey":
+            self._tickets_rekey(body)
         elif route == "/api/notes/save":
             self._notes_save(body)
         elif route == "/api/notes/quickadd":
@@ -2350,6 +2352,14 @@ class Handler(BaseHTTPRequestHandler):
         payload.update(extra)
         self._send_json(200, payload)
 
+    @staticmethod
+    def _ticket_area(body: dict) -> str:
+        """The work area a ticket is being filed under; "" is none."""
+        area_id = str(body.get("area") or "")
+        if area_id and not any(a["id"] == area_id for a in areas.load()["areas"]):
+            raise ValueError("Work area no longer exists.")
+        return area_id
+
     def _tickets_create(self, body: dict) -> None:
         try:
             ticket = tickets.create(
@@ -2364,6 +2374,7 @@ class Handler(BaseHTTPRequestHandler):
                 reporter="you",
                 labels=body.get("labels"),
                 due=str(body.get("due") or ""),
+                area=self._ticket_area(body),
             )
         except ValueError as error:
             self._send_json(400, {"error": str(error)})
@@ -2376,6 +2387,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(400, {"error": "Nothing to change."})
             return
         try:
+            if "area" in fields:
+                fields["area"] = self._ticket_area(body)
             ticket = tickets.update(self._ticket_id(body), fields, who="you")
         except ValueError as error:
             self._send_json(400, {"error": str(error)})
@@ -2446,6 +2459,18 @@ class Handler(BaseHTTPRequestHandler):
         else:
             message = f"{ticket['id']} unassigned."
         self._ticket_reply(ticket, message, told=told)
+
+    def _tickets_rekey(self, body: dict) -> None:
+        try:
+            result = tickets.rekey(str(body.get("project") or ""), str(body.get("key") or ""))
+        except ValueError as error:
+            self._send_json(400, {"error": str(error)})
+            return
+        count = result["renamed"]
+        message = (f"Prefix is already {result['to']}." if result["from"] == result["to"] else
+                   f"{result['from']} is now {result['to']}"
+                   f"{f' — {count} ticket' + ('' if count == 1 else 's') + ' renamed' if count else ''}.")
+        self._send_json(200, {"ok": True, "message": message, "board": tickets.board(), **result})
 
     def _tickets_delete(self, body: dict) -> None:
         ticket_id = self._ticket_id(body)

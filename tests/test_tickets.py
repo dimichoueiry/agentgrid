@@ -17,7 +17,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from agentgrid import tickets, ticket_cli, web
+from agentgrid import areas, tickets, ticket_cli, web
 
 
 class TicketStoreTests(unittest.TestCase):
@@ -38,6 +38,40 @@ class TicketStoreTests(unittest.TestCase):
         # a multi-word name becomes initials, a single word its first letters
         self.assertEqual(tickets.project_key("/repos/draw-cal"), "DC")
         self.assertEqual(tickets.project_key("/repos/drawcal"), "DRAW")
+
+    def test_renaming_a_prefix_renames_its_tickets_and_old_ids_still_resolve(self):
+        tickets.create("One", project="/repos/cosmos")
+        tickets.create("Two", project="/repos/cosmos")
+        other = tickets.create("Else", project="/repos/draw-cal")
+        result = tickets.rekey("/repos/cosmos", "sky")
+        self.assertEqual(result, {"from": "COSM", "to": "SKY", "renamed": 2})
+        self.assertEqual(sorted(t["id"] for t in tickets.all_tickets()),
+                         [other["id"], "SKY-1", "SKY-2"])
+        # numbering carries on, and an id from before the rename finds its ticket
+        self.assertEqual(tickets.create("Three", project="/repos/cosmos")["id"], "SKY-3")
+        self.assertEqual(tickets.get("COSM-2")["id"], "SKY-2")
+        self.assertEqual(tickets.comment("cosm-1", "you", "still here")["id"], "SKY-1")
+        self.assertEqual([p["key"] for p in tickets.board()["prefixes"]], ["SKY", "DC"])
+
+    def test_a_prefix_cannot_collide_or_be_malformed(self):
+        tickets.create("One", project="/repos/cosmos")
+        tickets.create("Else", project="/repos/draw-cal")
+        tickets.create("Loose")                                  # GEN-1
+        for bad in ("DC", "GEN", "x", "toolong", "1AB", ""):
+            with self.assertRaises(ValueError, msg=bad):
+                tickets.rekey("/repos/cosmos", bad)
+        with self.assertRaises(ValueError):
+            tickets.rekey("/repos/never-filed", "NF")
+        self.assertIsNotNone(tickets.load("COSM-1"))             # nothing moved
+
+    def test_a_ticket_belongs_to_a_work_area_and_the_query_scopes_to_it(self):
+        a = tickets.create("Landing page", area="marketing")
+        tickets.create("Fix the redirect")
+        self.assertEqual([t["id"] for t in tickets.query(area="marketing")], [a["id"]])
+        moved = tickets.update(a["id"], {"area": ""}, who="you")
+        self.assertEqual(moved["area"], "")
+        self.assertEqual(moved["activity"][-1]["text"], "the work area")
+        self.assertEqual(tickets.query(area="marketing"), [])
 
     def test_a_key_is_registered_once_and_never_moves(self):
         first = tickets.project_key("/repos/draw-cal")
@@ -175,6 +209,24 @@ class TicketCliTests(unittest.TestCase):
         self.assertEqual(self.run_cli("done", "DC-1")[0], 0)
         self.assertEqual(tickets.get("DC-1")["status"], "done")
 
+    def test_area_takes_a_name_and_prefix_renames_this_projects_tickets(self):
+        known = {"areas": [{"id": "a1", "name": "Marketing", "prompt": ""}], "members": {}}
+        with mock.patch.object(areas, "load", lambda: known):
+            code, _ = self.run_cli("new", "Landing page", "--area", "marketing")
+            self.assertEqual((code, tickets.get("DC-1")["area"]), (0, "a1"))
+            self.assertIn("area      Marketing", self.run_cli("show", "DC-1")[1])
+            self.run_cli("new", "Elsewhere")
+            self.assertIn("DC-1", self.run_cli("list", "--area", "Marketing")[1])
+            self.assertNotIn("DC-2", self.run_cli("list", "--area", "Marketing")[1])
+            self.assertEqual(self.run_cli("edit", "DC-1", "--area", "none")[0], 0)
+            self.assertEqual(tickets.get("DC-1")["area"], "")
+            self.assertEqual(self.run_cli("edit", "DC-1", "--area", "Nope")[0], 1)
+        self.assertEqual(self.run_cli("prefix")[1].strip(), "DC")
+        code, out = self.run_cli("prefix", "cal")
+        self.assertEqual(code, 0)
+        self.assertIn("DC is now CAL (2 renamed)", out)
+        self.assertEqual(self.run_cli("show", "DC-1")[0], 0)      # the old id still works
+
     def test_a_bare_list_is_scoped_to_this_checkout_and_hides_nothing_silently(self):
         self.run_cli("new", "In this repo")
         tickets.create("Somewhere else", project="/repos/other")
@@ -292,6 +344,26 @@ class TicketRouteTests(unittest.TestCase):
         self.assertEqual(created["ticket"]["id"], "DC-1")
         # the whole board rides on the reply, so the client never re-fetches
         self.assertEqual([t["id"] for t in created["board"]["tickets"]], ["DC-1"])
+
+    def test_a_ticket_is_filed_under_a_real_work_area_or_refused(self):
+        known = {"areas": [{"id": "a1", "name": "Marketing", "prompt": ""}], "members": {}}
+        port, _ = _serve()
+        with mock.patch.object(areas, "load", lambda: known):
+            status, made = _call(port, "/api/tickets/create", {"title": "Landing page", "area": "a1"})
+            self.assertEqual((status, made["ticket"]["area"]), (200, "a1"))
+            status, reply = _call(port, "/api/tickets/update", {"id": "GEN-1", "area": "gone"})
+            self.assertEqual(status, 400)
+            status, reply = _call(port, "/api/tickets/update", {"id": "GEN-1", "area": ""})
+            self.assertEqual((status, reply["ticket"]["area"]), (200, ""))
+
+    def test_the_board_renames_a_prefix(self):
+        port, _ = _serve()
+        _call(port, "/api/tickets/create", {"title": "One", "project": "/repos/cosmos"})
+        status, reply = _call(port, "/api/tickets/rekey", {"project": "/repos/cosmos", "key": "sky"})
+        self.assertEqual((status, reply["from"], reply["to"]), (200, "COSM", "SKY"))
+        self.assertEqual([t["id"] for t in reply["board"]["tickets"]], ["SKY-1"])
+        status, reply = _call(port, "/api/tickets/rekey", {"project": "/repos/cosmos", "key": "!"})
+        self.assertEqual(status, 400)
 
     def test_a_drag_moves_a_card_and_places_it(self):
         port, _ = _serve()

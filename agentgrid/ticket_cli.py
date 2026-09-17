@@ -25,7 +25,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from agentgrid import tickets
+from agentgrid import areas, tickets
 
 # One character wide and unambiguous at a glance; type is what you scan a
 # list for after the title. These match the glyphs the board draws.
@@ -77,6 +77,9 @@ def show(ticket: dict) -> str:
            f"  project   {ticket['projectName'] or '—'}"
            f"{'  (' + ticket['project'] + ')' if ticket['project'] else ''}",
            f"  assignee  {ticket['assignee'] or 'nobody'}"]
+    if ticket["area"]:
+        name = next((a["name"] for a in areas.load()["areas"] if a["id"] == ticket["area"]), "")
+        out.append(f"  area      {name or ticket['area']}")
     if ticket["reporter"]:
         out.append(f"  reporter  {ticket['reporter']}")
     if ticket["labels"]:
@@ -166,6 +169,7 @@ def build_parser() -> argparse.ArgumentParser:
     ls.add_argument("--type", default="", help=f"one or more of: {', '.join(tickets.TYPES)}")
     ls.add_argument("--assignee", default="", metavar="NAME", help="a name, or 'none'")
     ls.add_argument("--label", default="")
+    ls.add_argument("--area", default="", metavar="NAME", help="a work area's name")
     ls.add_argument("--text", default="", help="substring of id, title, body or labels")
     ls.add_argument("--mine", action="store_true", help="assigned to me")
     ls.add_argument("--open", action="store_true", dest="open_only",
@@ -185,6 +189,7 @@ def build_parser() -> argparse.ArgumentParser:
     new.add_argument("--project", default="", metavar="PATH")
     new.add_argument("--no-project", action="store_true", dest="no_project")
     new.add_argument("--label", action="append", default=[])
+    new.add_argument("--area", default="", metavar="NAME", help="the work area it belongs to")
     new.add_argument("--assign", default="", metavar="NAME", help="'me' assigns it to you")
     new.add_argument("--take", action="store_true", help="assign it to me and start it")
 
@@ -199,6 +204,10 @@ def build_parser() -> argparse.ArgumentParser:
     mv.add_argument("status", help=", ".join(tickets.STATUSES))
 
     sub("done", "move a ticket to Done").add_argument("key")
+
+    prefix = sub("prefix", "show this project's ticket prefix, or rename it (COS-1 -> NEW-1)")
+    prefix.add_argument("key", nargs="?", default="", metavar="NEW")
+    prefix.add_argument("--project", default="", metavar="PATH")
 
     assign = sub("assign", "hand a ticket to someone ('none' clears it)")
     assign.add_argument("key")
@@ -219,9 +228,23 @@ def build_parser() -> argparse.ArgumentParser:
                       help="repeatable; replaces the whole set")
     edit.add_argument("--project", default=None, metavar="PATH")
     edit.add_argument("--due", default=None, metavar="YYYY-MM-DD")
+    edit.add_argument("--area", default=None, metavar="NAME", help="a work area's name, or 'none'")
 
     sub("help", "print this help")
     return parser
+
+
+def _area_id(value: str) -> str:
+    """A work area's id from the name (or id) someone typed; 'none' clears it."""
+    value = str(value or "").strip()
+    if not value or value.lower() in ("none", "unassigned", "-"):
+        return ""
+    known = areas.load()["areas"]
+    for area in known:
+        if value in (area["id"], area["name"]) or value.casefold() == area["name"].casefold():
+            return area["id"]
+    raise ValueError(f"No work area called {value!r}. There is: "
+                     + (", ".join(a["name"] for a in known) or "none yet") + ".")
 
 
 def _text(value: str) -> str:
@@ -286,7 +309,7 @@ def main(argv: list[str]) -> int:
             rows = tickets.query(
                 project=project, status=args.status, type=args.type,
                 assignee=(who if args.mine else args.assignee),
-                label=args.label, text=args.text,
+                label=args.label, text=args.text, area=_area_id(args.area),
                 open_only=args.open_only, limit=args.limit)
             return _listing(rows, as_json, everywhere)
 
@@ -296,7 +319,7 @@ def main(argv: list[str]) -> int:
                 status=args.status, priority=args.priority, due=args.due,
                 project=_resolve_project(args.project, args.no_project),
                 assignee=(who if (args.take or args.assign in ("me", "self")) else args.assign),
-                reporter=who, labels=args.label)
+                reporter=who, labels=args.label, area=_area_id(args.area))
             if args.take:
                 ticket = tickets.take(ticket["id"], who)
             emit(ticket, "Filed")
@@ -337,11 +360,23 @@ def main(argv: list[str]) -> int:
                     changes[field] = _text(value) if field == "body" else value
             if args.label is not None:
                 changes["labels"] = args.label
+            if args.area is not None:
+                changes["area"] = _area_id(args.area)
             if not changes:
-                print("Nothing to change. Try --title/--body/--type/--priority/--label/--due.",
+                print("Nothing to change. Try --title/--body/--type/--priority/--label/--area/--due.",
                       file=sys.stderr)
                 return 1
             emit(tickets.update(args.key, changes, who=who), "Edited")
+            return 0
+
+        if cmd == "prefix":
+            project = _resolve_project(args.project, False)
+            if not args.key:
+                print(tickets.known_keys().get(project) or "No tickets filed for this project yet.")
+                return 0
+            result = tickets.rekey(project, args.key)
+            print(json.dumps(result, indent=2) if as_json else
+                  f"{result['from']} is now {result['to']} ({result['renamed']} renamed).")
             return 0
 
         if cmd in ("delete", "rm"):

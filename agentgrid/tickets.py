@@ -94,7 +94,12 @@ NO_PROJECT_KEY = "GEN"
 # another repo stays DC-4. Jira mints a new key there, but an id that changed
 # under you would break every mention already written into a commit or a chat,
 # and the board shows the project name beside the id anyway.
-EDITABLE = ("title", "body", "type", "priority", "labels", "project", "due")
+#
+# `area` is a work area's id, or "" for none. It is stored as given: this module
+# knows nothing about areas.json, so the callers that do (the board, the CLI)
+# check the id names a real area before it gets here.
+EDITABLE = ("title", "body", "type", "priority", "labels", "project", "area", "due")
+MAX_AREA = 64
 
 
 # --------------------------------------------------------------------------
@@ -151,6 +156,7 @@ def _meta() -> dict:
     meta = _read_json(TICKETS_DIR / META_NAME, {})
     meta.setdefault("keys", {})        # project path -> project key
     meta.setdefault("counters", {})    # project key -> highest number minted
+    meta.setdefault("aliases", {})     # a retired project key -> the key it became
     return meta
 
 
@@ -180,8 +186,9 @@ def _candidate_key(name: str) -> str:
 def project_key(project: str) -> str:
     """The stable key for a project path, registering one on first sight.
 
-    Registration is permanent: a key that changed would orphan every ticket id
-    already written into a commit message, a chat, or someone's memory.
+    A key only changes when a person renames it (`rekey`), and the old one is
+    kept as an alias, so an id already written into a commit message, a chat
+    or someone's memory still finds its ticket.
     """
     project = str(project or "").strip()
     if not project:
@@ -205,6 +212,55 @@ def project_key(project: str) -> str:
 def known_keys() -> dict:
     """project path -> project key, for everything registered so far."""
     return dict(_meta()["keys"])
+
+
+def _resolve_alias(prefix: str, aliases: dict) -> str:
+    seen = set()
+    while prefix in aliases and prefix not in seen:    # a key renamed twice
+        seen.add(prefix)
+        prefix = aliases[prefix]
+    return prefix
+
+
+def rekey(project: str, new_key: str) -> dict:
+    """Rename a project's key, and every ticket filed under it with it.
+
+    COS-1..COS-n become NEW-1..NEW-n: a prefix that only applied to future
+    tickets would leave one project answering to two names on the board. The
+    retired key is remembered as an alias, so `ag ticket show COS-2` and old
+    mentions keep resolving. Returns {"from", "to", "renamed"}.
+    """
+    project = str(project or "").strip()
+    new_key = re.sub(r"[^A-Za-z0-9]", "", str(new_key or "")).upper()
+    if not PROJECT_KEY_RE.match(new_key):
+        raise ValueError("A prefix is 2-5 letters or digits, starting with a letter.")
+    if new_key == NO_PROJECT_KEY:
+        raise ValueError(f"{NO_PROJECT_KEY} is reserved for tickets with no project.")
+    with _minting_lock():
+        meta = _meta()
+        old_key = meta["keys"].get(project)
+        if not old_key:
+            raise ValueError("That project has no ticket prefix yet.")
+        if new_key == old_key:
+            return {"from": old_key, "to": new_key, "renamed": 0}
+        if new_key in meta["keys"].values():
+            raise ValueError(f"{new_key} is already another project's prefix.")
+        if any(TICKETS_DIR.glob(f"{new_key}-*.json")):
+            raise ValueError(f"Tickets named {new_key}-… already exist.")
+        renamed = 0
+        for path in sorted(TICKETS_DIR.glob(f"{old_key}-*.json")):
+            if not ID_RE.match(path.stem):
+                continue
+            os.replace(path, TICKETS_DIR / f"{new_key}-{path.stem.split('-')[1]}.json")
+            renamed += 1
+        meta["keys"][project] = new_key
+        meta["counters"][new_key] = max(int(meta["counters"].get(new_key) or 0),
+                                        int(meta["counters"].pop(old_key, 0) or 0))
+        # Taking a retired key back into use ends its life as an alias.
+        meta["aliases"].pop(new_key, None)
+        meta["aliases"][old_key] = new_key
+        _write_json(TICKETS_DIR / META_NAME, meta)
+    return {"from": old_key, "to": new_key, "renamed": renamed}
 
 
 # --------------------------------------------------------------------------
@@ -254,7 +310,14 @@ def ticket_path(ticket_id: str) -> Path:
     ticket_id = str(ticket_id or "").strip().upper()
     if not ID_RE.match(ticket_id):
         raise ValueError(f"Not a ticket id: {ticket_id or '(empty)'}")
-    return TICKETS_DIR / f"{ticket_id}.json"
+    path = TICKETS_DIR / f"{ticket_id}.json"
+    if not path.exists():
+        # An id from before its project was re-keyed still finds the ticket.
+        prefix, number = ticket_id.split("-")
+        current = _resolve_alias(prefix, _meta()["aliases"])
+        if current != prefix and PROJECT_KEY_RE.match(current):
+            return TICKETS_DIR / f"{current}-{number}.json"
+    return path
 
 
 # --------------------------------------------------------------------------
@@ -298,6 +361,7 @@ def _normalise(raw: dict, ticket_id: str) -> dict:
         "priority": _one_of(raw.get("priority"), PRIORITIES, "medium"),
         "project": project,
         "projectName": str(raw.get("projectName") or "") or (Path(project).name if project else ""),
+        "area": _clean(raw.get("area"), MAX_AREA),
         "assignee": _clean(raw.get("assignee"), MAX_NAME),
         "sessionId": str(raw.get("sessionId") or ""),
         "reporter": _clean(raw.get("reporter"), MAX_NAME),
@@ -384,7 +448,7 @@ def _next_rank(status: str) -> float:
 def create(title: str, *, body: str = "", type: str = "task", status: str = "todo",
            priority: str = "medium", project: str = "", project_name: str = "",
            assignee: str = "", session_id: str = "", reporter: str = "",
-           labels=None, due: str = "") -> dict:
+           labels=None, due: str = "", area: str = "") -> dict:
     """Mint a ticket. A title is the only requirement, on purpose: a ticket
     you could not file in one line would not get filed."""
     title = _clean(title, MAX_TITLE)
@@ -405,7 +469,7 @@ def create(title: str, *, body: str = "", type: str = "task", status: str = "tod
         ticket_id = f"{prefix}-{number}"
     ticket = _normalise({
         "title": title, "body": body, "type": type, "status": status,
-        "priority": priority, "project": project,
+        "priority": priority, "project": project, "area": area,
         "projectName": project_name or (Path(project).name if project else ""),
         "assignee": assignee, "sessionId": session_id, "reporter": reporter,
         "labels": labels, "due": due, "created": _now(),
@@ -446,12 +510,14 @@ def update(ticket_id: str, changes: dict, who: str = "") -> dict:
             value = _clean(value, MAX_BODY)
         elif field == "project":
             value = str(value or "").strip()
+        elif field == "area":
+            value = _clean(value, MAX_AREA)
         if ticket[field] == value:
             continue
         ticket[field] = value
         if field == "project":
             ticket["projectName"] = Path(value).name if value else ""
-        touched.append("the description" if field == "body" else field)
+        touched.append({"body": "the description", "area": "the work area"}.get(field, field))
     if touched:
         _log(ticket, who, "edited", text=", ".join(touched))
     return _persist(ticket)
@@ -559,7 +625,7 @@ def delete(ticket_id: str) -> bool:
 # --------------------------------------------------------------------------
 
 def query(*, project: str = "", status: str = "", type: str = "",
-          assignee: str = "", label: str = "", text: str = "",
+          assignee: str = "", label: str = "", text: str = "", area: str = "",
           open_only: bool = False, limit: int = 0) -> list[dict]:
     """Filter the board. Every argument is optional and ANDed with the rest.
 
@@ -572,8 +638,11 @@ def query(*, project: str = "", status: str = "", type: str = "",
     label = str(label or "").strip().lower()
     assignee = str(assignee or "").strip().lower()
     project = str(project or "").strip()
+    area = str(area or "").strip()
     out = []
     for ticket in all_tickets():
+        if area and ticket["area"] != area:
+            continue
         if project and project not in (ticket["project"], ticket["projectName"]):
             continue
         if open_only and ticket["status"] == "done":
@@ -623,8 +692,15 @@ def board(tickets=None) -> dict:
             assignees[ticket["assignee"]] = assignees.get(ticket["assignee"], 0) + 1
         for label in ticket["labels"]:
             labels[label] = labels.get(label, 0) + 1
+    filed: dict[str, int] = {}
+    for ticket in tickets:
+        filed[ticket["key"]] = filed.get(ticket["key"], 0) + 1
+    prefixes = sorted(({"path": path, "name": Path(path).name, "key": key,
+                        "count": filed.get(key, 0)} for path, key in known_keys().items()),
+                      key=lambda p: p["name"].lower())
     return {
         "tickets": tickets,
+        "prefixes": prefixes,
         "statuses": [{"key": s, "label": STATUS_LABELS[s], "count": counts[s]} for s in STATUSES],
         "types": [{"key": t, "label": TYPE_LABELS[t], "count": types[t]} for t in TYPES],
         "priorities": list(PRIORITIES),

@@ -807,9 +807,23 @@ body.tickets-view #filtersBtn,body.notes-view #filtersBtn{display:none}
 .tk-filters{display:flex;align-items:center;gap:8px;min-width:0;order:1}
 #tkToggles,.tk-opts .flabel{order:2}
 .tk-bar .lbl{font-size:11.5px;color:var(--text-3);order:3;margin-left:auto}
+/* the work area you came from, one click to scope the board to it */
+.tk-areachip{display:inline-flex;align-items:center;gap:6px;white-space:nowrap;max-width:220px}
+.tk-areachip[hidden]{display:none}
+.tk-areachip .nm{overflow:hidden;text-overflow:ellipsis}
+.tk-areachip .n{font-size:10.5px;font-weight:600;color:var(--text-2)}
+.tk-areachip[aria-pressed=true]{background:var(--text);color:var(--bg);border-color:var(--text)}
+.tk-areachip[aria-pressed=true] .n{color:inherit;opacity:.7}
+.pfx-row{display:flex;align-items:center;gap:10px;padding:8px 0;border-top:1px solid var(--line)}
+.pfx-row:first-child{border-top:0}
+.pfx-row .who{flex:1;min-width:0}
+.pfx-row .who b{display:block;font-weight:550;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pfx-row .who span{font-size:11.5px;color:var(--text-3);display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pfx-row input{width:84px;padding:6px 8px;font-family:var(--mono);text-transform:uppercase}
 #tkGroup{order:4}
 #tkLayout{order:5}
-#tkHelp{order:6;white-space:nowrap}
+#tkPrefixes{order:6;white-space:nowrap}
+#tkHelp{order:7;white-space:nowrap}
 #tkNew{order:7;white-space:nowrap}
 .tk-body{flex:1 1 auto;min-height:0;overflow:auto;display:flex;flex-direction:column}
 
@@ -985,7 +999,7 @@ body.area-overview .viewnav,body.area-overview #searchBox,body.area-overview #ne
 /* The common case is agentgrid docked beside an editor: 700–960px wide. Bars
    never wrap: each step folds the least-used group into a menu, and nothing
    that carries state disappears (a folded count becomes a badge or a dot).
-   1180  tickets: filters, status, lanes and help fold into Filters
+   1500  tickets: area, filters, status, lanes and help fold into Filters
    1080  top bar: the tools fold into the ☰ menu; the refresh time hides
     900  the view bar trims its labels; the code workspace stacks
     800  board: project, tag, columns and alerts fold into Filters
@@ -994,13 +1008,13 @@ body.area-overview .viewnav,body.area-overview #searchBox,body.area-overview #ne
     560  the four views become one dropdown; the board stacks into a list
     380  New agent says New
     330  the wordmark goes (☰ still leads to work areas) */
-@media(max-width:1180px){
+@media(max-width:1500px){
   .tk-bar .fbtn{display:inline-flex}
   .tk-opts{display:none}
   .tk-opts.open{left:14px}
   .tk-opts.open .tk-filters{flex-direction:column;align-items:stretch}
   .tk-opts.open .lbl{margin-left:0}
-  .tk-opts.open #tkHelp{align-self:flex-start;margin-top:6px}
+  .tk-opts.open #tkPrefixes,.tk-opts.open #tkHelp{align-self:flex-start;margin-top:6px}
   #tkLayout{margin-left:auto}
 }
 @media(max-width:1080px){
@@ -1190,9 +1204,11 @@ body.area-overview .viewnav,body.area-overview #searchBox,body.area-overview #ne
   <!-- one row at any width: when the options do not fit inline they fold
        into the Filters dropdown, leaving layout and New ticket in the bar -->
   <div class="tk-bar">
+    <button class="btn tk-areachip" id="tkAreaChip" aria-pressed="false" hidden></button>
     <button class="btn fbtn" id="tkFiltersBtn" aria-expanded="false" aria-controls="tkOpts">Filters<span class="fcount" id="tkFiltersCount"></span><svg class="chev" width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M2.5 4 5 6.5 7.5 4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
     <div class="tk-opts fpanel" id="tkOpts">
       <div class="tk-filters">
+        <select class="ctl" id="tkArea" title="Work area"></select>
         <select class="ctl" id="tkProject" title="Project"></select>
         <select class="ctl" id="tkType" title="Type"></select>
         <select class="ctl" id="tkAssignee" title="Assignee"></select>
@@ -1202,11 +1218,13 @@ body.area-overview .viewnav,body.area-overview #searchBox,body.area-overview #ne
       <span class="lbl">Lanes</span>
       <select class="ctl" id="tkGroup" title="Split the board into lanes">
         <option value="">none</option>
+        <option value="area">by work area</option>
         <option value="project">by project</option>
         <option value="assignee">by agent</option>
         <option value="type">by type</option>
         <option value="priority">by priority</option>
       </select>
+      <button class="btn" id="tkPrefixes" title="Rename the letters in front of a project's ticket numbers (COS-1, AG-2)">Prefixes</button>
       <button class="btn" id="tkHelp" title="How agents file and pick up tickets from a shell">ag ticket</button>
     </div>
     <div class="views" id="tkLayout">
@@ -1238,6 +1256,7 @@ body.area-overview .viewnav,body.area-overview #searchBox,body.area-overview #ne
       <label>Type <select id="ntType"></select></label>
       <label>Priority <select id="ntPriority"></select></label>
       <label>Project <select id="ntProject"></select></label>
+      <label>Work area <select id="ntArea"></select></label>
       <label>Assignee <select id="ntAssignee"></select></label>
       <label>Status <select id="ntStatus"></select></label>
       <label>Due <input type="date" id="ntDue"></label>
@@ -1254,22 +1273,37 @@ body.area-overview .viewnav,body.area-overview #searchBox,body.area-overview #ne
   </div>
 </div>
 
+<div class="modal" id="tkPrefixModal" hidden>
+  <div class="sheet">
+    <div class="stitle">Ticket prefixes</div>
+    <p class="hint" style="margin:0 0 10px">The letters in front of a project's ticket numbers. Renaming one renames
+      its tickets too (COS-2 becomes NEW-2); the old ids keep working in <code>ag ticket</code>.</p>
+    <div id="tkPrefixRows"></div>
+    <div class="srow">
+      <span class="hint err" id="tkPrefixErr"></span>
+      <span class="spacer"></span>
+      <button class="btn key" id="tkPrefixClose">Done</button>
+    </div>
+  </div>
+</div>
+
 <div class="modal" id="tkHelpModal" hidden>
   <div class="sheet wide">
     <div class="stitle">Tickets from a shell</div>
     <p class="hint" style="margin:0 0 10px">Agents drive this board with <code>ag ticket</code>. No server and no token: it writes
       the same file the board reads, and signs with the session's name. Paste the snippet into a project's
       <code>CLAUDE.md</code> (or an agent's system prompt) so every agent knows the routine.</p>
-<pre class="t-code" id="tkHelpText">ag ticket list [--project here|PATH] [--status S] [--type T] [--assignee A] [--mine] [--open] [--json]
+<pre class="t-code" id="tkHelpText">ag ticket list [--project here|PATH] [--status S] [--type T] [--assignee A] [--area NAME] [--mine] [--open] [--json]
 ag ticket show ID
 ag ticket new "Title" [--type bug|task|story|spike|chore] [--priority low|medium|high|urgent]
-                      [--body TEXT | --body -] [--project PATH] [--label L] [--due YYYY-MM-DD] [--take]
+                      [--body TEXT | --body -] [--project PATH] [--area NAME] [--label L] [--due YYYY-MM-DD] [--take]
 ag ticket take ID                   claim it: assigned to you, In progress
 ag ticket move ID STATUS            backlog | todo | in_progress | review | done
 ag ticket done ID                   finished
 ag ticket assign ID NAME            hand it to someone ('none' unassigns)
 ag ticket comment ID "text"         leave a note
-ag ticket edit ID [--title ..] [--type ..] [--priority ..] [--body ..] [--label ..] [--due ..]
+ag ticket edit ID [--title ..] [--type ..] [--priority ..] [--body ..] [--label ..] [--area ..] [--due ..]
+ag ticket prefix [NEW]              this project's prefix; with NEW, rename it and its tickets
 ag ticket delete ID
 
 Every command takes --as NAME and --json. Without --as, the name is $AGENTGRID_AGENT
@@ -5415,6 +5449,7 @@ function bindEvents() {
       if (!$("gridModal").hidden) { $("gridModal").hidden = true; return; }
       if (!$("ticketModal").hidden) { closeNewTicket(); return; }
       if (!$("tkHelpModal").hidden) { $("tkHelpModal").hidden = true; return; }
+      if (!$("tkPrefixModal").hidden) { $("tkPrefixModal").hidden = true; return; }
       if (!$("promptModal").hidden) { closePrompts(); return; }
       if (!$("modal").hidden) { closeNewAgent(); return; }
       if ($("managePanel").classList.contains("on")) { closeManage(); return; }
@@ -5467,6 +5502,7 @@ const tkSet = (k, v) => localStorage.setItem("agentgrid.tk." + k, JSON.stringify
 let tkData = null, tkSig = "", tkOpen = null, tkPanelSig = "", tkDragging = false;
 let tkEditingBody = false, tkPendingSpawnKey = "", tkDeleteArmed = null;
 let tkLayout = tkPref("layout", "board"), tkGroup = tkPref("group", "");
+let tkArea = tkPref("area", "");   // a work area id, "∅" for tickets in none, "" for all
 let tkProject = tkPref("project", ""), tkType = tkPref("type", ""), tkAssignee = tkPref("assignee", "");
 let tkHidden = tkPref("hidden", []);
 
@@ -5508,9 +5544,23 @@ async function loadTickets(force) {
   if (tkOpen) renderTicketPanel();
 }
 
+// A ticket whose area was since deleted reads as being in none, so it can
+// still be found and re-filed rather than sitting behind a filter nobody has.
+const tkAreaName = id => (areaData.areas.find(a => a.id === id) || {}).name || "";
+const tkAreaOf = t => (t.area && tkAreaName(t.area) ? t.area : "");
+const tkInArea = (t, want) => !want || (want === "∅" ? !tkAreaOf(t) : tkAreaOf(t) === want);
+const tkSetArea = v => { tkArea = v; tkSet("area", v); tkSig = ""; renderTickets(); };
+// the area the rest of the board is scoped to, in the filter's terms
+const tkHereArea = () => (activeArea === "unassigned" ? "∅" : activeArea);
+function tkAreaOptions(selected) {
+  return `<option value="">No work area</option>` + areaData.areas.map(a =>
+    `<option value="${esc(a.id)}"${a.id === selected ? " selected" : ""}>${esc(a.name)}</option>`).join("");
+}
+
 function tkFiltered() {
   const q = query.trim().toLowerCase();
   return (tkData ? tkData.tickets : []).filter(t => {
+    if (!tkInArea(t, tkArea)) return false;
     if (tkProject === "∅") { if (t.project) return false; }
     else if (tkProject && t.project !== tkProject) return false;
     if (tkType && t.type !== tkType) return false;
@@ -5526,6 +5576,7 @@ function tkFiltered() {
 }
 
 function tkGroupOf(t) {
+  if (tkGroup === "area") return tkAreaName(tkAreaOf(t)) || "No work area";
   if (tkGroup === "project") return t.projectName || "No project";
   if (tkGroup === "assignee") return t.assignee || "Unassigned";
   if (tkGroup === "type") return t.type;
@@ -5536,7 +5587,7 @@ function tkGroups(list) {
   const map = new Map();
   list.forEach(t => { const g = tkGroupOf(t); if (!map.has(g)) map.set(g, []); map.get(g).push(t); });
   const order = tkGroup === "type" ? TK_TYPES : tkGroup === "priority" ? [...TK_PRIOS].reverse() : null;
-  const last = new Set(["No project", "Unassigned"]);
+  const last = new Set(["No project", "Unassigned", "No work area"]);
   return [...map.entries()].sort(([a], [b]) => {
     if (order) return order.indexOf(a) - order.indexOf(b);
     if (last.has(a) !== last.has(b)) return last.has(a) ? 1 : -1;
@@ -5562,7 +5613,7 @@ function tkCardHtml(t) {
     (live && live.status === "working" ? `<span class="tlive" title="${esc(t.assignee)} is working right now">●</span>` : "") +
     `<span class="age" title="Last touched ${esc(tkStamp(t.updated))}">${tkAge(t.updated)}</span></div>` +
     `<div class="ttitle">${esc(t.title)}</div>` +
-    `<div class="sub">${esc(t.projectName || "No project")} · ${who}</div></article>`;
+    `<div class="sub">${esc(t.projectName || "No project")}${tkAreaOf(t) ? ` · ${esc(tkAreaName(t.area))}` : ""} · ${who}</div></article>`;
 }
 
 function tkBoardHtml(list, shown) {
@@ -5620,6 +5671,29 @@ function tkEmptyHtml(nothingMatches) {
 }
 
 function renderTicketSelects() {
+  if (tkArea && tkArea !== "∅" && areasLoaded && !tkAreaName(tkArea)) { tkArea = ""; tkSet("area", ""); }
+  const openIn = want => tkData.tickets.filter(t => t.status !== "done" && tkInArea(t, want)).length;
+  const arSel = $("tkArea");
+  const arSig = JSON.stringify([areaData.areas.map(a => [a.id, a.name, openIn(a.id)]), openIn("∅")]);
+  if (arSel.dataset.sig !== arSig) {
+    arSel.dataset.sig = arSig;
+    arSel.innerHTML = `<option value="">All work areas</option>` + areaData.areas.map(a => {
+      const n = openIn(a.id);
+      return `<option value="${esc(a.id)}">${esc(a.name)}${n ? ` (${n})` : ""}</option>`;
+    }).join("") + `<option value="∅">No work area${openIn("∅") ? ` (${openIn("∅")})` : ""}</option>`;
+  }
+  arSel.value = tkArea;
+  // the chip only exists while the board is inside an area: it is "here"
+  const here = tkHereArea(), chip = $("tkAreaChip");
+  chip.hidden = !here;
+  if (here) {
+    const name = here === "∅" ? "No work area" : tkAreaName(here) || "This area", on = tkArea === here;
+    chip.setAttribute("aria-pressed", String(on));
+    chip.title = on ? `Showing only ${name} tickets — click to show every work area`
+                    : `Show only the tickets in ${name}`;
+    chip.innerHTML = `<span class="nm">${on ? "" : "Only "}${esc(name)}</span><span class="n">${openIn(here) || ""}</span>` +
+      (on ? `<span aria-hidden="true">×</span>` : "");
+  }
   const projects = tkData.projects || [];
   const pSel = $("tkProject");
   const pSig = JSON.stringify(projects.map(p => [p.path, p.name, p.open]));
@@ -5675,10 +5749,10 @@ function renderTickets() {
   }
   const shown = TK_STATUSES.filter(([k]) => !tkHidden.includes(k));
   setFilterCount("tkFiltersCount",
-    [tkProject, tkType, tkAssignee].filter(Boolean).length + (tkHidden.length ? 1 : 0));
-  const dataSig = tkData.tickets.map(t => t.id + t.updated + t.rank + t.status).join("|");
+    [tkArea, tkProject, tkType, tkAssignee].filter(Boolean).length + (tkHidden.length ? 1 : 0));
+  const dataSig = tkData.tickets.map(t => t.id + t.updated + t.rank + t.status + t.area).join("|");
   const liveSig = sessions.map(s => s.sessionId + s.status + s.title).join("|");
-  const sig = JSON.stringify([dataSig, tkLayout, tkGroup, tkProject, tkType, tkAssignee, tkHidden,
+  const sig = JSON.stringify([dataSig, tkLayout, tkGroup, tkArea, activeArea, areaData.areas, tkProject, tkType, tkAssignee, tkHidden,
                               query, tkOpen, liveSig, Math.floor(Date.now() / 60000)]);
   if (sig === tkSig) return;
   tkSig = sig;
@@ -5801,6 +5875,7 @@ function tkPanelHtml(t) {
     `<label>Priority<select data-field="priority">${opts(TK_PRIOS, t.priority, v => `${v} ${TK_PRIO_MARK[v]}`.trim())}</select></label>` +
     `<label>Due<input type="date" data-field="due" value="${esc(t.due || "")}"></label>` +
     `<label class="span">Project<select data-field="project"><option value="">No project</option>${tkProjectOptions(t.project)}</select></label>` +
+    `<label class="span">Work area<select data-field="area">${tkAreaOptions(tkAreaOf(t))}</select></label>` +
     `<label class="span">Assignee <span class="hint">— a session on the board gets the ticket in its chat</span>` +
     `<select id="tpAssign">${tkAssigneeOptions(t)}</select>` +
     `<input id="tpAssignOther" placeholder="Name, then ⏎" autocomplete="off" hidden></label></div>` +
@@ -5833,7 +5908,7 @@ function renderTicketPanel() {
   const t = tkFind(tkOpen);
   if (!t) { if (tkData) { toast("That ticket is gone."); closeTicket(); } return; }
   const sig = JSON.stringify([t, tkEditingBody, sessions.map(s => [s.sessionId, s.title, s.status, s.openable]),
-                              (tkData.knownProjects || []).length]);
+                              (tkData.knownProjects || []).length, areaData.areas]);
   if (sig === tkPanelSig) return;
   // never clobber a field mid-edit: catch up when focus leaves the panel
   if ($("tpBody").contains(document.activeElement) && isTyping()) return;
@@ -5857,6 +5932,9 @@ function openNewTicket() {
   const want = (tkProject && tkProject !== "∅") ? tkProject : project || "";
   $("ntProject").innerHTML = `<option value="">No project</option>` + tkProjectOptions(want);
   $("ntProject").value = want && $("ntProject").querySelector(`option[value="${CSS.escape(want)}"]`) ? want : "";
+  // likewise the area: the one being filtered to, else the one you are in
+  const areaWant = tkArea && tkArea !== "∅" ? tkArea : (tkArea ? "" : tkHereArea().replace("∅", ""));
+  $("ntArea").innerHTML = tkAreaOptions(areaWant);
   $("ntTitle").focus();
   if (!tkData) loadTickets(false);
 }
@@ -5871,7 +5949,7 @@ async function createTicket() {
   try {
     r = await post("/api/tickets/create", {
       title, type: $("ntType").value, priority: $("ntPriority").value, status: $("ntStatus").value,
-      project: $("ntProject").value, body: $("ntDesc").value.trim(), due: $("ntDue").value,
+      project: $("ntProject").value, area: $("ntArea").value, body: $("ntDesc").value.trim(), due: $("ntDue").value,
       assignee: choice.startsWith("n:") ? choice.slice(2) : "",
     });
   } finally { $("ntCreate").disabled = false; }
@@ -5882,6 +5960,35 @@ async function createTicket() {
   if (choice.startsWith("s:")) await tkAssign(made.id, choice);
   if (view !== "tickets") setView("tickets");
   openTicket(made.id);
+}
+
+/* ---- prefixes: the letters in front of a project's ticket numbers */
+
+function renderPrefixes() {
+  const rows = (tkData && tkData.prefixes) || [];
+  $("tkPrefixRows").innerHTML = rows.map(p =>
+    `<div class="pfx-row"><div class="who"><b>${esc(p.name)}</b>` +
+    `<span title="${esc(p.path)}">${p.count} ticket${p.count === 1 ? "" : "s"} · ${esc(p.path)}</span></div>` +
+    `<input value="${esc(p.key)}" maxlength="5" data-pfx="${esc(p.path)}" aria-label="Prefix for ${esc(p.name)}" autocomplete="off" spellcheck="false">` +
+    `<button class="btn sm" data-path="${esc(p.path)}">Rename</button></div>`).join("") ||
+    `<p class="hint">No project has tickets yet. A prefix is made from the project's name when its first ticket is filed.</p>`;
+}
+function openPrefixes() {
+  closeFilters();
+  $("tkPrefixErr").textContent = "";
+  renderPrefixes();
+  $("tkPrefixModal").hidden = false;
+}
+async function savePrefix(path) {
+  const input = [...$("tkPrefixRows").querySelectorAll("input")].find(i => i.dataset.pfx === path);
+  if (!input) return;
+  $("tkPrefixErr").textContent = "";
+  const r = await post("/api/tickets/rekey", {project: path, key: input.value.trim()});
+  if (!r || r.error) { $("tkPrefixErr").textContent = (r && r.error) || "Could not reach the server."; input.focus(); return; }
+  // the open ticket was renamed along with the rest
+  if (tkOpen && r.from !== r.to && tkOpen.startsWith(r.from + "-")) tkOpen = r.to + tkOpen.slice(r.from.length);
+  tkAfter(r);
+  renderPrefixes();
 }
 
 /* ---- start an agent for a ticket: the New agent sheet, with the ticket as the brief */
@@ -5925,6 +6032,14 @@ function bindTickets() {
     catch (e) { $("tkHelpNote").textContent = "Clipboard blocked — select the text above instead."; }
   });
 
+  $("tkArea").addEventListener("change", () => tkSetArea($("tkArea").value));
+  $("tkAreaChip").addEventListener("click", () => tkSetArea(tkArea === tkHereArea() ? "" : tkHereArea()));
+  $("tkPrefixes").addEventListener("click", openPrefixes);
+  $("tkPrefixClose").addEventListener("click", () => { $("tkPrefixModal").hidden = true; });
+  $("tkPrefixRows").addEventListener("click", e => { const b = e.target.closest("button[data-path]"); if (b) savePrefix(b.dataset.path); });
+  $("tkPrefixRows").addEventListener("keydown", e => {
+    if (e.key === "Enter" && e.target.dataset.pfx !== undefined) { e.preventDefault(); savePrefix(e.target.dataset.pfx); }
+  });
   $("tkProject").addEventListener("change", () => { tkProject = $("tkProject").value; tkSet("project", tkProject); renderTickets(); });
   $("tkType").addEventListener("change", () => { tkType = $("tkType").value; tkSet("type", tkType); renderTickets(); });
   $("tkAssignee").addEventListener("change", () => { tkAssignee = $("tkAssignee").value; tkSet("assignee", tkAssignee); renderTickets(); });
@@ -5944,8 +6059,8 @@ function bindTickets() {
   body.addEventListener("click", e => {
     if (e.target.closest("select")) return;
     if (e.target.closest("#tkClear")) {
-      tkProject = tkType = tkAssignee = ""; tkHidden = []; $("search").value = ""; query = "";
-      ["project", "type", "assignee"].forEach(k => tkSet(k, "")); tkSet("hidden", []);
+      tkArea = tkProject = tkType = tkAssignee = ""; tkHidden = []; $("search").value = ""; query = "";
+      ["area", "project", "type", "assignee"].forEach(k => tkSet(k, "")); tkSet("hidden", []);
       renderTickets(); return;
     }
     if (e.target.closest("#tkEmptyNew")) { openNewTicket(); return; }
@@ -5988,7 +6103,8 @@ function bindTickets() {
     const before = over && over.dataset.id !== id ? over.dataset.id : "";
     const lane = col.dataset.group;
     if (lane !== undefined && lane !== tkGroupOf(t)) {
-      if (tkGroup === "type") tkUpdate(id, {type: lane});
+      if (tkGroup === "area") tkUpdate(id, {area: (areaData.areas.find(a => a.name === lane) || {}).id || ""});
+      else if (tkGroup === "type") tkUpdate(id, {type: lane});
       else if (tkGroup === "priority") tkUpdate(id, {priority: lane});
       else if (tkGroup === "assignee") {
         const name = lane === "Unassigned" ? "" : lane;

@@ -6,10 +6,11 @@ of this module is the "allowed to do" part, which is where all the care is.
 
 What keeps it honest:
 
-- **Every tool is defined and executed here.** The model receives a menu, not a
-  shell. Starting an agent goes through the `Host`, which is the same spawn
-  boundary the New agent sheet uses: a directory that is not one of the
-  discovered projects is refused there, exactly as it is for a human.
+- **Every tool is executed here.** The model receives a menu, not a shell, and
+  a call coming back is dispatched to a method on `Run` or it fails. Starting
+  an agent goes through the `Host`, which is the same spawn boundary the New
+  agent sheet uses: a directory that is not one of the discovered projects is
+  refused there, exactly as it is for a human.
 - **The harness owns the limits.** Steps, spawns, concurrent children and the
   orchestrator's own OpenRouter spend are counted here and enforced before the
   call happens. Instructions to the model are courtesy; these are the fence.
@@ -23,6 +24,10 @@ What keeps it honest:
   is dropped and the model is told to check what already exists before it
   starts anything, because a spawn is a side effect that must never be
   silently repeated.
+
+What the model is offered and told lives next door, in
+`orchestrator_brief`: the menu and the standing prompt are wording, and this
+module is behaviour.
 
 The `Host` is the only way out of this module to the machine. That keeps the
 engine testable with a fake host, and it is what a non-macOS host will differ
@@ -39,6 +44,7 @@ import threading
 import time
 
 from agentgrid import areas, openrouter, orchestrator, tickets
+from agentgrid.orchestrator_brief import MAX_WAIT_SECONDS, system_prompt, tool_specs
 
 # A tool result is context for the next decision, not an archive: a 200k-line
 # transcript summarised into 20k characters still says what happened.
@@ -46,9 +52,6 @@ MAX_TOOL_RESULT = 20_000
 # How much conversation a request may carry. The system prompt and the goal are
 # always kept; the middle is dropped before the tail.
 CONTEXT_BUDGET = 120_000
-# One `wait_for_agents` call. Long enough to be useful for real work, short
-# enough that a stop or a message from the user is answered promptly.
-MAX_WAIT_SECONDS = 600
 WAIT_CHUNK_SECONDS = 2.0
 # Free text the model supplies is truncated wherever it is stored or shown.
 MAX_TASK = 20_000
@@ -95,141 +98,6 @@ class Host:
     def send_to_agent(self, session_id: str, message: str) -> str:
         """Queue a message onto a running session's chat; returns a confirmation."""
         raise NotImplementedError
-
-
-# ---------------------------------------------------------------------------
-# The tool menu. Built per run, because what is on it depends on the host's
-# capabilities and on whether this orchestrator owns one work area or all of
-# them -- a menu that cannot express an impossible request prevents one.
-
-
-def _tool(name: str, description: str, properties: dict, required: list[str] | None = None) -> dict:
-    return {"type": "function", "function": {
-        "name": name, "description": description,
-        "parameters": {"type": "object", "properties": properties,
-                       "required": required or [], "additionalProperties": False}}}
-
-
-def tool_specs(definition: orchestrator.Orchestrator, capabilities: dict) -> list[dict]:
-    modes = ["background"] + (["interactive"] if capabilities.get("interactive") else [])
-    engines = capabilities.get("engines") or ["claude"]
-    specs = [
-        _tool("list_projects", "The directories you may start agents in. An agent can only "
-              "be started in one of these.", {}),
-        _tool("list_work_areas", "The work areas on the board, and which one you belong to.", {}),
-        _tool("start_agent",
-              "Start a real coding agent on this machine and put it on the board. Use "
-              "'background' for work that should survive a closed terminal; "
-              + ("'interactive' opens a Terminal window the user can watch and type into, "
-                 "and always needs their approval. " if capabilities.get("interactive")
-                 else "This host cannot open interactive sessions, so background is the only mode. ")
-              + "Give one agent one clearly bounded job, and say in the task how it should "
-                "report back (for example, by commenting on its ticket).",
-              {"project": {"type": "string", "description": "Absolute path from list_projects."},
-               "task": {"type": "string", "description": "The full brief for this agent."},
-               "mode": {"type": "string", "enum": modes},
-               "engine": {"type": "string", "enum": engines},
-               "model": {"type": "string", "description": "Optional exact model ID for the CLI."},
-               "name": {"type": "string", "description": "Short label shown on the board."},
-               "systemPrompt": {"type": "string", "description": "Optional standing instructions."},
-               "ticketKey": {"type": "string", "description": "Ticket to hand the agent, e.g. AG-12."},
-               **({} if definition.scope else
-                  {"areaId": {"type": "string", "description": "Work area for the new agent."}})},
-              ["project", "task"]),
-        _tool("list_agents", "Every session on the board right now, with the ones you started "
-              "marked `yours`. Check this before starting anything, so you do not duplicate work.", {}),
-        _tool("read_agent_output", "The tail of what an agent has said and done. This is how you "
-              "find out whether its work is actually finished.",
-              {"agent": {"type": "string", "description": "Session id, or the name you gave it."},
-               "chars": {"type": "integer", "description": "How much of the tail to read (default 6000)."}},
-              ["agent"]),
-        _tool("send_to_agent", "Send a follow-up instruction to a running agent, as if you had "
-              "typed it into its chat.",
-              {"agent": {"type": "string"}, "message": {"type": "string"}},
-              ["agent", "message"]),
-        _tool("wait_for_agents", "Pause for a while and then look again. Use this instead of "
-              "polling in a tight loop; the user can interrupt you at any time.",
-              {"seconds": {"type": "integer", "description": f"1 to {MAX_WAIT_SECONDS}."}},
-              ["seconds"]),
-        _tool("list_tickets", "Read the ticket board.",
-              {"status": {"type": "string", "description": "Comma separated: backlog, todo, in_progress, in_review, done."},
-               "area": {"type": "string"}, "project": {"type": "string"},
-               "assignee": {"type": "string"}, "text": {"type": "string"},
-               "limit": {"type": "integer"}}),
-        _tool("create_ticket", "File a ticket, so work you decided on is visible to the user "
-              "instead of living only in your head.",
-              {"title": {"type": "string"}, "body": {"type": "string"},
-               "type": {"type": "string", "enum": list(tickets.TYPES)},
-               "priority": {"type": "string", "enum": list(tickets.PRIORITIES)},
-               "status": {"type": "string", "enum": list(tickets.STATUSES)},
-               "project": {"type": "string"}, "area": {"type": "string"}},
-              ["title"]),
-        _tool("move_ticket", "Move a ticket to another status.",
-              {"ticket": {"type": "string"}, "status": {"type": "string", "enum": list(tickets.STATUSES)}},
-              ["ticket", "status"]),
-        _tool("comment_ticket", "Comment on a ticket.",
-              {"ticket": {"type": "string"}, "text": {"type": "string"}}, ["ticket", "text"]),
-        _tool("set_plan", "Your own working checklist, shown to the user in the Plan tab. Use it "
-              "for steps too small to deserve a ticket.",
-              {"items": {"type": "array", "items": {"type": "object", "properties": {
-                  "text": {"type": "string"}, "done": {"type": "boolean"}},
-                  "required": ["text"], "additionalProperties": False}}},
-              ["items"]),
-        _tool("message_user", "Say something to the user in your chat. They may not be watching, "
-              "so this is a report, not a question you can wait on.",
-              {"text": {"type": "string"}}, ["text"]),
-        _tool("finish", "End this run. Only call it when the goal is met or cannot be met, and "
-              "say which.", {"summary": {"type": "string"}}, ["summary"]),
-    ]
-    if not definition.scope:
-        specs.insert(2, _tool("create_work_area", "Create a work area on the board. You can do "
-                              "this because you are the global orchestrator.",
-                              {"name": {"type": "string"}}, ["name"]))
-    return specs
-
-
-def system_prompt(definition: orchestrator.Orchestrator, capabilities: dict, scope_name: str) -> str:
-    limits = definition.limits
-    approval = ("Starting an agent needs the user's approval every time: your request appears on "
-                "their board and the run pauses until they answer, which may take hours. Ask for "
-                "one agent at a time and say clearly what it is for."
-                if definition.mode == "ask" else
-                "You may start agents without asking, inside the limits below.")
-    interactive = ("You may open interactive Terminal sessions, but they always need approval."
-                   if capabilities.get("interactive") else
-                   "This host cannot open interactive Terminal sessions; every agent you start "
-                   "runs in the background.")
-    return "\n".join([
-        f"You are \"{definition.name}\", an orchestrator inside AgentGrid, the user's dashboard "
-        f"over the coding agents running on their machine.",
-        f"Your scope is {scope_name}.",
-        "",
-        "You have no filesystem, shell, editor or network access of your own. Everything you get "
-        "done, you get done by starting real Claude Code or Codex agents in the user's projects "
-        "and reading what they produce. Never claim work is done unless you read it in an agent's "
-        "output or on a ticket.",
-        approval,
-        interactive,
-        "",
-        "How to work:",
-        "- Look before you act: list_agents and list_tickets tell you what already exists.",
-        "- One agent, one bounded job. Tell it how to report back.",
-        "- After starting agents, wait_for_agents, then read_agent_output to check the work. Follow "
-        "up with send_to_agent rather than starting a duplicate.",
-        "- Keep the user oriented with message_user at the milestones, not every step.",
-        "- Use tickets for work worth seeing on the board, and set_plan for your own small steps.",
-        "- End with finish, saying what was achieved and what was not.",
-        "",
-        "Every turn must either call tools or, if you reply with plain text, the run pauses and "
-        "waits for the user to reply. Do not pause when you could be working.",
-        "",
-        f"Limits enforced by AgentGrid, not by you: at most {limits.max_concurrent} agents running "
-        f"at once, {limits.max_spawns} agents started per run, {limits.max_steps} steps, and "
-        f"${limits.max_spend_usd:.2f} of your own model spend. When a limit is reached you will be "
-        f"told in a tool result; finish with what you have and say what is left.",
-        "",
-        definition.instructions.strip(),
-    ]).strip()
 
 
 # ---------------------------------------------------------------------------

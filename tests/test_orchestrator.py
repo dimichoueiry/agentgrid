@@ -17,7 +17,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from agentgrid import areas, credentials, openrouter, orchestrator, orchestrator_run, tickets, web
+from agentgrid import (areas, credentials, openrouter, orchestrator, orchestrator_brief,
+                       orchestrator_run, tickets, web)
 
 
 # --- a fake machine ----------------------------------------------------------
@@ -209,23 +210,23 @@ class StoreTests(OrchestratorCase):
 class MenuTests(OrchestratorCase):
     def names(self, definition, capabilities):
         return [spec["function"]["name"]
-                for spec in orchestrator_run.tool_specs(definition, capabilities)]
+                for spec in orchestrator_brief.tool_specs(definition, capabilities)]
 
     def test_a_host_without_a_terminal_is_not_offered_interactive(self):
         definition = orchestrator.load(DEFINITION)
-        specs = orchestrator_run.tool_specs(definition, {"interactive": False, "engines": ["claude"]})
+        specs = orchestrator_brief.tool_specs(definition, {"interactive": False, "engines": ["claude"]})
         start = next(s for s in specs if s["function"]["name"] == "start_agent")
         self.assertEqual(start["function"]["parameters"]["properties"]["mode"]["enum"], ["background"])
-        with_terminal = orchestrator_run.tool_specs(definition, {"interactive": True, "engines": ["claude"]})
+        with_terminal = orchestrator_brief.tool_specs(definition, {"interactive": True, "engines": ["claude"]})
         start = next(s for s in with_terminal if s["function"]["name"] == "start_agent")
         self.assertIn("interactive", start["function"]["parameters"]["properties"]["mode"]["enum"])
 
     def test_a_scoped_orchestrator_is_not_offered_a_choice_of_work_area(self):
         definition = orchestrator.load({**DEFINITION, "scope": "engineering"})
-        specs = orchestrator_run.tool_specs(definition, self.host.caps)
+        specs = orchestrator_brief.tool_specs(definition, self.host.caps)
         start = next(s for s in specs if s["function"]["name"] == "start_agent")
         self.assertNotIn("areaId", start["function"]["parameters"]["properties"])
-        glob = orchestrator_run.tool_specs(orchestrator.load(DEFINITION), self.host.caps)
+        glob = orchestrator_brief.tool_specs(orchestrator.load(DEFINITION), self.host.caps)
         start = next(s for s in glob if s["function"]["name"] == "start_agent")
         self.assertIn("areaId", start["function"]["parameters"]["properties"])
 
@@ -240,11 +241,11 @@ class MenuTests(OrchestratorCase):
             self.assertTrue(hasattr(run, "_tool_" + name), name)
 
     def test_the_prompt_states_the_mode_the_limits_and_the_scope(self):
-        prompt = orchestrator_run.system_prompt(orchestrator.load(DEFINITION), self.host.caps, "every area")
+        prompt = orchestrator_brief.system_prompt(orchestrator.load(DEFINITION), self.host.caps, "every area")
         self.assertIn("approval every time", prompt)
         self.assertIn("$5.00", prompt)
         self.assertIn("every area", prompt)
-        auto = orchestrator_run.system_prompt(orchestrator.load({**DEFINITION, "mode": "auto"}),
+        auto = orchestrator_brief.system_prompt(orchestrator.load({**DEFINITION, "mode": "auto"}),
                                               self.host.caps, "every area")
         self.assertIn("without asking", auto)
 

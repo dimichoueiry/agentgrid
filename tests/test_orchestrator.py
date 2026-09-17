@@ -220,6 +220,15 @@ class MenuTests(OrchestratorCase):
         start = next(s for s in with_terminal if s["function"]["name"] == "start_agent")
         self.assertIn("interactive", start["function"]["parameters"]["properties"]["mode"]["enum"])
 
+    def test_a_scoped_orchestrator_is_not_offered_a_choice_of_work_area(self):
+        definition = orchestrator.load({**DEFINITION, "scope": "engineering"})
+        specs = orchestrator_run.tool_specs(definition, self.host.caps)
+        start = next(s for s in specs if s["function"]["name"] == "start_agent")
+        self.assertNotIn("areaId", start["function"]["parameters"]["properties"])
+        glob = orchestrator_run.tool_specs(orchestrator.load(DEFINITION), self.host.caps)
+        start = next(s for s in glob if s["function"]["name"] == "start_agent")
+        self.assertIn("areaId", start["function"]["parameters"]["properties"])
+
     def test_only_a_global_orchestrator_can_create_work_areas(self):
         self.assertIn("create_work_area", self.names(orchestrator.load(DEFINITION), self.host.caps))
         scoped = orchestrator.load({**DEFINITION, "scope": "engineering"})
@@ -464,6 +473,27 @@ class ConversationTests(OrchestratorCase):
         self.assertEqual(run.snapshot()["queued"], 1)
         self.assertEqual(len(model.requests), 1)
 
+    def test_a_finished_run_can_be_picked_up_without_ending_at_once(self):
+        """The finish summary is consumed: left armed it would end the next run
+        at its first tool call, with the previous run's words."""
+        run = self.run_with(Model(turn("", [("finish", {"summary": "first"})])), mode="auto")
+        self.assertEqual(run.state["reason"], "first")
+        again = Model(turn("", [("list_agents", {})]),
+                      turn("", [("finish", {"summary": "second"})]))
+        with mock.patch.object(openrouter, "tool_turn", again):
+            run.submit("keep going")
+            self.settle(run)
+        self.assertEqual(len(again.requests), 2)
+        self.assertEqual(run.state["reason"], "second")
+
+    def test_only_one_worker_ever_owns_a_run(self):
+        """Two workers would double every step, and a thread on its way out is
+        still alive -- so the flag, not the thread, is what is checked."""
+        run = orchestrator_run.Run(self.make(), self.host)
+        run._active = True
+        run._spin()
+        self.assertIsNone(run._worker)
+
     def test_stopping_a_run_ends_it(self):
         model = Model(turn("waiting on you"))
         run = self.run_with(model)
@@ -554,6 +584,20 @@ class ToolTests(OrchestratorCase):
         comments = [a for a in tickets.get(ticket_id)["activity"] if a["kind"] == "comment"]
         self.assertEqual((comments[0]["who"], comments[0]["text"]), ("Shipper", "agent is on it"))
 
+    def test_a_scoped_orchestrator_cannot_file_work_into_another_area(self):
+        """Its own area wins over whatever it asks for."""
+        run = self.run_one([("start_agent", {"project": "/tmp/project", "task": "t",
+                                             "areaId": "design"})], scope="engineering")
+        self.assertEqual(self.host.started[0]["areaId"], "engineering")
+
+    def test_a_host_without_a_terminal_refuses_interactive_before_asking_you(self):
+        self.host.caps = {**self.host.caps, "interactive": False}
+        run = self.run_one([("start_agent", {"project": "/tmp/project", "task": "t",
+                                             "mode": "interactive"})])
+        self.assertEqual(self.host.started, [])
+        self.assertIsNone(run.state["pending"])          # no pointless approval
+        self.assertIn("cannot open interactive", self.results(run)[0]["error"])
+
     def test_a_scoped_orchestrator_cannot_create_work_areas(self):
         run = self.run_one([("create_work_area", {"name": "Research"})], scope="engineering")
         self.assertFalse(self.results(run)[0]["ok"])
@@ -612,6 +656,15 @@ class ResumeTests(OrchestratorCase):
         orchestrator.write_state(definition.id, {**orchestrator.blank_state(), "status": "waiting"})
         manager = orchestrator_run.RunManager(self.host)
         self.assertEqual(manager.resume_all(), [])
+
+    def test_a_deleted_orchestrator_stops_writing_state(self):
+        definition = self.make(mode="auto")
+        manager = orchestrator_run.RunManager(self.host)
+        run = manager.run(definition)
+        manager.forget(definition.id)
+        orchestrator.delete(definition.id)
+        run._persist()                       # a late worker write must not land
+        self.assertFalse((orchestrator.DIR / definition.id).exists())
 
     def test_a_child_started_just_before_the_interruption_is_not_lost(self):
         """The child record is written before the model hears about it."""

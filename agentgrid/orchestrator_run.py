@@ -133,7 +133,8 @@ def tool_specs(definition: orchestrator.Orchestrator, capabilities: dict) -> lis
                "name": {"type": "string", "description": "Short label shown on the board."},
                "systemPrompt": {"type": "string", "description": "Optional standing instructions."},
                "ticketKey": {"type": "string", "description": "Ticket to hand the agent, e.g. AG-12."},
-               "areaId": {"type": "string", "description": "Work area for the new agent."}},
+               **({} if definition.scope else
+                  {"areaId": {"type": "string", "description": "Work area for the new agent."}})},
               ["project", "task"]),
         _tool("list_agents", "Every session on the board right now, with the ones you started "
               "marked `yours`. Check this before starting anything, so you do not duplicate work.", {}),
@@ -297,6 +298,8 @@ class Run:
         self._cancel = threading.Event()
         self._wake = threading.Event()        # interrupts wait_for_agents
         self._worker: threading.Thread | None = None
+        self._active = False                  # a worker is alive and owns this run
+        self._deleted = False                 # the definition is gone; stop writing
         self._decision: dict | None = None    # an answered approval, applied by the worker
         self._finish_summary: str | None = None
 
@@ -325,11 +328,18 @@ class Run:
     # -- state ---------------------------------------------------------------
 
     def _persist(self) -> None:
+        if self._deleted:
+            # Its directory was removed; writing would leave an orphan behind.
+            return
         orchestrator.write_state(self.definition.id, self.state)
 
     def snapshot(self) -> dict:
         with self._lock:
+            # The lists are copied, not referenced: the worker appends to them
+            # while the HTTP thread is serializing this.
             state = dict(self.state)
+            state["children"] = [dict(child) for child in state.get("children") or []]
+            state["plan"] = [dict(item) for item in state.get("plan") or []]
         pending = state.get("pending")
         return {
             **self.definition.to_dict(),
@@ -435,20 +445,37 @@ class Run:
         self._spin()
 
     def _spin(self) -> None:
-        """Start the worker unless one is already running."""
+        """Start the worker unless one already owns this run.
+
+        `_active` rather than `is_alive()`: a thread on its way out is still
+        alive, and handing the run to a second worker would double every step.
+        The flag is only ever changed under the lock, and the outgoing worker
+        re-checks the run under that same lock before clearing it.
+        """
         with self._lock:
-            if self._worker is not None and self._worker.is_alive():
+            if self._active:
                 return
+            self._active = True
             self._worker = threading.Thread(target=self._work, daemon=True)
             self._worker.start()
 
     def _work(self) -> None:
         try:
             while not self._cancel.is_set():
-                if not self._step():
-                    return
+                if self._step():
+                    continue
+                with self._lock:
+                    # A message or an approval may have landed while this step
+                    # was finishing. Checking here, under the lock `_spin`
+                    # uses, is what stops that work from sitting untouched
+                    # until the next nudge.
+                    if self.state["status"] != "running" and self._decision is None:
+                        return
         except Exception as error:                     # never leave a run "running"
             self._fail(f"The run stopped unexpectedly: {type(error).__name__}.")
+        finally:
+            with self._lock:
+                self._active = False
 
     # -- one step ------------------------------------------------------------
 
@@ -474,6 +501,10 @@ class Run:
         except ValueError as error:
             self._fail(str(error))
             return False
+        except OSError:
+            self._fail("Could not reach OpenRouter. The run stopped; start it again when the "
+                       "connection is back.")
+            return False
         with self._lock:
             self.state["steps"] += 1
             self.state["costUsd"] = float(self.state.get("costUsd") or 0) + float(turn.get("costUsd") or 0)
@@ -493,7 +524,10 @@ class Run:
 
     def _handle(self, outcome: str) -> bool:
         if outcome == "finished":
-            self._finish("done", self._finish_summary or "Finished.")
+            summary, self._finish_summary = self._finish_summary, None
+            # Consumed here: left armed, it would end the next run the user
+            # starts with a message at its first tool call.
+            self._finish("done", summary or "Finished.")
             return False
         if outcome in ("gated", "stopped"):
             return False
@@ -582,6 +616,9 @@ class Run:
         limits = self.definition.limits
         if self.state["steps"] >= limits.max_steps:
             return f"Step limit reached ({limits.max_steps} steps). Raise it or start a new run."
+        # Cost is what OpenRouter reported for the steps so far. A provider
+        # that reports none leaves this at zero, and the step limit is then
+        # the only ceiling -- which is why there is a step limit.
         spent = float(self.state.get("costUsd") or 0)
         if spent >= limits.max_spend_usd:
             return (f"Spend limit reached (${spent:.2f} of ${limits.max_spend_usd:.2f}). "
@@ -594,7 +631,11 @@ class Run:
         if name == "start_agent":
             args = _parse_args(call) or {}
             if str(args.get("mode") or "") == "interactive":
-                return "opens an interactive Terminal session on your desktop"
+                # On a host with no scriptable terminal there is nothing to
+                # approve: the tool refuses it outright, which is a better
+                # answer than asking the user to authorise a failure.
+                return ("opens an interactive Terminal session on your desktop"
+                        if self.host.capabilities().get("interactive") else "")
             if self.definition.mode == "ask":
                 return "starts a new agent"
         if name == "create_work_area" and self.definition.mode == "ask":
@@ -650,6 +691,10 @@ class Run:
         if len(running) >= limits.max_concurrent:
             raise ValueError(f"{len(running)} of your agents are still running, which is the limit. "
                              f"Use wait_for_agents and read_agent_output before starting another.")
+        interactive = str(args.get("mode") or "background") == "interactive"
+        if interactive and not self.host.capabilities().get("interactive"):
+            raise ValueError("This host cannot open interactive sessions. Start it in the "
+                             "background instead.")
         task = str(args.get("task") or "").strip()
         if not task:
             raise ValueError("An agent needs a task.")
@@ -658,11 +703,13 @@ class Run:
             "cwd": str(args.get("project") or self.definition.cwd or ""),
             "prompt": task[:MAX_TASK],
             "engine": str(args.get("engine") or "claude"),
-            "interactive": str(args.get("mode") or "background") == "interactive",
+            "interactive": interactive,
             "model": str(args.get("model") or ""),
             "systemPrompt": str(args.get("systemPrompt") or "")[:MAX_TASK],
             "name": name[:orchestrator.MAX_NAME],
-            "areaId": str(args.get("areaId") or self.definition.scope or ""),
+            # Its own area wins: an orchestrator that belongs to one area has no
+            # authority to file work into another.
+            "areaId": self.definition.scope or str(args.get("areaId") or ""),
             "ticketKey": str(args.get("ticketKey") or ""),
         }
         launched = self.host.start_agent(request)
@@ -814,15 +861,15 @@ class Run:
                 if key:
                     by_title.setdefault(key, session)
         resolved, changed = {}, False
-        for child in self.state.get("children") or []:
-            session = by_job.get(child.get("jobId")) or by_title.get(child.get("name"))
-            if session:
-                resolved[child["name"]] = session
-                if child.get("sessionId") != session.get("sessionId"):
-                    child["sessionId"] = session.get("sessionId") or ""
-                    changed = True
-        if changed:
-            with self._lock:
+        with self._lock:
+            for child in self.state.get("children") or []:
+                session = by_job.get(child.get("jobId")) or by_title.get(child.get("name"))
+                if session:
+                    resolved[child["name"]] = session
+                    if child.get("sessionId") != session.get("sessionId"):
+                        child["sessionId"] = session.get("sessionId") or ""
+                        changed = True
+            if changed:
                 self._persist()
         return resolved
 
@@ -933,10 +980,12 @@ class RunManager:
             return self._runs.get(orchestrator_id)
 
     def forget(self, orchestrator_id: str) -> None:
+        """Stop a run and let go of it, ahead of deleting its definition."""
         with self._lock:
             run = self._runs.pop(orchestrator_id, None)
         if run is not None:
             run.stop("Orchestrator deleted.")
+            run._deleted = True
 
     def resume_all(self) -> list[str]:
         """Restart every run the last server stop interrupted. Returns names."""

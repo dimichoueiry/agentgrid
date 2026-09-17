@@ -2162,12 +2162,11 @@ class Handler(BaseHTTPRequestHandler):
                 payload.append(self.runs.run(definition).snapshot())
             except (ValueError, OSError):
                 continue
-        try:
-            connected = bool(credentials.get_key())
-        except ValueError:
-            connected = False
-        self._send_json(200, {"orchestrators": payload, "capabilities": host_capabilities(),
-                              "connected": connected})
+        # No provider check here on purpose: this route is polled with the
+        # board, and reading the Keychain every couple of seconds is both
+        # wasteful and a way to earn a permission prompt. The editor asks
+        # /api/providers/openrouter once, when it opens.
+        self._send_json(200, {"orchestrators": payload, "capabilities": host_capabilities()})
 
     def _orchestrator_journal(self, query: dict) -> None:
         try:

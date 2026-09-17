@@ -2023,7 +2023,14 @@ function renderAreas() {
   const markup = cards.map((a, i) => {
     const members = areaSessions(a.id);
     const act = areaActivity(members);
-    return `<button class="area-card" data-area="${esc(a.id)}"${act.state ? ` data-state="${act.state}"` : ""}><span class="area-card-top"><span>${String(i + 1).padStart(2, "0")} / WORK AREA</span><span aria-hidden="true">↗</span></span><strong>${esc(a.name)}</strong>${act.html}<span class="area-card-foot"><span>${members.length} agent${members.length === 1 ? "" : "s"}</span></span></button>`;
+    // An orchestrator waiting on a decision is the one thing worth saying
+    // before you have even opened the area.
+    const stuck = orchestrators.filter(o =>
+      o.scope === a.id && (o.status === "waiting" || o.status === "failed"));
+    const foot = stuck.length
+      ? `<span class="apill needs" title="An orchestrator in this area is waiting on you"><span class="adot" aria-hidden="true"></span>${stuck.length} orchestrator${stuck.length === 1 ? "" : "s"} waiting</span>`
+      : "";
+    return `<button class="area-card" data-area="${esc(a.id)}"${act.state || stuck.length ? ` data-state="${act.state || "needs"}"` : ""}><span class="area-card-top"><span>${String(i + 1).padStart(2, "0")} / WORK AREA</span><span aria-hidden="true">↗</span></span><strong>${esc(a.name)}</strong>${act.html}<span class="area-card-foot"><span>${members.length} agent${members.length === 1 ? "" : "s"}</span>${foot}</span></button>`;
   }).join("") + '<button class="area-card area-add" data-add-area><span aria-hidden="true">+</span><span>Create a work area</span></button>';
   if ($("areaGrid")._markup !== markup) {
     $("areaGrid")._markup = markup; $("areaGrid").innerHTML = markup;
@@ -4771,7 +4778,19 @@ function setView(v) {
 // problem; the notification is what closes that loop. Client-side only, so
 // alerts exist exactly while a board tab is open — no daemon, as ever.
 let alertsOn = localStorage.getItem("agentgrid.alerts") === "1";
-const prevStatus = new Map();
+const prevStatus = new Map(), prevOrchStatus = new Map();
+
+// An approval is the one thing here with a person on the critical path, so it
+// rings the same bell a blocked session does -- and clicking it lands on the
+// decision, not on the board.
+function notifyOrchestrator(o) {
+  if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
+  const n = new Notification(`${o.name} needs you`, {
+    body: o.pending ? "Waiting to start an agent" : (o.reason || "Waiting for your reply"),
+    tag: o.id,
+  });
+  n.onclick = () => { window.focus(); openOrchestrator(o.id); n.close(); };
+}
 
 function notifySession(s, line) {
   if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
@@ -4792,6 +4811,11 @@ function checkAlerts() {
     }
     prevStatus.set(s.sessionId, s.status);
   }
+  for (const o of orchestrators) {
+    const was = prevOrchStatus.get(o.id);
+    if (seeded && alertsOn && was && was !== o.status && o.status === "waiting") notifyOrchestrator(o);
+    prevOrchStatus.set(o.id, o.status);
+  }
 }
 
 function applyAlertsBtn() {
@@ -4804,7 +4828,6 @@ async function poll() {
     sessions = data.sessions || [];
     polledAt = data.polledAt || 0;
     fleetError = data.error || "";
-    checkAlerts();
   } catch (e) {
     fleetError = "server unreachable";
   }
@@ -4816,6 +4839,7 @@ async function poll() {
   stamp.title = fleetError || "Last refresh";
   await loadAreas();
   await loadOrchestrators();
+  checkAlerts();            // after both reads, so one pass sees everything
   renderSelects(); render();
   // While a live turn streams, the SSE owns #tScroll — skip the disk refresh so
   // it can't clobber the in-flight nodes; once the turn lands the poll resumes
@@ -4836,7 +4860,7 @@ async function poll() {
    from disk so opening the panel late still shows the whole run). While the
    panel is open an SSE stream appends events live. */
 
-let orchestrators = [], orchCaps = {interactive: true}, orchConnected = false;
+let orchestrators = [], orchCaps = {interactive: true};
 let openOrch = "", orchTab = "chat", orchEvents = [], orchSrc = null, orchEditing = "";
 
 const ORCH_STATE = {
@@ -4875,7 +4899,6 @@ async function loadOrchestrators() {
     const data = await api("/api/orchestrators");
     orchestrators = data.orchestrators || [];
     orchCaps = data.capabilities || orchCaps;
-    orchConnected = !!data.connected;
   } catch (e) { return; }           // a failed read leaves the last known state
   renderOrchestrators();
   if (openOrch) renderOrchPanel();
@@ -4940,7 +4963,11 @@ async function editOrchestrator(id = "") {
       `<option value="${esc(p.path)}"${p.path === chosen ? " selected" : ""}>${esc(p.label || p.name)}</option>`).join("");
   await loadOpenRouterModels();
   $("orchModels").innerHTML = workflowModelOptions("openrouter");
-  $("orchConnHint").hidden = orchConnected;
+  // Asked here rather than on every board poll: the answer only matters while
+  // this dialog is open, and it is a Keychain read.
+  try {
+    $("orchConnHint").hidden = !!(await api("/api/providers/openrouter")).connected;
+  } catch (e) { $("orchConnHint").hidden = true; }
 }
 
 async function saveOrchestrator() {

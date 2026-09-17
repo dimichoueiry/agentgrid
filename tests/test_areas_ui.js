@@ -7,6 +7,9 @@ const elements = {};
 const ctx = vm.createContext({
   $: id => elements[id] ||= {textContent:'', hidden:false, innerHTML:''},
   localStorage:{getItem:()=>null}, esc:s=>String(s).replace(/</g,'&lt;'),
+  // an area card also reports an orchestrator that is waiting on a decision
+  orchestrators:[{id:'o1',name:'Shipper',scope:'design',status:'waiting'},
+                 {id:'o2',name:'Chief',scope:'',status:'waiting'}],
   sessions:[{sessionId:'a',status:'working'},{sessionId:'b',status:'blocked'},{sessionId:'c',status:'idle'},
     {sessionId:'d',status:'done',unread:true},{sessionId:'e',status:'done',unread:false},{sessionId:'f',status:'stopped',unread:true}],
 });
@@ -26,6 +29,9 @@ const order = ['1 needs you', '1 replied', '1 working'].map(x => mk.indexOf(x));
 assert.ok(order.every(i => i > 0) && order[0] < order[1] && order[1] < order[2], mk);
 // a stopped session with unread output is a reply too, like the board's blue stub
 assert.ok(card('design').includes('data-state="replied"'));
+// a waiting orchestrator is said on the card, before the area is even opened
+assert.ok(card('design').includes('1 orchestrator waiting'), card('design'));
+assert.ok(!card('marketing').includes('orchestrator waiting'), 'only its own area');
 assert.ok(card('design').includes('1 replied'));
 // quiet areas stay quiet: no ring, no badges
 assert.ok(!card('unassigned').includes('data-state'));

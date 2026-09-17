@@ -201,11 +201,16 @@ def tool_turn(messages, model, tools, key=None, timeout=TOOL_TURN_TIMEOUT):
     if tools:
         body['tools'] = tools
         body['tool_choice'] = 'auto'
-    with request('/chat/completions', key or credentials.get_key(), body, timeout) as response:
-        try:
+    response = request('/chat/completions', key or credentials.get_key(), body, timeout)
+    try:
+        with response:
             payload = json.load(response)
-        except ValueError:
-            raise ValueError('OpenRouter returned a response that could not be read.') from None
+    except ValueError:
+        raise ValueError('OpenRouter returned a response that could not be read.') from None
+    except (OSError, urllib.error.URLError, TimeoutError):
+        # Distinct from a refused request: the call was accepted and then the
+        # connection went away, which is worth saying differently.
+        raise ValueError('OpenRouter stopped responding before the answer was complete.') from None
     if not isinstance(payload, dict):
         raise ValueError('OpenRouter returned a response that could not be read.')
     if payload.get('error'):

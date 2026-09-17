@@ -55,7 +55,7 @@ vm.runInContext('const tkStamp = iso => String(iso||"").replace("T"," ").slice(0
                 'const tkAge = () => "2h";' +
                 'const tkLive = t => (t.sessionId ? sessions.find(s => s.sessionId === t.sessionId) : null);', ctx);
 
-vm.runInContext(script.slice(script.indexOf('const tkAreaName'), script.indexOf('const tkSetArea')), ctx);
+vm.runInContext(script.slice(script.indexOf('function tkAreaHue'), script.indexOf('const tkSetArea')), ctx);
 
 const ids = list => list.map(t => t.id);
 const run = expr => vm.runInContext(expr, ctx);
@@ -81,6 +81,16 @@ assert.deepEqual(run('tkGroups(tkFiltered())').map(([name, items]) => [name, ite
                  [['Engineering', 1], ['Marketing', 1], ['No work area', 2]], 'lanes by work area');
 ctx.tkGroup = '';
 assert.ok(run('tkCardHtml(tkData.tickets[1])').includes('Marketing'), 'a card names its work area');
+// the same area is the same colour on every card, and a deleted one is neither
+assert.equal(run('tkAreaHue("a1")'), run('tkAreaHue("a1")'), 'an area colour is stable');
+assert.notEqual(run('tkAreaHue("a1")'), run('tkAreaHue("a2")'), 'two areas are told apart');
+assert.equal(run('tkAreaHtml(tkData.tickets[3])'), '', 'a deleted area leaves no dot behind');
+const areaList = run('tkListHtml(tkFiltered())');
+assert.ok(areaList.includes('<th>Work area</th>'), 'the list has a work area column');
+assert.ok(areaList.includes('Engineering'), 'and it is filled in');
+assert.equal((areaList.match(/<th[ >]/g) || []).length,
+             (areaList.split('<tr class="trow')[1].split('</tr>')[0].match(/<td/g) || []).length,
+             'every header has a cell under it');
 
 ctx.tkType = 'bug';
 assert.deepEqual(ids(run('tkFiltered()')), ['DC-1'], 'filters by type');

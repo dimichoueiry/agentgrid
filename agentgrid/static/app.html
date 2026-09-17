@@ -867,6 +867,14 @@ body.tickets-view #filtersBtn,body.notes-view #filtersBtn{display:none}
   display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;
 }
 .tcard .sub .none{color:var(--text-3)}
+/* A work area is identity, not state, so it gets a colour of its own rather
+   than one of the status colours. Mid lightness so it holds on both themes. */
+.tarea{white-space:nowrap}
+.tarea i{
+  display:inline-block;width:6px;height:6px;border-radius:50%;
+  margin-right:4px;background:var(--area-c);vertical-align:baseline;
+}
+.tk-table td.tarea-cell{color:var(--text-2);white-space:nowrap}
 
 /* list: the same tickets as rows, for scanning many at once */
 .tk-table{width:100%;border-collapse:collapse;font-size:12.5px}
@@ -5546,6 +5554,18 @@ async function loadTickets(force) {
 
 // A ticket whose area was since deleted reads as being in none, so it can
 // still be found and re-filed rather than sitting behind a filter nobody has.
+// The same area is the same colour everywhere, without anyone choosing one:
+// the id's hash picks the hue, and nothing is stored.
+function tkAreaHue(id) {
+  let h = 0;
+  for (const ch of String(id)) h = (h * 31 + ch.charCodeAt(0)) % 360;
+  return `hsl(${h} 52% 55%)`;
+}
+const tkAreaHtml = t => {
+  const id = tkAreaOf(t);
+  if (!id) return "";
+  return `<span class="tarea" style="--area-c:${tkAreaHue(id)}"><i></i>${esc(tkAreaName(id))}</span>`;
+};
 const tkAreaName = id => (areaData.areas.find(a => a.id === id) || {}).name || "";
 const tkAreaOf = t => (t.area && tkAreaName(t.area) ? t.area : "");
 const tkInArea = (t, want) => !want || (want === "∅" ? !tkAreaOf(t) : tkAreaOf(t) === want);
@@ -5613,7 +5633,7 @@ function tkCardHtml(t) {
     (live && live.status === "working" ? `<span class="tlive" title="${esc(t.assignee)} is working right now">●</span>` : "") +
     `<span class="age" title="Last touched ${esc(tkStamp(t.updated))}">${tkAge(t.updated)}</span></div>` +
     `<div class="ttitle">${esc(t.title)}</div>` +
-    `<div class="sub">${esc(t.projectName || "No project")}${tkAreaOf(t) ? ` · ${esc(tkAreaName(t.area))}` : ""} · ${who}</div></article>`;
+    `<div class="sub">${tkAreaOf(t) ? tkAreaHtml(t) + " · " : ""}${esc(t.projectName || "No project")} · ${who}</div></article>`;
 }
 
 function tkBoardHtml(list, shown) {
@@ -5644,17 +5664,18 @@ function tkListHtml(list) {
     `<td class="tkey">${esc(t.id)}</td>` +
     `<td><span class="tglyph">${TK_GLYPH[t.type] || "■"}</span> ${esc(t.type)}</td>` +
     `<td class="tt">${esc(t.title)} ${tkDueHtml(t)}</td><td>${esc(t.projectName || "—")}</td>` +
+    `<td class="tarea-cell">${tkAreaHtml(t) || "—"}</td>` +
     `<td>${esc(t.assignee || "—")}</td><td>${esc(t.priority)} ${TK_PRIO_MARK[t.priority] || ""}</td>` +
     `<td><select class="tk-st" data-id="${esc(t.id)}" title="Move">` +
     TK_STATUSES.map(([k, n]) => `<option value="${k}"${k === t.status ? " selected" : ""}>${n}</option>`).join("") +
     `</select></td><td class="num" title="${esc(tkStamp(t.updated))}">${tkAge(t.updated)}</td></tr>`).join("");
   const visible = list.filter(t => !tkHidden.includes(t.status));   // server order: column, then rank
   const body = !tkGroup ? rows(visible) : tkGroups(visible).map(([g, items]) =>
-    `<tr class="grp"><td colspan="8">${esc(g)} <span class="col-count">${items.length}</span></td></tr>` +
+    `<tr class="grp"><td colspan="9">${esc(g)} <span class="col-count">${items.length}</span></td></tr>` +
     rows(items)).join("");
   return `<table class="tk-table"><thead><tr><th>Ticket</th><th>Type</th><th>Title</th><th>Project</th>` +
-    `<th>Assignee</th><th>Priority</th><th>Status</th><th class="num">Updated</th></tr></thead>` +
-    `<tbody>${body || `<tr><td colspan="8" class="empty-col">Every status is hidden — turn one back on in the filters.</td></tr>`}</tbody></table>`;
+    `<th>Work area</th><th>Assignee</th><th>Priority</th><th>Status</th><th class="num">Updated</th></tr></thead>` +
+    `<tbody>${body || `<tr><td colspan="9" class="empty-col">Every status is hidden — turn one back on in the filters.</td></tr>`}</tbody></table>`;
 }
 
 function tkEmptyHtml(nothingMatches) {

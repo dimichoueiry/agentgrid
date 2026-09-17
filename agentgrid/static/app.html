@@ -468,18 +468,43 @@ details.tools .tfail{color:var(--failed)}
 #cInput{flex:1;min-width:0;resize:none;height:38px;max-height:150px;padding:8px 10px;
   font:13.5px/1.5 var(--sans);border-color:var(--line-2)}
 #cInput:focus{border-color:var(--accent)}
-/* pasted-but-not-yet-sent images: a row of removable thumbnail chips that sits
-   above the composer. A chip is dimmed while its upload is still in flight. */
+/* attached-but-not-yet-sent files: a row of removable chips above the
+   composer -- a thumbnail for an image, a type badge for anything else. A chip
+   is dimmed while its upload is in flight; one that failed takes a full row
+   and says why, so a drop of several files reads clearly. */
 .catt{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 7px}
 .catt[hidden]{display:none}
-.catt .chip{display:flex;align-items:center;gap:6px;max-width:190px;
+.catt .chip{display:flex;align-items:center;gap:6px;max-width:210px;
   padding:3px 4px 3px 5px;border:1px solid var(--line-2);border-radius:7px;
   background:var(--card);font-size:11px;color:var(--text-2)}
 .catt .chip.pending{opacity:.55}
-.catt .chip img{width:26px;height:26px;object-fit:cover;border-radius:4px;flex:0 0 auto}
+.catt .chip img,.catt .chip .ftype{width:26px;height:26px;border-radius:4px;flex:0 0 auto}
+.catt .chip img{object-fit:cover}
+.ftype{display:inline-flex;align-items:center;justify-content:center;
+  background:var(--card-hover);border:1px solid var(--line);color:var(--text-2);
+  font:600 8.5px/1 var(--mono,ui-monospace,monospace);letter-spacing:.02em;text-transform:uppercase}
+.catt .chip .meta{display:flex;flex-direction:column;min-width:0;line-height:1.25}
 .catt .chip .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-variant-numeric:tabular-nums}
+.catt .chip .sz{font-size:10px;color:var(--text-3);font-variant-numeric:tabular-nums}
 .catt .chip .x{flex:0 0 auto;font-size:14px;line-height:1;color:var(--text-3);padding:0 3px}
 .catt .chip .x:hover{color:var(--failed)}
+.catt .chip.bad{flex:1 1 100%;max-width:none;border-color:var(--failed);color:var(--text)}
+.catt .chip.bad .why{flex:1;min-width:0;white-space:normal;line-height:1.35;padding:2px 0}
+.catt .chip.bad .warn{flex:0 0 auto;color:var(--failed);font-size:12px;padding:0 2px}
+/* the paperclip: a quiet square button at the composer's left edge */
+.cattach{flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;
+  width:34px;height:38px;padding:0;color:var(--text-3)}
+.cattach:hover{color:var(--text)}
+/* dragging files over the session panel: the chat column says where they go */
+.chatcol{position:relative}
+.cdrop{position:absolute;inset:8px;z-index:5;display:flex;align-items:center;justify-content:center;
+  border:1.5px dashed var(--accent);border-radius:10px;pointer-events:none;
+  background:color-mix(in srgb,var(--bg) 88%,transparent)}
+.cdrop[hidden]{display:none}
+.cdrop-in{display:flex;flex-direction:column;align-items:center;gap:6px;padding:0 24px;text-align:center}
+.cdrop-in svg{color:var(--accent)}
+.cdrop-in b{font-size:14px;font-weight:600;color:var(--text)}
+.cdrop-in span{font-size:11.5px;color:var(--text-3);max-width:280px}
 /* prompt/skill reference chips: a compact pill per /slash, edit + remove */
 .crefs{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 7px}
 .crefs[hidden]{display:none}
@@ -509,6 +534,12 @@ details.tools .tfail{color:var(--failed)}
 /* an attached image echoed inside the user's own message bubble */
 .msg .uimg{display:block;max-width:230px;max-height:230px;margin-top:6px;
   border-radius:6px;border:1px solid var(--line)}
+/* any other attached file, echoed (and re-read from disk) as a named pill */
+.fpills{display:flex;flex-wrap:wrap;gap:5px;margin-top:6px}
+.fpill{display:inline-flex;align-items:center;gap:6px;max-width:260px;font-size:11.5px;
+  color:var(--text-2);padding:2px 8px 2px 3px;border:1px solid var(--line-2);border-radius:6px}
+.fpill .ftype{width:auto;min-width:22px;height:16px;padding:0 3px;border-radius:3px;font-size:8px}
+.fpill .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 /* secondary controls sit below the composer: posture, model, and the key hint */
 .cctl{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:8px}
 /* posture: the top bar's segmented control, reused verbatim */
@@ -1273,6 +1304,14 @@ Every command takes --as NAME and --json. Without --as, the name is $AGENTGRID_A
     </div>
   </div>
   <div class="chatcol" id="chatCol">
+  <!-- Shown while files are dragged over the session panel. -->
+  <div class="cdrop" id="cDrop" hidden>
+    <div class="cdrop-in">
+      <svg width="26" height="26" viewBox="0 0 16 16" aria-hidden="true"><path d="M13.2 7.4 8 12.6a3.4 3.4 0 0 1-4.8-4.8l5.6-5.6a2.2 2.2 0 0 1 3.1 3.1L6.3 10.9a1 1 0 0 1-1.5-1.5l4.9-4.9" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <b>Drop to attach</b>
+      <span>Images, PDFs, text and code files, Word, Excel and PowerPoint — up to 10 MB each</span>
+    </div>
+  </div>
   <div class="phead">
     <div class="ptitle" id="pTitle"></div>
     <button class="x sq" id="pExpand" title="Expand into a code + chat workspace">⤢</button>
@@ -1305,9 +1344,12 @@ Every command takes --as NAME and --json. Without --as, the name is $AGENTGRID_A
         <button class="btn sm key" id="cRefSave">Save for this message</button>
       </div>
     </div>
-    <!-- Pasted images waiting to be sent; each a removable thumbnail chip. -->
+    <!-- Files waiting to be sent (picked, dropped or pasted); each a removable chip. -->
     <div class="catt" id="cAtt" hidden></div>
     <div class="compose">
+      <button class="btn cattach" id="cAttach" title="Attach files — or drop them onto the chat"
+        aria-label="Attach files"><svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true"><path d="M13.2 7.4 8 12.6a3.4 3.4 0 0 1-4.8-4.8l5.6-5.6a2.2 2.2 0 0 1 3.1 3.1L6.3 10.9a1 1 0 0 1-1.5-1.5l4.9-4.9" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+      <input type="file" id="cFile" multiple hidden>
       <textarea id="cInput" rows="1" placeholder="Message this session…"></textarea>
       <button class="btn" id="cStop" title="Stop the current turn" hidden>Stop</button>
       <button class="btn key" id="cSend">Send</button>
@@ -2098,9 +2140,11 @@ let chatPosture = localStorage.getItem("agentgrid.chatPosture") || "auto";
 let chatModel = localStorage.getItem("agentgrid.chatModel") || "";   // "" = CLI default
 let chatDone = "";                 // the transient "Done · …" / "Stopped" line
 const chatTools = new Map();       // tool_use id -> its live trace element
-// Pasted images waiting on the next send. Each: {id, path, name, url, pending}.
-// `path` is the absolute file the upload endpoint returned (null while it's
-// still uploading); `url` is a local object URL for the thumbnail preview.
+// Files waiting on the next send (picked, dropped or pasted). Each:
+// {id, path, name, size, kind, url, pending, error}. `path` is the absolute
+// file the upload endpoint returned (null while uploading or after a failure);
+// `url` is a local object URL for an image's thumbnail, null for other files;
+// `error` is why it could not be attached -- the chip stays up to say so.
 let chatAtt = [];
 let chatAttSeq = 0;
 // Prompt/skill references staged for the next send. Each: {id, name, body, orig}.
@@ -2112,7 +2156,7 @@ let chatRefs = [], chatRefSeq = 0, cRefEditIdx = -1;
 function chatOpen(id, engine) {
   chatClose();                     // drop any previous session's stream/state
   chatDone = ""; chatRunning = false; chatQueued = 0; chatTools.clear();
-  chatClearAtt();                  // pending pastes don't cross sessions
+  chatClearAtt();                  // pending attachments don't cross sessions
   chatClearRefs();                 // nor staged prompt references
   chatEngine = engine === "codex" ? "codex" : "claude";
   chatDisabled = false;
@@ -2298,8 +2342,8 @@ async function chatSend() {
     toast("Enter an exact model ID."); $("cModelCustom").focus(); return;
   }
   saveChatModel();
-  // An image still uploading has no path yet; hold the send rather than drop it.
-  if (chatAtt.some(a => a.pending)) { toast("An image is still uploading…"); return; }
+  // A file still uploading has no path yet; hold the send rather than drop it.
+  if (chatAtt.some(a => a.pending)) { toast("A file is still uploading…"); return; }
   const ready = chatAtt.filter(a => a.path);
   const paths = ready.map(a => a.path);
   // Referenced prompts expand into the message the agent actually receives, in
@@ -2307,22 +2351,25 @@ async function chatSend() {
   // the model gets the full instructions.
   const refBodies = chatRefs.map(r => r.body).filter(b => b && b.trim());
   const outgoing = [...refBodies, msg].filter(Boolean).join("\n\n");
-  // An image or a reference with no words is a valid turn; only truly nothing is a no-op.
+  // A file or a reference with no words is a valid turn; only truly nothing is a no-op.
   if (!outgoing && !paths.length) return;
   const id = openId;
-  const urls = ready.map(a => a.url);   // reuse the thumbnails for the echo
+  const urls = ready.filter(a => a.url).map(a => a.url);   // reuse the thumbnails for the echo
+  const files = ready.filter(a => !a.url);
   const refEcho = chatRefs.map(r =>
     `<span class="refpill">/${esc(r.name)}${r.body !== r.orig ? " ✎" : ""}</span>`).join(" ");
   ta.value = ""; chatGrow(ta); hideAtFiles();
   // detach the chips but keep their object URLs alive for the echo below; a
-  // send never leaves a stale attachment or reference behind for the next message
+  // send never leaves a stale attachment or reference behind for the next
+  // message (a failed chip goes too -- it was never part of this turn)
   chatAtt = []; chatRenderAtt();
   chatClearRefs();
   // show Working at once (also suspends the poll's disk refresh, so the live
   // nodes below survive until the turn lands on disk and the poll reconciles)
   chatRunning = true; chatSetStatus();
   // optimistic echo: the CLI never streams the user's own message back
-  const imgs = urls.map(u => `<img class="uimg" src="${esc(u)}" alt="attached image">`).join("");
+  const imgs = urls.map(u => `<img class="uimg" src="${esc(u)}" alt="attached image">`).join("") +
+    filePills(files.map(a => a.name));
   chatAppend(`<div class="msg user"><div class="who">YOU</div>` +
     `<div class="body">${refEcho ? `<div class="refpills">${refEcho}</div>` : ""}${msg ? md(msg) : ""}${imgs}</div></div>`);
   // free the preview URLs once painted; the disk reconcile replaces the echo
@@ -2339,39 +2386,166 @@ async function chatSend() {
   $("cInput").focus();
 }
 
-// --- pasted-image attachments ---------------------------------------------
-// Paste an image into the composer and it is uploaded to /api/chat/upload,
-// which saves it and returns an absolute path; that path is what the next send
-// hands to the CLI (Claude Code reads a local image file named in its prompt).
+// --- chat attachments -------------------------------------------------------
+// A file reaches the composer three ways -- the paperclip's file picker, a drop
+// onto the session panel, or a paste -- and all three land in chatAddFiles. Each
+// file is uploaded to /api/chat/upload, which checks what it really is, saves
+// it and returns an absolute path; that path is what the next send hands to the
+// agent (Claude Code and Codex both open a local file named in the prompt).
+
+// Mirrors the server's MAX_UPLOAD_BYTES, so an oversize file is refused before
+// it is read into memory; the server still enforces its own cap.
+const MAX_ATTACH_BYTES = 10 * 1024 * 1024;
+// Images the agent can see get a thumbnail; everything else gets a type badge.
+const PREVIEW_TYPES = /^image\/(png|jpe?g|gif|webp)$/;
+
+function chatCanAttach() {
+  return !!openId && !chatDisabled && $("panel").classList.contains("on");
+}
+
+function fmtBytes(n) {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${Math.round(n / 1024)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+// The badge on a non-image chip: the file's own extension, or FILE.
+function fileBadge(name) {
+  const m = /\.([a-z0-9]{1,5})$/i.exec(String(name || ""));
+  return m ? m[1] : "file";
+}
+
+function filePills(names) {
+  if (!names.length) return "";
+  return `<div class="fpills">` + names.map(n =>
+    `<span class="fpill" title="${esc(n)}"><span class="ftype">${esc(fileBadge(n))}</span>` +
+    `<span class="nm">${esc(n)}</span></span>`).join("") + `</div>`;
+}
+
+// Everything the picker, a drop or a paste hands over goes through here. A
+// folder arrives as {folder: name} (a drop can carry one; it has no bytes to send).
+function chatAddFiles(list) {
+  if (!chatCanAttach()) return;
+  for (const f of list) {
+    if (f && f.folder !== undefined) {
+      chatAttError(f.folder || "Folder", 0,
+        `${f.folder || "That"} is a folder — attach the files inside it instead.`);
+    } else if (f) chatUpload(f);
+  }
+}
 
 function chatPaste(e) {
-  if (!openId || chatDisabled) return;
+  if (!chatCanAttach()) return;
   const items = (e.clipboardData && e.clipboardData.items) || [];
   const blobs = [];
   for (const it of items)
-    if (it.kind === "file" && /^image\//.test(it.type || "")) {
+    if (it.kind === "file") {
       const blob = it.getAsFile();
       if (blob) blobs.push(blob);
     }
   if (!blobs.length) return;         // a plain-text paste falls through untouched
   e.preventDefault();
-  blobs.forEach(chatUpload);
+  chatAddFiles(blobs);
+}
+
+// A drop's files, with folders marked: getAsFile() hands a folder back as a
+// File too, so the entry is what tells them apart.
+function filesFromDrop(dt) {
+  const items = dt && dt.items ? [...dt.items] : [];
+  if (!items.length) return [...((dt && dt.files) || [])];
+  const out = [];
+  for (const it of items) {
+    if (it.kind !== "file") continue;
+    const entry = it.webkitGetAsEntry ? it.webkitGetAsEntry() : null;
+    const file = it.getAsFile();
+    if (entry && entry.isDirectory) out.push({folder: entry.name});
+    else if (file) out.push(file);
+  }
+  return out;
+}
+
+function isFileDrag(e) {
+  return !!(e.dataTransfer && [...(e.dataTransfer.types || [])].includes("Files"));
+}
+
+// dragenter/dragleave fire for every child crossed, so depth tells a real exit
+// from a move between children.
+let chatDragDepth = 0;
+function chatDragReset() { chatDragDepth = 0; $("cDrop").hidden = true; }
+
+function bindChatDrop() {
+  const panel = $("panel");
+  panel.addEventListener("dragenter", e => {
+    if (!isFileDrag(e) || !chatCanAttach()) return;
+    e.preventDefault();
+    if (chatDragDepth++ === 0) $("cDrop").hidden = false;
+  });
+  panel.addEventListener("dragover", e => {
+    if (!isFileDrag(e) || !chatCanAttach()) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "copy";
+  });
+  panel.addEventListener("dragleave", e => {
+    if (!isFileDrag(e)) return;
+    if (--chatDragDepth <= 0) chatDragReset();
+  });
+  panel.addEventListener("drop", e => {
+    if (!isFileDrag(e)) return;
+    e.preventDefault();
+    chatDragReset();
+    if (!chatCanAttach()) return;
+    if (panelTab !== "chat") setPanelTab("chat");   // the chips live on the Chat tab
+    chatAddFiles(filesFromDrop(e.dataTransfer));
+    $("cInput").focus();
+  });
+  // A file dropped anywhere else would make the browser navigate to it and
+  // take the board down with it; refuse it instead. The panel's own handlers
+  // run first and have already claimed a drop meant for the chat.
+  window.addEventListener("dragover", e => {
+    if (!isFileDrag(e) || e.defaultPrevented) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "none";
+  });
+  window.addEventListener("drop", e => {
+    if (!isFileDrag(e)) return;
+    e.preventDefault();
+    chatDragReset();
+  });
+  // the drag left the window or was cancelled: never leave the overlay stuck
+  window.addEventListener("dragleave", e => { if (!e.relatedTarget) chatDragReset(); });
+  window.addEventListener("dragend", chatDragReset);
+}
+
+// A chip that could not be attached: it stays, says why, and never sends.
+function chatAttError(name, size, error) {
+  chatAtt.push({id: ++chatAttSeq, path: null, name, size, kind: "", url: null,
+                pending: false, error});
+  chatRenderAtt();
 }
 
 async function chatUpload(blob) {
+  const isImage = PREVIEW_TYPES.test(blob.type || "");
+  const name = blob.name ||
+    (isImage ? `pasted-image.${blob.type.split("/")[1] || "png"}` : "pasted-file");
+  if (!blob.size) { chatAttError(name, 0, `${name} is empty.`); return; }
+  if (blob.size > MAX_ATTACH_BYTES) {
+    chatAttError(name, blob.size,
+      `${name} is ${fmtBytes(blob.size)} — the limit is ${fmtBytes(MAX_ATTACH_BYTES)} per file.`);
+    return;
+  }
   const id = ++chatAttSeq;
-  const url = URL.createObjectURL(blob);
-  const name = blob.name || `pasted-image.${(blob.type.split("/")[1] || "png")}`;
+  const url = isImage ? URL.createObjectURL(blob) : null;
   const sid = openId;
   // a pending chip shows at once, so a slow upload never feels like nothing happened
-  chatAtt.push({id, path: null, name, url, pending: true});
+  chatAtt.push({id, path: null, name, size: blob.size, kind: isImage ? "image" : "",
+                url, pending: true, error: ""});
   chatRenderAtt();
   let data;
   try { data = await blobToDataUrl(blob); }
-  catch (_) { chatAttFail(id, "Could not read that image."); return; }
+  catch (_) { chatAttFail(id, `Could not read ${name} from disk.`); return; }
   let r;
   // NOT post(): that sets keepalive, and the Fetch spec caps a keepalive
-  // request body at 64 KB. An image is megabytes, so keepalive rejects the
+  // request body at 64 KB. A file is megabytes, so keepalive rejects the
   // request outright -- which surfaced as the generic "Could not upload".
   try {
     r = await api("/api/chat/upload", {
@@ -2383,16 +2557,21 @@ async function chatUpload(blob) {
   const slot = chatAtt.find(a => a.id === id);
   if (!slot) return;                 // removed while it was uploading
   if (!r || r.error || !r.path) {
-    chatAttFail(id, (r && r.error) || "Could not upload that image.");
+    chatAttFail(id, (r && r.error) || `Could not upload ${name} — is agentgrid still running?`);
     return;
   }
-  slot.path = r.path; slot.pending = false;
+  slot.path = r.path; slot.kind = r.kind || slot.kind; slot.pending = false;
+  // the server decides what a file is; drop a preview it would not call an image
+  if (slot.url && slot.kind !== "image") { URL.revokeObjectURL(slot.url); slot.url = null; }
   chatRenderAtt();
 }
 
 function chatAttFail(id, msg) {
-  chatRemoveAtt(id);
-  toast(msg);
+  const slot = chatAtt.find(a => a.id === id);
+  if (!slot) return;
+  if (slot.url) { URL.revokeObjectURL(slot.url); slot.url = null; }
+  slot.pending = false; slot.path = null; slot.error = msg;
+  chatRenderAtt();
 }
 
 function blobToDataUrl(blob) {
@@ -2407,12 +2586,16 @@ function blobToDataUrl(blob) {
 function chatRenderAtt() {
   const host = $("cAtt"); if (!host) return;
   host.hidden = chatAtt.length === 0;
-  host.innerHTML = chatAtt.map(a =>
-    `<span class="chip${a.pending ? " pending" : ""}" data-att="${a.id}">` +
-    `<img src="${esc(a.url)}" alt="">` +
-    `<span class="nm">${esc(a.name)}</span>` +
-    `<button class="x" data-att-rm="${a.id}" title="Remove" ` +
-    `aria-label="Remove attachment">&times;</button></span>`).join("");
+  const rm = a => `<button class="x" data-att-rm="${a.id}" title="Remove" ` +
+    `aria-label="Remove ${esc(a.name)}">&times;</button>`;
+  host.innerHTML = chatAtt.map(a => a.error
+    ? `<span class="chip bad" data-att="${a.id}" role="alert">` +
+      `<span class="warn" aria-hidden="true">⚠</span><span class="why">${esc(a.error)}</span>${rm(a)}</span>`
+    : `<span class="chip${a.pending ? " pending" : ""}" data-att="${a.id}" title="${esc(a.name)}">` +
+      (a.url ? `<img src="${esc(a.url)}" alt="">` : `<span class="ftype">${esc(fileBadge(a.name))}</span>`) +
+      `<span class="meta"><span class="nm">${esc(a.name)}</span>` +
+      `<span class="sz">${a.pending ? "Uploading…" : esc(fmtBytes(a.size || 0))}</span></span>` +
+      rm(a) + `</span>`).join("");
 }
 
 function chatRemoveAtt(id) {
@@ -2428,6 +2611,23 @@ function chatClearAtt() {
   chatRenderAtt();
 }
 
+// A user turn read back from disk ends with the attachment list the server
+// folded into the prompt (chat.with_attachments). Show those as file pills
+// instead of raw paths -- but only paths under agentgrid's own uploads dir, so
+// a message that merely talks about attachments renders as written.
+const ATTACHED_TAIL = /(?:^|\n\n)(?:Attached (?:image|file)s?:|Please look at the attached (?:image|file)\(s\):)\n((?:- [^\n]+\n?)+)\s*$/;
+function userBodyHtml(text) {
+  const t = cleanSlash(text);
+  const m = ATTACHED_TAIL.exec(t);
+  if (!m) return md(t);
+  const paths = m[1].trim().split("\n").map(l => l.slice(2).trim());
+  if (!paths.every(p => p.includes("/.agentgrid/uploads/"))) return md(t);
+  // saved as <date>-<time>-<tag>-<name>.<ext>; the name is what you picked
+  const names = paths.map(p => p.split("/").pop().replace(/^\d{8}-\d{6}-[0-9a-f]{6}-/, ""));
+  const rest = t.slice(0, m.index).trim();
+  return (rest ? md(rest) : "") + filePills(names);
+}
+
 function chatStop() {
   if (!openId) return;
   post("/api/chat/cancel", {sessionId: openId}).then(() => chatSyncState());
@@ -2436,7 +2636,8 @@ function chatStop() {
 // keep the composer one line until it needs more, capped so it never eats the list
 function chatGrow(ta) {
   ta.style.height = "auto";
-  ta.style.height = Math.min(ta.scrollHeight, 150) + "px";
+  // a hidden composer (the panel still opening) measures 0; keep the CSS height
+  ta.style.height = ta.scrollHeight ? Math.min(ta.scrollHeight, 150) + "px" : "";
 }
 
 /* ------------------------------------------- @ file mentions (chat composer)
@@ -2959,7 +3160,7 @@ function blocksHtml(blocks) {
       html += traceHtml(run);
     } else if (b.kind === "user" || b.kind === "assistant") {
       html += `<div class="msg ${b.kind}"><div class="who">${b.kind === "user" ? "YOU" : chatEngine === "codex" ? "CODEX" : "CLAUDE"}</div>` +
-        `<div class="body">${md(cleanSlash(b.text))}</div>${b.kind === "assistant" ? workflowExportButton(b.text) : ""}</div>`;
+        `<div class="body">${b.kind === "user" ? userBodyHtml(b.text) : md(cleanSlash(b.text))}</div>${b.kind === "assistant" ? workflowExportButton(b.text) : ""}</div>`;
     }
   }
   return html;
@@ -4732,6 +4933,15 @@ function bindEvents() {
     if (b) insertTodo(Number(b.dataset.todo));
   });
   cin.addEventListener("paste", chatPaste);
+  // the paperclip opens the system file picker; the same input is reused, so
+  // clear it after each pick or choosing the same file twice would not fire
+  $("cAttach").addEventListener("click", () => { if (chatCanAttach()) $("cFile").click(); });
+  $("cFile").addEventListener("change", e => {
+    chatAddFiles([...e.target.files]);
+    e.target.value = "";
+    cin.focus();
+  });
+  bindChatDrop();
   // the × on a pending-attachment chip
   $("cAtt").addEventListener("click", e => {
     const rm = e.target.closest("[data-att-rm]");

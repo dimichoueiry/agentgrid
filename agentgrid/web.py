@@ -28,6 +28,7 @@ import base64
 import binascii
 import collections
 import html
+import io
 import json
 import os
 import queue
@@ -43,6 +44,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import webbrowser
+import zipfile
 from datetime import date, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -54,10 +56,10 @@ POLL_SECONDS = 2.0
 DEFAULT_PROJECT_ROOTS = [Path.home(), Path.home() / "Documents" / "GitHub"]
 PROJECTS_TTL = 30.0
 
-# Pasted images land beside the app's other state under ~/.agentgrid, one
-# directory per session. The cap is on the decoded image; the body cap sits
+# Chat attachments land beside the app's other state under ~/.agentgrid, one
+# directory per session. The cap is on the decoded file; the body cap sits
 # above it with room for base64's ~4/3 inflation plus the JSON envelope, so an
-# in-bounds image is never rejected by the outer guard.
+# in-bounds file is never rejected by the outer guard.
 UPLOADS_DIR = Path.home() / ".agentgrid" / "uploads"
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 MAX_BODY_BYTES = 16 * 1024 * 1024
@@ -93,6 +95,63 @@ def image_extension(data: bytes) -> str | None:
     if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
         return "webp"
     return None
+
+
+# Beyond images, the chat takes the files an agent can actually open: PDFs
+# (Claude Code's Read renders them), UTF-8 text of any kind (code, logs, CSV,
+# JSON, Markdown...), and the zipped Office formats, which an agent unpacks
+# with its own tools. Everything else is refused with a message naming these.
+OFFICE_EXTENSIONS = frozenset({"docx", "xlsx", "pptx"})
+SUPPORTED_ATTACHMENTS = ("an image (PNG, JPEG, GIF, WebP), a PDF, a text or code "
+                         "file, or a Word, Excel or PowerPoint document")
+
+
+def client_extension(name: object) -> str:
+    """The lower-cased extension of a client-supplied filename, or "".
+
+    Only a short alphanumeric suffix counts, so the extension can be reused on
+    disk without ever carrying a separator or anything else unexpected.
+    """
+    match = re.search(r"\.([A-Za-z0-9]{1,10})$", Path(str(name or "")).name)
+    return match.group(1).lower() if match else ""
+
+
+def attachment_type(data: bytes, name: object = "") -> tuple[str, str] | None:
+    """(kind, extension) for a file the chat can attach, else None.
+
+    The bytes decide the kind -- the client's name only picks which extension a
+    text file keeps (so `app.tsx` stays `.tsx`) and which Office format a zip
+    claims to be, and even then the zip must really be an Office package.
+    kind is one of "image", "pdf", "document" or "text".
+    """
+    ext = image_extension(data)
+    if ext:
+        return "image", ext
+    if data.startswith(b"%PDF-"):
+        return "pdf", "pdf"
+    claimed = client_extension(name)
+    if data.startswith(b"PK\x03\x04"):
+        if claimed not in OFFICE_EXTENSIONS:
+            return None
+        try:
+            with zipfile.ZipFile(io.BytesIO(data)) as package:
+                if "[Content_Types].xml" not in package.namelist():
+                    return None
+        except (zipfile.BadZipFile, OSError, ValueError):
+            return None
+        return "document", claimed
+    # Text: no NUL bytes and valid UTF-8 (a BOM is fine). Binary formats almost
+    # always carry a NUL early on, and fail the decode when they don't.
+    if b"\x00" in data:
+        return None
+    try:
+        data.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    # a text file named like a binary format would mislead whoever opens it
+    if claimed in OFFICE_EXTENSIONS or claimed in ("pdf", "png", "jpg", "jpeg", "gif", "webp"):
+        claimed = "txt"
+    return "text", claimed or "txt"
 
 
 def safe_stem(name: str) -> str:
@@ -1976,8 +2035,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         message = str(body.get("message") or "").strip()
         # Attachments are absolute paths this server minted at /api/chat/upload
-        # and are validated back to that directory below, so a message can be an
-        # image alone. Only a turn with neither words nor image is empty.
+        # and are validated back to that directory below, so a message can be a
+        # file alone. Only a turn with neither words nor file is empty.
         attachments = self._valid_attachments(body.get("attachments"), session)
         if not message and not attachments:
             self._send_json(400, {"error": "Say something to send."})
@@ -2017,22 +2076,24 @@ class Handler(BaseHTTPRequestHandler):
         return kept
 
     def _chat_upload(self, body: dict) -> None:
-        """Save a pasted image to this session's uploads dir; return its path.
+        """Save a chat attachment to this session's uploads dir; return its path.
 
         The bytes arrive base64 in a JSON body -- the shape every other POST
-        here already uses, so no multipart parser is needed. They are validated
-        as a real image by magic bytes (not the client's content-type), capped
-        at MAX_UPLOAD_BYTES, and written under ~/.agentgrid/uploads/<session id>/
-        beside the app's other state. The absolute path returned is what a later
-        chat turn hands to `claude -p` to read.
+        here already uses, so no multipart parser is needed. What the file is
+        comes from its bytes (attachment_type), never the client's
+        content-type; it is capped at MAX_UPLOAD_BYTES and written under
+        ~/.agentgrid/uploads/<session id>/ beside the app's other state. The
+        absolute path returned is what a later chat turn hands to the agent.
+        Every refusal names the file, so a drop of several reads clearly.
         """
         session = self._session_by_id(str(body.get("sessionId") or ""))
         if session is None:
             self._send_json(404, {"error": "Unknown session."})
             return
+        label = Path(str(body.get("name") or "")).name[:80] or "That file"
         data = body.get("data")
         if not isinstance(data, str) or not data:
-            self._send_json(400, {"error": "No image data."})
+            self._send_json(400, {"error": f"{label} has no data."})
             return
         # Accept a bare base64 string or a full `data:` URL; keep what follows
         # the comma either way.
@@ -2042,21 +2103,22 @@ class Handler(BaseHTTPRequestHandler):
         try:
             raw = base64.b64decode(data, validate=True)
         except (ValueError, binascii.Error):
-            self._send_json(400, {"error": "Image data was not valid base64."})
+            self._send_json(400, {"error": f"{label} did not arrive intact (bad base64)."})
             return
         if not raw:
-            self._send_json(400, {"error": "No image data."})
+            self._send_json(400, {"error": f"{label} is empty."})
             return
         if len(raw) > MAX_UPLOAD_BYTES:
             self._send_json(413, {"error": (
-                f"Image is larger than {MAX_UPLOAD_BYTES // (1024 * 1024)} MB.")})
+                f"{label} is larger than {MAX_UPLOAD_BYTES // (1024 * 1024)} MB.")})
             return
-        ext = image_extension(raw)
-        if ext is None:
-            self._send_json(400, {"error": (
-                "That does not look like a PNG, JPEG, GIF or WebP image.")})
+        found = attachment_type(raw, body.get("name"))
+        if found is None:
+            self._send_json(415, {"error": (
+                f"{label} can't be attached. Attach {SUPPORTED_ATTACHMENTS}.")})
             return
-        # The random tag makes two pastes in the same second distinct filenames.
+        kind, ext = found
+        # The random tag makes two files saved in the same second distinct.
         session_dir = session_uploads_dir(session.session_id)
         stamp = time.strftime("%Y%m%d-%H%M%S")
         filename = f"{stamp}-{secrets.token_hex(3)}-{safe_stem(body.get('name'))}.{ext}"
@@ -2065,10 +2127,10 @@ class Handler(BaseHTTPRequestHandler):
             session_dir.mkdir(parents=True, exist_ok=True)
             dest.write_bytes(raw)
         except OSError as error:
-            self._send_json(500, {"error": f"Could not save the image: {error}"})
+            self._send_json(500, {"error": f"Could not save {label}: {error}"})
             return
         self._send_json(200, {"path": str(dest), "name": filename,
-                              "bytes": len(raw)})
+                              "kind": kind, "bytes": len(raw)})
 
     def _chat_stream(self, query: dict) -> None:
         """Server-Sent Events for one session's turns. Blocks in its own thread.

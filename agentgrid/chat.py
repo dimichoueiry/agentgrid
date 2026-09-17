@@ -77,25 +77,33 @@ def explain_exit(engine: str, noise: str, code: object) -> str:
     return text[:200] or f"{engine} exited {code}"
 
 
-def with_attachments(message: str, attachments: list[str] | None) -> str:
-    """Fold attachment file paths into the prompt text `claude -p` receives.
+IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".gif", ".webp")
 
-    Headless Claude Code has no image flag that is stable across releases; what
-    it does reliably is read a local file whose absolute path appears in the
-    prompt (its Read tool renders PNG/JPEG/GIF/WebP visually). So a pasted image
-    is saved to disk and named here -- the path IS the attachment. Each path is
-    on its own line, and an image with no words of its own still gets a nudge to
-    look, so an image-only turn is not a bare list of paths.
+
+def is_image_path(path: object) -> bool:
+    return str(path).lower().endswith(IMAGE_SUFFIXES)
+
+
+def with_attachments(message: str, attachments: list[str] | None) -> str:
+    """Fold attachment file paths into the prompt text the agent receives.
+
+    Headless Claude Code has no attachment flag that is stable across releases;
+    what it does reliably is read a local file whose absolute path appears in
+    the prompt (its Read tool renders images and PDFs, and reads text). So an
+    attachment is saved to disk and named here -- the path IS the attachment.
+    Each path is on its own line, and a file with no words of its own still
+    gets a nudge to look, so a file-only turn is not a bare list of paths.
     """
     paths = [str(p) for p in (attachments or []) if str(p).strip()]
     if not paths:
         return message
     listing = "\n".join(f"- {path}" for path in paths)
     body = (message or "").strip()
-    label = "Attached image:" if len(paths) == 1 else "Attached images:"
+    noun = "image" if all(is_image_path(p) for p in paths) else "file"
+    label = f"Attached {noun}:" if len(paths) == 1 else f"Attached {noun}s:"
     if body:
         return f"{body}\n\n{label}\n{listing}"
-    return f"Please look at the attached image(s):\n{listing}"
+    return f"Please look at the attached {noun}(s):\n{listing}"
 
 
 # ---------------------------------------------------------------------------
@@ -334,17 +342,26 @@ class ChatSession:
             argv += ["--json", "--skip-git-repo-check"]
             if model:
                 argv += ["--model", model]
-            for path in attachments or []:
+            # --image only takes pictures; any other file is named in the
+            # prompt, the same way the Claude path does it, for codex to open.
+            images = [p for p in attachments or [] if is_image_path(p)]
+            files = [p for p in attachments or [] if not is_image_path(p)]
+            for path in images:
                 argv += ["--image", path]
             argv += ["--"]
             if self.session_id:
                 argv += [self.session_id]
-            argv += [message or "Please look at the attached image(s)."]
+            argv += [with_attachments(message, files) or "Please look at the attached image(s)."]
         else:
             prompt = with_attachments(message, attachments)
             argv = [CLAUDE_BIN, "-p", prompt,
                     "--output-format", "stream-json", "--verbose",
                     "--permission-mode", permission_mode(posture)]
+            # Uploads live outside the project, and Read-only (plan mode) will
+            # not open a file out there without a prompt nobody can answer
+            # headlessly -- so grant the folder they sit in for this turn.
+            for folder in sorted({os.path.dirname(p) for p in attachments or []}):
+                argv += ["--add-dir", folder]
             if model:
                 argv += ["--model", model]
             if self.session_id:

@@ -893,11 +893,27 @@ subsequent messages, not turns already running or queued. These commands are
 handled locally and are not sent as prompts. Each engine remembers its own model.
 
 Codex chat resumes the selected conversation with `codex exec resume`, streams
-replies and tool activity, supports image attachments, and queues follow-up
+replies and tool activity, supports file attachments, and queues follow-up
 messages. Stop cancels the active chat turn and clears its queue. Auto uses the
 workspace-write sandbox; Read-only uses the read-only sandbox. A Codex session
 still running outside AgentGrid must finish before you send a new message.
 This continues the saved conversation; it does not attach to a running terminal.
+
+### Attaching files in chat
+
+To give the agent a file, click the paperclip next to the message box, drop
+files anywhere on the session panel, or paste them. Each file shows as a chip
+above the box (a thumbnail for images) and goes with your next message; a
+file-only message is fine. Supported: images (PNG, JPEG, GIF, WebP), PDFs, any
+UTF-8 text or code file, and Word, Excel and PowerPoint files, up to 10 MB each.
+The file type is checked from its contents, not its name. Anything else, a
+folder, an empty file or one over the limit gets a red chip saying why, and
+that file is not sent.
+
+Files are saved under `~/.agentgrid/uploads/<session id>/` and their paths are
+added to the prompt. Claude gets read access to that folder for the turn, so
+this works in Read-only too. Codex gets images through `--image` and reads
+other files from their paths. OpenRouter steps take text only.
 
 ### Workflow authoring and chat export
 

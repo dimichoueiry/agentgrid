@@ -78,11 +78,12 @@ CHILD_GRACE_SECONDS = 90
 UPDATE_TAIL_CHARS = 1500
 # A child in one of these is still busy; any move out of them is news.
 BUSY_STATUSES = ("working", "starting")
-# Free text the model supplies is truncated wherever it is stored or shown.
+# What the chat shows is never cut: the model's words are already bounded by
+# its output limit, and what the user types is refused past MAX_GOAL_TEXT
+# rather than trimmed. These ceilings bound what is stored or passed on.
 MAX_TASK = 20_000
+# A child's task as kept in the run's own record, which nothing displays.
 MAX_NOTE = 4_000
-# A goal, a message to the user and a finish summary are stored rather than
-# just logged, so they get the definition's larger ceiling.
 MAX_GOAL_TEXT = orchestrator.MAX_GOAL
 
 
@@ -309,7 +310,7 @@ class Run:
             self._finish_summary = None
             self._decision = None
             self._persist()
-        self._emit({"type": "run_started", "goal": goal[:MAX_NOTE], "model": persona.model,
+        self._emit({"type": "run_started", "goal": goal, "model": persona.model,
                     "persona": persona.name, "mode": self.definition.mode})
         self._spin()
 
@@ -342,15 +343,17 @@ class Run:
         text = str(text or "").strip()
         if not text:
             raise ValueError("Type a message first.")
+        if len(text) > MAX_GOAL_TEXT:
+            raise ValueError(f"Keep a message under {MAX_GOAL_TEXT:,} characters.")
         with self._lock:
             if self.state["status"] == "idle" and not self.state["messages"]:
                 raise ValueError("Give this orchestrator a goal to start it.")
-            self.state["inbox"] = (self.state.get("inbox") or [])[-50:] + [{"at": time.time(), "text": text[:MAX_GOAL_TEXT]}]
+            self.state["inbox"] = (self.state.get("inbox") or [])[-50:] + [{"at": time.time(), "text": text}]
             blocked = bool(self.state.get("pending"))
             if not blocked and self.state["status"] != "running":
                 self.state.update(status="running", reason="")
             self._persist()
-        self._emit({"type": "user_message", "text": text[:MAX_NOTE]})
+        self._emit({"type": "user_message", "text": text})
         self._wake.set()
         if not blocked:
             self._spin()
@@ -359,7 +362,7 @@ class Run:
         self._answer(approval_id, {"approved": True, "edits": edits or {}})
 
     def decline(self, approval_id: str, reason: str = "") -> None:
-        self._answer(approval_id, {"approved": False, "reason": str(reason or "")[:MAX_NOTE]})
+        self._answer(approval_id, {"approved": False, "reason": str(reason or "")[:MAX_GOAL_TEXT]})
 
     def _answer(self, approval_id: str, decision: dict) -> None:
         with self._lock:
@@ -456,7 +459,7 @@ class Run:
         if turn["text"].strip():
             # Reasoning said alongside tool calls: the Activity tab's business,
             # not the conversation's.
-            self._emit({"type": "note", "text": turn["text"][:MAX_NOTE]})
+            self._emit({"type": "note", "text": turn["text"]})
         self._set_phase("acting")
         try:
             outcome = self._run_calls(turn["calls"])
@@ -480,7 +483,7 @@ class Run:
                 with self._lock:
                     self.state["lastText"] = text[:MAX_GOAL_TEXT]
                     self._persist()
-                self._emit({"type": "message", "text": text[:MAX_NOTE], "waiting": False})
+                self._emit({"type": "message", "text": text, "waiting": False})
             changes = self._watch(baseline=statuses)
             if changes:
                 self._tell_model(changes)
@@ -490,7 +493,7 @@ class Run:
         with self._lock:
             self.state.update(status="waiting", lastText=text[:MAX_GOAL_TEXT])
             self._persist()
-        self._emit({"type": "message", "text": text[:MAX_NOTE], "waiting": True})
+        self._emit({"type": "message", "text": text, "waiting": True})
         return False
 
     def _handle(self, outcome: str) -> bool:
@@ -564,12 +567,12 @@ class Run:
 
     def _finish(self, status: str, reason: str) -> None:
         with self._lock:
-            self.state.update(status=status, reason=reason[:MAX_NOTE], pending=None)
+            self.state.update(status=status, reason=reason[:MAX_GOAL_TEXT], pending=None)
             self._persist()
-        self._emit({"type": "run_done", "status": status, "reason": reason[:MAX_NOTE]})
+        self._emit({"type": "run_done", "status": status, "reason": reason[:MAX_GOAL_TEXT]})
 
     def _fail(self, reason: str) -> None:
-        self._emit({"type": "error", "message": reason[:MAX_NOTE]})
+        self._emit({"type": "error", "message": reason[:MAX_GOAL_TEXT]})
         self._finish("failed", reason)
 
     def _drain_inbox(self) -> None:
@@ -691,6 +694,7 @@ class Run:
         task = str(args.get("task") or "").strip()
         if not task:
             raise ValueError("An agent needs a task.")
+        _within(task, MAX_TASK, "task")
         # An unnamed agent is numbered, so it never shares a name with the
         # orchestrator itself; a saved agent keeps the name it was saved under.
         name = self._child_name(str(args.get("name") or "").strip()
@@ -700,7 +704,7 @@ class Run:
             (saved or {}).get("systemPrompt") or "", str(args.get("systemPrompt") or "")) if part.strip())
         request = {
             "cwd": str(args.get("project") or self.definition.cwd or ""),
-            "prompt": task[:MAX_TASK],
+            "prompt": task,
             "engine": str(args.get("engine") or "claude"),
             "interactive": interactive,
             "model": str(args.get("model") or ""),
@@ -727,7 +731,7 @@ class Run:
         self._emit({"type": "agent_started", "name": child["name"], "cwd": child["cwd"],
                     "engine": child["engine"], "interactive": child["interactive"],
                     "model": child["model"], "savedAgent": child["savedAgent"],
-                    "task": task[:MAX_NOTE]})
+                    "task": task})
         return {"ok": True, "message": launched.get("message") or "Started.",
                 "agent": {"name": child["name"], "jobId": child["jobId"], "cwd": child["cwd"]}}
 
@@ -762,7 +766,7 @@ class Run:
         if not message:
             raise ValueError("Say what to send.")
         return {"ok": True, "agent": name,
-                "message": self.host.send_to_agent(session_id, message[:MAX_TASK])}
+                "message": self.host.send_to_agent(session_id, _within(message, MAX_TASK, "message"))}
 
     def _tool_wait_for_agents(self, args: dict) -> dict:
         try:
@@ -811,7 +815,7 @@ class Run:
         text = str(args.get("text") or "").strip()
         if not text:
             raise ValueError("Say what the comment should be.")
-        ticket = tickets.comment(str(args.get("ticket") or ""), self.definition.name, text[:MAX_TASK])
+        ticket = tickets.comment(str(args.get("ticket") or ""), self.definition.name, _within(text, MAX_TASK, "comment"))
         return {"ok": True, "ticket": {"id": ticket["id"]}}
 
     def _tool_set_plan(self, args: dict) -> dict:
@@ -866,7 +870,7 @@ class Run:
         with self._lock:
             self.state["lastText"] = text[:MAX_GOAL_TEXT]
             self._persist()
-        self._emit({"type": "message", "text": text[:MAX_NOTE], "waiting": False})
+        self._emit({"type": "message", "text": text, "waiting": False})
         return {"ok": True, "delivered": True}
 
     def _tool_finish(self, args: dict) -> dict:
@@ -939,6 +943,11 @@ class Run:
 
     def _start_problem(self, args: dict, persona: personas.Persona) -> str:
         """Why this start would be refused, or "". Checked before approval."""
+        task = str(args.get("task") or "").strip()
+        if len(task) > MAX_TASK:
+            # Before the card, not after it: the card holds MAX_TASK, and
+            # approving it would send back a task already cut short.
+            return f"That task is {len(task):,} characters; keep it under {MAX_TASK:,}."
         if args.get("savedAgent"):
             if self._saved_agent(args.get("savedAgent"), persona) is None:
                 return (f"{str(args['savedAgent'])[:60]!r} is not one of your saved agents. "
@@ -1119,13 +1128,25 @@ def _parse_args(call: dict) -> dict | None:
     return parsed if isinstance(parsed, dict) else None
 
 
+def _within(text: str, limit: int, what: str) -> str:
+    """`text` unchanged, or a refusal the model can act on: cutting it would
+    hand an agent or a ticket less than the model wrote, with nobody told."""
+    if len(text) > limit:
+        raise ValueError(f"That {what} is {len(text):,} characters; keep it under {limit:,}.")
+    return text
+
+
 def _safe_args(call: dict) -> dict:
-    """The call's arguments for display; never raises, never unbounded."""
+    """The call's arguments for display; never raises, never unbounded.
+
+    Strings get the task's own ceiling: the approval card is edited and sent
+    back, so a shorter cut here would run a shorter task than the model asked for.
+    """
     args = _parse_args(call) or {}
     trimmed = {}
     for key, value in list(args.items())[:20]:
-        trimmed[str(key)[:40]] = (value[:MAX_NOTE] if isinstance(value, str)
-                                  else value if isinstance(value, (int, float, bool)) else str(value)[:MAX_NOTE])
+        trimmed[str(key)[:40]] = (value[:MAX_TASK] if isinstance(value, str)
+                                  else value if isinstance(value, (int, float, bool)) else str(value)[:MAX_TASK])
     return trimmed
 
 

@@ -409,6 +409,29 @@ class ApprovalTests(OrchestratorCase):
         self.assertIn("approval_requested", kinds)
         self.assertIn("approval_resolved", kinds)
 
+    def test_the_card_holds_the_whole_task_so_approving_runs_all_of_it(self):
+        task = "step " * 2000                              # 10,000 characters
+        model = Model(turn("", [("start_agent", {"project": "/tmp/project", "task": task})]),
+                      turn("", [("finish", {"summary": "Done."})]))
+        run = self.run_with(model)
+        shown = run.snapshot()["pending"]["args"]["task"]
+        self.assertEqual(shown, task)
+        with mock.patch.object(openrouter, "tool_turn", model):
+            run.approve(run.snapshot()["pending"]["id"], {"task": shown})
+            self.settle(run)
+        self.assertEqual(self.host.started[0]["prompt"], task.strip())
+
+    def test_a_task_too_long_to_hand_over_is_refused_before_the_card(self):
+        task = "x" * (orchestrator_run.MAX_TASK + 1)
+        model = Model(turn("", [("start_agent", {"project": "/tmp/project", "task": task})]),
+                      turn("", [("finish", {"summary": "Done."})]))
+        run = self.run_with(model)
+        self.assertEqual(self.host.started, [])
+        self.assertIsNone(run.state["pending"])
+        refused = json.loads(next(m["content"] for m in run.state["messages"] if m.get("role") == "tool"))
+        self.assertFalse(refused["ok"])
+        self.assertIn("keep it under", refused["error"])
+
     def test_editing_before_approving_changes_what_runs(self):
         model = self.script()
         run = self.run_with(model)
@@ -496,6 +519,18 @@ class ConversationTests(OrchestratorCase):
             self.settle(run)
         self.assertEqual(run.state["status"], "done")
         self.assertIn({"role": "user", "content": "the second one"}, run.state["messages"])
+
+    def test_a_long_reply_reaches_the_chat_whole(self):
+        long = "word " * 6000                              # 30,000 characters
+        run = self.run_with(Model(turn(long)))
+        said = [e["text"] for e in orchestrator.journal(run.definition.id) if e["type"] == "message"]
+        self.assertEqual(said, [long.strip()])
+
+    def test_a_message_too_long_to_keep_is_refused_not_cut(self):
+        run = self.run_with(Model(turn("Which repo?")))
+        with self.assertRaises(ValueError):
+            run.submit("x" * (orchestrator_run.MAX_GOAL_TEXT + 1))
+        self.assertEqual(run.snapshot()["queued"], 0)
 
     def test_a_message_while_an_approval_waits_is_queued_not_acted_on(self):
         model = Model(turn("", [("start_agent", {"project": "/tmp/project", "task": "t"})]),

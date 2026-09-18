@@ -2042,6 +2042,8 @@ class Handler(BaseHTTPRequestHandler):
         elif route == "/api/chat/cancel":
             self.chat.cancel(str(body.get("sessionId") or ""))
             self._send_json(200, {"ok": True})
+        elif route == "/api/chat/queue":
+            self._chat_queue(body)
         elif route == "/api/teams":
             self._teams_save(body)
         elif route == "/api/providers/openrouter":
@@ -2408,9 +2410,37 @@ class Handler(BaseHTTPRequestHandler):
         # Optional per-turn model override (e.g. "sonnet"/"opus"/"haiku"); empty
         # keeps the CLI's configured default. cwd still comes from the session.
         model = str(body.get("model") or "")
-        self.chat.send(session.session_id, session.cwd, message, posture, model,
-                       attachments, engine=session.engine)
-        self._send_json(200, {"ok": True})
+        sent = self.chat.send(session.session_id, session.cwd, message, posture, model,
+                              attachments, engine=session.engine)
+        self._send_json(200, {"ok": True, **sent})
+
+    def _chat_queue(self, body: dict) -> None:
+        """Edit, remove, move or restore one message waiting in a session's queue.
+
+        The queue lives here, not in the browser, so an edit changes the message
+        that is actually sent. A message that already started (or that Stop
+        cleared) is no longer waiting: that is a 409. Every reply carries the
+        current queue, so the caller can redraw from it either way.
+        """
+        session = self._session_by_id(str(body.get("sessionId") or ""))
+        if session is None:
+            self._send_json(404, {"error": "Unknown session."})
+            return
+        try:
+            found = self.chat.queue_action(session.session_id, str(body.get("action") or ""),
+                                           str(body.get("id") or ""),
+                                           message=body.get("message"), index=body.get("index"))
+        except ValueError as error:
+            self._send_json(400, {"error": str(error), **self.chat.state(session.session_id)})
+            return
+        state = self.chat.state(session.session_id)
+        if not found:
+            error = ("That message can't come back — Stop cleared the queue."
+                     if body.get("action") == "restore"
+                     else "That message already started, or Stop cleared it.")
+            self._send_json(409, {"error": error, "gone": True, **state})
+            return
+        self._send_json(200, {"ok": True, **state})
 
     def _valid_attachments(self, raw: object, session) -> list[str]:
         """Keep only paths that are real files inside this session's uploads dir.

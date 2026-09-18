@@ -496,8 +496,38 @@ details.tools .tfail{color:var(--failed)}
 .cstatus .cdot{width:6px;height:6px;border-radius:50%;background:var(--text-2);
   flex:0 0 auto;animation:breathe 1.8s ease-in-out infinite}
 .cstatus.err{color:var(--failed)}
-/* outstanding work you started: the one place the accent earns its keep here */
-.cqueue{color:var(--accent);font-weight:600}
+/* outstanding work you started: the one place the accent earns its keep here.
+   The count is a button -- it opens the queue, where each waiting message can
+   be read, edited, moved up or removed until it starts. */
+.cstext{display:inline-flex;align-items:center;gap:7px;min-width:0}
+.csep[hidden],.cqueue[hidden]{display:none}
+.cqueue{color:var(--accent);font-weight:600;padding:1px 5px;margin:-1px -5px;border-radius:4px}
+.cqueue:hover{background:var(--card-hover)}
+.cqueue .chev{font-size:10.5px;margin-left:4px}
+.cqpanel{margin:0 0 8px;border:1px solid var(--line-2);border-radius:8px;background:var(--card)}
+.cqpanel[hidden]{display:none}
+.cqhead{display:flex;align-items:center;gap:8px;padding:4px 4px 4px 10px;
+  border-bottom:1px solid var(--line);font-size:11px;color:var(--text-3)}
+.cqhead span{flex:1;min-width:0}
+.cqhead .x{font-size:14px;padding:0 6px}
+.cqlist{list-style:none;margin:0;padding:0;max-height:min(40vh,280px);overflow:auto}
+.cqitem{display:flex;flex-wrap:wrap;align-items:flex-start;gap:6px 8px;padding:7px 8px 7px 10px}
+.cqitem+.cqitem{border-top:1px solid var(--line)}
+.cqn{flex:0 0 auto;min-width:10px;font-size:10.5px;line-height:19px;color:var(--text-3);
+  font-variant-numeric:tabular-nums}
+.cqmain{flex:1 1 200px;min-width:0}
+.cqtext{font-size:12.5px;line-height:1.5;color:var(--text);white-space:pre-wrap;overflow-wrap:anywhere;
+  display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:4;overflow:hidden}
+.cqtext .none{color:var(--text-3);font-style:italic}
+.cqmain .fpills{margin-top:4px}
+.cqacts{display:flex;align-items:center;gap:4px;margin-left:auto}
+.cqacts .x{font-size:13px;padding:1px 7px}
+.cqedit{display:block;width:100%;box-sizing:border-box;min-height:64px;max-height:220px;
+  padding:7px 9px;font:13px/1.5 var(--sans);border-color:var(--line-2);border-radius:6px;
+  background:var(--bg);color:var(--text);resize:vertical;outline:none}
+.cqedit:focus{border-color:var(--accent)}
+.cqbar{display:flex;align-items:center;gap:8px;margin-top:6px}
+.cqbar .chint{margin-left:0;margin-right:auto}
 .compose{display:flex;gap:7px;align-items:flex-end}
 #cInput{flex:1;min-width:0;resize:none;height:38px;max-height:150px;padding:8px 10px;
   font:13.5px/1.5 var(--sans);border-color:var(--line-2)}
@@ -1691,7 +1721,23 @@ Every command takes --as NAME and --json. Without --as, the name is $AGENTGRID_A
   <!-- The composer. Hidden off the Chat tab, and for sessions the Claude CLI
        can't resume (Codex). -->
   <div class="pfoot" id="pFoot" hidden>
-    <div class="cstatus" id="cStatus"></div>
+    <div class="cstatus" id="cStatus">
+      <span class="cstext" id="cStatusText"></span>
+      <span class="csep" id="cStatusSep" aria-hidden="true" hidden>·</span>
+      <button type="button" class="cqueue" id="cQueueBtn" aria-expanded="false"
+        aria-controls="cQueue" hidden></button>
+    </div>
+    <!-- Messages waiting behind the running turn, opened from the queued count.
+         Each can be edited, moved up or removed until it starts; the queue
+         itself lives on the server, so an edit changes what is actually sent. -->
+    <div class="cqpanel" id="cQueue" role="region" aria-label="Queued messages" hidden>
+      <div class="cqhead">
+        <span>Queued · sends in order after this turn</span>
+        <button type="button" class="x" id="cQueueClose" title="Hide queued messages"
+          aria-label="Hide queued messages">&times;</button>
+      </div>
+      <ol class="cqlist" id="cQueueList"></ol>
+    </div>
     <!-- Prompt/skill references waiting to be sent: a /slash drops a compact
          chip here instead of pasting the whole body into the box. Edit tweaks
          it for this message only; the saved prompt is untouched. -->
@@ -2671,10 +2717,20 @@ function deleteSession(id) {
    conversation is never lost. This module opens one EventSource per open panel
    and streams a live turn straight into #tScroll using the same .msg / .trace
    shapes a saved turn uses; when the turn lands on disk the poll reconciles.
-   Sends go to /api/chat with posture + model, and enqueue while a turn runs
-   (queued count from /api/chat/state). Stop hits /api/chat/cancel. §6.3 only. */
+   Sends go to /api/chat with posture + model, and enqueue while a turn runs;
+   the queue itself (from /api/chat/state and `queue` events) is shown and
+   edited in #cQueue. Stop hits /api/chat/cancel. §6.3 only. */
 
-let chatSrc = null, chatRunning = false, chatQueued = 0;
+let chatSrc = null, chatRunning = false;
+// Every node the live stream appends to #tScroll is numbered (data-live), so a
+// disk refresh that was already in flight can tell which ones are newer than
+// the copy it fetched.
+let chatLiveSeq = 0;
+// Messages waiting behind the running turn, as the server holds them:
+// {id, message, files, posture, model}, oldest first. The server's copy is
+// the truth -- it is what will be sent -- so every edit goes through it.
+let chatQueue = [], chatQueueOpen = false, cqSig = "";
+let cqEdit = null;                 // {id, draft, orig} while a queued message is being edited
 let panelTab = "chat", chatDisabled = false, chatEngine = "claude";
 let chatPosture = localStorage.getItem("agentgrid.chatPosture") || "auto";
 let chatModel = localStorage.getItem("agentgrid.chatModel") || "";   // "" = CLI default
@@ -2695,7 +2751,7 @@ let chatRefs = [], chatRefSeq = 0, cRefEditIdx = -1;
 // called from openSession once the panel is showing this id
 function chatOpen(id, engine) {
   chatClose();                     // drop any previous session's stream/state
-  chatDone = ""; chatRunning = false; chatQueued = 0; chatTools.clear();
+  chatDone = ""; chatRunning = false; chatTools.clear();
   chatClearAtt();                  // pending attachments don't cross sessions
   chatClearRefs();                 // nor staged prompt references
   chatEngine = engine === "codex" ? "codex" : "claude";
@@ -2739,7 +2795,8 @@ function setPanelTab(tab) {
 
 function chatClose() {
   if (chatSrc) { chatSrc.close(); chatSrc = null; }
-  chatRunning = false; chatQueued = 0; chatDone = "";
+  chatRunning = false; chatDone = "";
+  chatQueueReset();
 }
 
 function chatConnect(id) {
@@ -2764,7 +2821,9 @@ function chatAppend(html) {
   const near = host.scrollHeight - host.scrollTop - host.clientHeight < 130;
   host.insertAdjacentHTML("beforeend", html);
   if (near) host.scrollTop = host.scrollHeight;
-  return host.lastElementChild;
+  const el = host.lastElementChild;
+  if (el) el.dataset.live = String(++chatLiveSeq);
+  return el;
 }
 
 function chatOnEvent(ev) {
@@ -2803,12 +2862,18 @@ function chatOnEvent(ev) {
       }
       break;
     }
+    case "queue":
+      // Any tab's edit, a Stop, or a waiting message starting. One that waited
+      // was never echoed when sent, so it is shown now, as its turn begins.
+      if (ev.started) chatEchoStarted(ev.started);
+      chatSetQueue(ev.queue);
+      break;
     case "turn_done":
       chatRunning = false;
       chatDone = ev.cancelled ? "Stopped."
         : ev.ok ? chatDoneLine(ev.stats)
         : "Turn ended with an error.";
-      chatSyncState();     // the queued count may have just drained into a new turn
+      chatSyncState();     // the queue may have just drained into a new turn
       chatSetStatus();
       // the turn is on disk now; let the resumed poll reconcile the live nodes
       // with the canonical transcript (identical content, so no visible jump)
@@ -2836,18 +2901,25 @@ function chatDoneLine(stats) {
 function chatSetStatus() {
   const el = $("cStatus"); if (!el) return;
   el.classList.toggle("err", /error/i.test(chatDone));
-  let html = "";
-  if (chatRunning) html = `<span class="cdot"></span>Working…`;
-  else if (chatDone) html = esc(chatDone);
-  if (chatQueued > 0)
-    html += `${html ? " · " : ""}<span class="cqueue">${chatQueued} queued</span>`;
-  el.innerHTML = html;
+  const text = $("cStatusText");
+  text.innerHTML = chatRunning ? `<span class="cdot"></span>Working…` : chatDone ? esc(chatDone) : "";
+  // The queued count is a lasting button, updated in place: rebuilding it on
+  // every event would drop keyboard focus from it mid-turn.
+  const n = chatQueue.length, qb = $("cQueueBtn");
+  qb.hidden = !n;
+  $("cStatusSep").hidden = !n || !text.textContent;
+  if (n) {
+    qb.innerHTML = `${n} queued<span class="chev" aria-hidden="true">${chatQueueOpen ? "▴" : "▾"}</span>`;
+    qb.setAttribute("aria-expanded", String(chatQueueOpen));
+    qb.title = chatQueueOpen ? "Hide queued messages"
+      : "Show queued messages — edit or remove them before they send";
+  }
   // Send always sends (it enqueues while running); Stop shows only mid-turn
   $("cStop").hidden = !chatRunning;
 }
 
 // SSE (turn_started/turn_done) is the source of truth for "running"; this only
-// refreshes the queued count. adoptRunning is set once — on open — so a turn we
+// refreshes the queue. adoptRunning is set once — on open — so a turn we
 // subscribed to late (its turn_started already gone) still shows Working. After
 // turn_done the backend flag is briefly stale-true while the subprocess exits,
 // so adopting it there would relight "Working…" forever.
@@ -2857,10 +2929,227 @@ async function chatSyncState(adoptRunning = false) {
   try { st = await api(`/api/chat/state?session=${encodeURIComponent(id)}`); }
   catch (_) { return; }
   if (id !== openId || !st) return;
-  chatQueued = st.queued || 0;
+  chatSetQueue(st.queue);
   if (adoptRunning && typeof st.running === "boolean" && !chatRunning)
     chatRunning = st.running;
   chatSetStatus();
+}
+
+// --- the queue ----------------------------------------------------------------
+// A message sent mid-turn waits on the server until the turn ends. The queued
+// count opens #cQueue, where each waiting message can be read, edited,
+// moved up or removed until it starts. Edits go to /api/chat/queue, so they
+// change the message that is actually sent; the reply and the `queue` event
+// both carry the server's queue, and the screen is redrawn from that.
+
+function chatQueueReset() {
+  chatQueue = []; chatQueueOpen = false; cqEdit = null; cqSig = "";
+  const panel = $("cQueue"); if (panel) panel.hidden = true;
+  const count = $("cQueueBtn"); if (count) count.hidden = true;
+}
+
+function chatSetQueue(list) {
+  chatQueue = Array.isArray(list) ? list : [];
+  // The message being edited started (or Stop cleared it) under the editor.
+  // The edit can't apply any more, so keep the words rather than drop them.
+  if (cqEdit && !chatQueue.some(q => q.id === cqEdit.id)) {
+    const {draft, orig} = cqEdit;
+    cqEdit = null;
+    cqRescue(draft, orig);
+  }
+  chatRenderQueue();
+}
+
+function chatToggleQueue(open = !chatQueueOpen) {
+  chatQueueOpen = !!open;
+  chatRenderQueue();
+}
+
+// Uploads are saved as <date>-<time>-<tag>-<name>.<ext>; show the name you picked.
+function uploadName(file) {
+  return String(file || "").replace(/^\d{8}-\d{6}-[0-9a-f]{6}-/, "");
+}
+
+function cqRowHtml(q, i) {
+  const n = i + 1, id = esc(q.id);
+  const files = filePills((q.files || []).map(uploadName));
+  if (cqEdit && cqEdit.id === q.id)
+    return `<li class="cqitem editing" data-qid="${id}"><span class="cqn">${n}</span>` +
+      `<div class="cqmain"><textarea class="cqedit" data-qact="draft" rows="4" spellcheck="true" ` +
+      `aria-label="Edit queued message ${n}"></textarea>${files}` +
+      `<div class="cqbar"><span class="chint"><span class="kc">⌘⏎</span> save &nbsp;·&nbsp; <span class="kc">esc</span> cancel</span>` +
+      `<button type="button" class="btn sm" data-qact="cancel">Cancel</button>` +
+      `<button type="button" class="btn sm key" data-qact="save">Save</button></div></div></li>`;
+  return `<li class="cqitem" data-qid="${id}"><span class="cqn">${n}</span>` +
+    `<div class="cqmain"><div class="cqtext">${q.message ? esc(q.message) : `<span class="none">Files only</span>`}</div>${files}</div>` +
+    `<div class="cqacts">` +
+    (i ? `<button type="button" class="x" data-qact="up" title="Move up — send it sooner" aria-label="Move queued message ${n} up">↑</button>` : "") +
+    `<button type="button" class="btn sm" data-qact="edit" aria-label="Edit queued message ${n}">Edit</button>` +
+    `<button type="button" class="btn sm danger" data-qact="remove" aria-label="Remove queued message ${n}">Remove</button>` +
+    `</div></li>`;
+}
+
+function chatRenderQueue() {
+  if (!chatQueue.length) chatQueueOpen = false;   // nothing waiting: nothing to show
+  const panel = $("cQueue"), list = $("cQueueList");
+  if (!panel || !list) return;
+  // Remember where focus is, so a redraw (this tab's edit, another tab's, or
+  // the queue draining) puts it back instead of dropping it on <body>.
+  const act = document.activeElement;
+  const row = act && list.contains(act) ? act.closest("[data-qid]") : null;
+  const key = row && {id: row.dataset.qid, act: act.dataset.qact || "edit",
+    index: chatQueueIndexOfRow(list, row),
+    sel: act.tagName === "TEXTAREA" ? [act.selectionStart, act.selectionEnd] : null};
+  panel.hidden = !chatQueueOpen;
+  chatSetStatus();
+  if (!chatQueueOpen) {
+    cqSig = "";
+    if (act && panel.contains(act)) ($("cQueueBtn").hidden ? $("cInput") : $("cQueueBtn")).focus();
+    return;
+  }
+  const sig = JSON.stringify([chatQueue, cqEdit && cqEdit.id]);
+  if (sig === cqSig) return;     // unchanged: leave the DOM, and so hover and focus, alone
+  cqSig = sig;
+  list.innerHTML = chatQueue.map(cqRowHtml).join("");
+  const editor = list.querySelector("textarea");
+  if (editor && cqEdit) editor.value = cqEdit.draft;
+  if (key) cqRefocus(list, key);
+}
+
+function chatQueueIndexOfRow(list, row) {
+  return [...list.querySelectorAll("[data-qid]")].indexOf(row);
+}
+
+// Same row and control if it survived; else whatever now sits where it was.
+function cqRefocus(list, key) {
+  const rows = [...list.querySelectorAll("[data-qid]")];
+  const row = rows.find(r => r.dataset.qid === key.id) ||
+    rows[Math.min(key.index, rows.length - 1)];
+  const el = row && (row.querySelector(`[data-qact="${key.act}"]`) ||
+    row.querySelector('[data-qact="edit"]'));
+  if (!el) return;
+  el.focus();
+  if (key.sel && el.tagName === "TEXTAREA" && row.dataset.qid === key.id)
+    el.setSelectionRange(key.sel[0], key.sel[1]);
+}
+
+function cqStartEdit(qid) {
+  const q = chatQueue.find(x => x.id === qid); if (!q) return;
+  cqEdit = {id: qid, draft: q.message, orig: q.message};
+  chatQueueOpen = true;
+  chatRenderQueue();
+  const editor = $("cQueueList").querySelector("textarea");
+  if (editor) { editor.focus(); editor.setSelectionRange(editor.value.length, editor.value.length); }
+}
+
+function cqCancelEdit() {
+  const qid = cqEdit && cqEdit.id;
+  cqEdit = null;
+  chatRenderQueue();
+  const row = qid && [...$("cQueueList").querySelectorAll("[data-qid]")].find(r => r.dataset.qid === qid);
+  const btn = row && row.querySelector('[data-qact="edit"]');
+  if (btn) btn.focus();
+}
+
+async function cqSave() {
+  if (!cqEdit) return;
+  const {id: qid, draft, orig} = cqEdit;
+  const q = chatQueue.find(x => x.id === qid);
+  if (!q) { cqEdit = null; chatRenderQueue(); return; }
+  const text = draft.trim();
+  if (!text && !(q.files || []).length) {
+    toast("A queued message can't be empty — remove it instead.");
+    return;
+  }
+  cqEdit = null;
+  q.message = text;                  // shown at once; the server's reply confirms it
+  chatRenderQueue();
+  if (text === orig) return;         // unchanged: nothing to send
+  const sid = openId;
+  const r = await post("/api/chat/queue", {sessionId: sid, action: "edit", id: qid, message: text});
+  cqReply(sid, r, () => cqRescue(draft, orig));
+}
+
+async function cqRemove(qid) {
+  const i = chatQueue.findIndex(x => x.id === qid); if (i < 0) return;
+  const sid = openId;
+  if (cqEdit && cqEdit.id === qid) cqEdit = null;
+  chatQueue.splice(i, 1);            // gone at once; the server's reply confirms it
+  chatRenderQueue();
+  const r = await post("/api/chat/queue", {sessionId: sid, action: "remove", id: qid});
+  if (sid === openId && r && r.ok)
+    toastUndo("Removed the queued message", () => cqRestore(sid, qid));
+  cqReply(sid, r);
+}
+
+async function cqRestore(sid, qid) {
+  const r = await post("/api/chat/queue", {sessionId: sid, action: "restore", id: qid});
+  if (sid === openId && r && r.ok) chatQueueOpen = true;
+  cqReply(sid, r);
+}
+
+async function cqMoveUp(qid) {
+  const i = chatQueue.findIndex(x => x.id === qid); if (i < 1) return;
+  const sid = openId;
+  chatQueue.splice(i - 1, 0, chatQueue.splice(i, 1)[0]);
+  chatRenderQueue();
+  const r = await post("/api/chat/queue", {sessionId: sid, action: "move", id: qid, index: i - 1});
+  cqReply(sid, r);
+}
+
+// Every reply carries the server's queue: redraw from it, right or wrong.
+function cqReply(sid, r, onGone) {
+  if (sid !== openId || !r) return;
+  if (r.gone && onGone) onGone();
+  else if (r.error) toast(r.error);
+  if (Array.isArray(r.queue)) chatSetQueue(r.queue);
+}
+
+// An edit that lost the race with its message starting: hand the words back.
+function cqRescue(draft, orig) {
+  const text = String(draft || "").trim();
+  if (!text || text === orig) return;      // nothing of yours to lose
+  const ta = $("cInput");
+  if (!ta.value.trim()) {
+    ta.value = text; chatGrow(ta);
+    toast("That message left the queue before your edit was saved — your edit is in the message box.");
+  } else toast("That message left the queue before your edit was saved, so the edit wasn't applied.");
+}
+
+// A message that waited is shown when its turn starts, the way a send is.
+function chatEchoStarted(q) {
+  chatRunning = true;                // hold the disk refresh until this turn lands
+  chatSetStatus();
+  chatAppend(`<div class="msg user"><div class="who">YOU</div><div class="body">` +
+    `${q.message ? md(q.message) : ""}${filePills((q.files || []).map(uploadName))}</div></div>`);
+}
+
+function cqClick(e) {
+  const b = e.target.closest("[data-qact]"); if (!b) return;
+  const row = b.closest("[data-qid]"), qid = row && row.dataset.qid;
+  const act = b.dataset.qact;
+  if (act === "edit") cqStartEdit(qid);
+  else if (act === "save") cqSave();
+  else if (act === "cancel") cqCancelEdit();
+  else if (act === "remove") cqRemove(qid);
+  else if (act === "up") cqMoveUp(qid);
+}
+
+// the editor's text lives in cqEdit too, so a redraw or a lost race keeps it
+function cqInput(e) {
+  if (cqEdit && e.target.dataset.qact === "draft") cqEdit.draft = e.target.value;
+}
+
+function cqKeydown(e) {
+  const inEditor = !!cqEdit && e.target.dataset && e.target.dataset.qact === "draft";
+  if (e.key === "Escape") {
+    // stop here: the document's Escape would close the whole session panel
+    e.preventDefault(); e.stopPropagation();
+    if (inEditor) cqCancelEdit();
+    else chatToggleQueue(false);
+  } else if (inEditor && e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+    e.preventDefault(); cqSave();
+  }
 }
 
 async function chatSend() {
@@ -2898,6 +3187,9 @@ async function chatSend() {
   const files = ready.filter(a => !a.url);
   const refEcho = chatRefs.map(r =>
     `<span class="refpill">/${esc(r.name)}${r.body !== r.orig ? " ✎" : ""}</span>`).join(" ");
+  // Mid-turn, a send waits in the queue -- shown there, still editable -- and
+  // is echoed when it starts, not in the middle of the turn it is behind.
+  const waits = chatRunning;
   ta.value = ""; chatGrow(ta); hideAtFiles();
   // detach the chips but keep their object URLs alive for the echo below; a
   // send never leaves a stale attachment or reference behind for the next
@@ -2910,8 +3202,9 @@ async function chatSend() {
   // optimistic echo: the CLI never streams the user's own message back
   const imgs = urls.map(u => `<img class="uimg" src="${esc(u)}" alt="attached image">`).join("") +
     filePills(files.map(a => a.name));
-  chatAppend(`<div class="msg user"><div class="who">YOU</div>` +
-    `<div class="body">${refEcho ? `<div class="refpills">${refEcho}</div>` : ""}${msg ? md(msg) : ""}${imgs}</div></div>`);
+  const echoHtml = `<div class="msg user"><div class="who">YOU</div>` +
+    `<div class="body">${refEcho ? `<div class="refpills">${refEcho}</div>` : ""}${msg ? md(msg) : ""}${imgs}</div></div>`;
+  let echo = waits ? null : chatAppend(echoHtml);
   // free the preview URLs once painted; the disk reconcile replaces the echo
   if (urls.length) setTimeout(() => urls.forEach(u => URL.revokeObjectURL(u)), 60000);
   const r = await post("/api/chat",
@@ -2920,9 +3213,18 @@ async function chatSend() {
   if (id !== openId) return;
   if (r && r.error) {
     chatRunning = false;
+    if (!echo) chatAppend(echoHtml);   // show what failed to send, beside why
     chatAppend(`<div class="cerr">⚠ ${esc(r.error)}</div>`);
     chatSetStatus();
-  } else chatSyncState();     // reflect running / queued from the backend
+  } else {
+    // The server decides: another tab may have started a turn first, or the
+    // running one may have ended while this was in flight.
+    if (r && r.queued) {
+      if (echo) echo.remove();         // it will be echoed when it starts
+      chatQueueOpen = true;            // show where it went
+    } else if (!echo) echo = chatAppend(echoHtml);
+    chatSyncState();     // reflect running / queued from the backend
+  }
   $("cInput").focus();
 }
 
@@ -3665,6 +3967,9 @@ function renderRoster(s, subs) {
 async function refreshTranscript() {
   if (!openId) return;
   const id = openId, agent = openAgent;
+  // A turn can start while this request is out -- a send, or a queued message
+  // starting -- and its live nodes are newer than the disk copy coming back.
+  const liveFrom = chatLiveSeq;
   let data;
   try {
     data = await api(`/api/transcript?id=${encodeURIComponent(id)}` +
@@ -3680,8 +3985,13 @@ async function refreshTranscript() {
   const nearBottom = host.scrollHeight - host.scrollTop - host.clientHeight < 60;
   $("tTail").textContent = blocks.length >= 600
     ? "Showing the tail — last 600 turns" : "";
+  // Keep those after the history instead of letting the older copy wipe them.
+  // The same nodes move, so a running tool call still finds its trace; once
+  // the turn is on disk, the next poll replaces them like any other live node.
+  const live = [...host.children].filter(n => Number(n.dataset.live) > liveFrom);
   host.innerHTML = blocksHtml(blocks) ||
-    `<div class="mvnote">Nothing here yet.</div>`;
+    (live.length ? "" : `<div class="mvnote">Nothing here yet.</div>`);
+  live.forEach(n => host.appendChild(n));
   if (transFirst || nearBottom) host.scrollTop = host.scrollHeight;
   transFirst = false;
 }
@@ -6250,6 +6560,12 @@ function bindEvents() {
     const rm = e.target.closest("[data-ref-rm]");
     if (rm) chatRemoveRef(Number(rm.dataset.refRm));
   });
+  // the queued count opens the queue; each row edits, moves up or removes one message
+  $("cQueueBtn").addEventListener("click", () => chatToggleQueue());
+  $("cQueueClose").addEventListener("click", () => chatToggleQueue(false));
+  $("cQueue").addEventListener("click", cqClick);
+  $("cQueue").addEventListener("keydown", cqKeydown);
+  $("cQueueList").addEventListener("input", cqInput);
   $("cRefSave").addEventListener("click", chatSaveRef);
   $("cRefCancel").addEventListener("click", chatCancelRef);
   $("cRefText").addEventListener("keydown", e => {

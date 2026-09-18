@@ -99,6 +99,7 @@ class CodexChatTests(unittest.TestCase):
         handler._send_json = mock.Mock()
         handler.chat = mock.Mock()
         handler.chat.state.return_value = {'running': False}
+        handler.chat.send.return_value = {'id': 'q1', 'queued': False}
         handler._chat_send({'sessionId': 'id', 'message': 'hi', 'engine': 'claude', 'model': 'exact'})
         self.assertEqual(handler.chat.send.call_args.kwargs, {'engine': 'codex'})
         session.status = 'working'
@@ -147,6 +148,7 @@ class CodexChatTests(unittest.TestCase):
         handler._send_json = mock.Mock()
         handler.chat = mock.Mock()
         handler.chat.state.return_value = {'running': False}
+        handler.chat.send.return_value = {'id': 'q1', 'queued': False}
         handler._chat_send({'sessionId': 'id', 'message': 'hi'})
         status, body = handler._send_json.call_args.args
         self.assertEqual(status, 409)
@@ -187,7 +189,8 @@ class CodexChatTests(unittest.TestCase):
         room = chat.ChatSession('id', '/repo', 'codex')
         room._proc = mock.Mock(pid=42)
         room._proc.poll.return_value = None
-        room._pending.put(('queued', 'auto', '', []))
+        room._pending.append({'id': 'q1', 'message': 'queued', 'posture': 'auto', 'model': '',
+                              'attachments': [], 'generation': 0, 'waited': True})
         channel = room.subscribe()
         with mock.patch.object(chat.os, 'getpgid', return_value=42), mock.patch.object(chat.os, 'killpg') as kill:
             room.cancel()

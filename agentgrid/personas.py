@@ -54,7 +54,12 @@ MAX_LIST = 40
 MAX_MEMORY_TEXT = 500
 MEMORY_LIMIT = 100
 ENGINES = ("claude", "codex")
-AGENT_MODES = ("background", "interactive")
+# The session is a rule, not a hint. "interactive" and "background" are what
+# every agent the persona starts runs as, whatever the model asks for;
+# "either" lets the model choose and falls back to background when it does not
+# say. A setting that only suggested was read, reasonably, as a rule -- and
+# then broken by a model that asked for the other kind.
+AGENT_MODES = ("interactive", "background", "either")
 # What "the default is Opus 5, interactive" means as data. Used for the
 # starters and for personas converted from older orchestrators.
 PREFERRED_AGENT_MODEL = "claude-opus-5"
@@ -66,10 +71,14 @@ class AgentDefaults:
 
     engine: str = "claude"
     model: str = ""               # "" leaves it to the CLI's own default
-    mode: str = "background"
+    mode: str = "either"          # interactive | background | either
 
     def to_dict(self) -> dict:
         return {"engine": self.engine, "model": self.model, "mode": self.mode}
+
+    def locked_mode(self) -> str:
+        """The session every agent must run as, or "" when the model chooses."""
+        return self.mode if self.mode in ("interactive", "background") else ""
 
 
 @dataclass
@@ -130,7 +139,7 @@ def _model_id(value: object, label: str) -> str:
 def load_defaults(raw: object) -> AgentDefaults:
     raw = raw if isinstance(raw, dict) else {}
     engine = raw.get("engine") if raw.get("engine") in ENGINES else "claude"
-    mode = raw.get("mode") if raw.get("mode") in AGENT_MODES else "background"
+    mode = raw.get("mode") if raw.get("mode") in AGENT_MODES else "either"
     return AgentDefaults(engine=engine, model=_model_id(raw.get("model"), "Default agent model"),
                          mode=mode)
 

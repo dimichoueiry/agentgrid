@@ -683,6 +683,9 @@ class Run:
                              f"Use wait_for_agents and read_agent_output before starting another.")
         interactive = str(args.get("mode") or "background") == "interactive"
         if interactive and not self.host.capabilities().get("interactive"):
+            if persona.agent_defaults.locked_mode() == "interactive":
+                raise ValueError(f"{persona.name} only starts interactive agents, and this host "
+                                 f"cannot open them. Ask the user to change the persona's session.")
             raise ValueError("This host cannot open interactive sessions. Start it in the "
                              "background instead.")
         task = str(args.get("task") or "").strip()
@@ -919,7 +922,9 @@ class Run:
         else:
             args["engine"] = args.get("engine") or defaults.engine
             args["model"] = args.get("model") or defaults.model
-        args["mode"] = args.get("mode") or defaults.mode
+        # A locked session overrides what the model asked for: it is the
+        # user's rule, the same as the model fence.
+        args["mode"] = defaults.locked_mode() or args.get("mode") or "background"
         return args
 
     def _shape_start(self, call: dict) -> dict:

@@ -19,7 +19,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from agentgrid import (areas, credentials, openrouter, orchestrator, orchestrator_brief,
-                       orchestrator_run, tickets, web)
+                       orchestrator_run, personas, tickets, web)
 
 
 # --- a fake machine ----------------------------------------------------------
@@ -61,6 +61,25 @@ class FakeHost(orchestrator_run.Host):
         self.sent.append((session_id, message))
         return "Queued."
 
+    saved: list = []
+    library: list = []
+    installed: list = []
+
+    def saved_agents(self):
+        return list(self.saved)
+
+    def prompts(self):
+        return list(self.library)
+
+    def skills(self):
+        return [{"name": s["name"], "description": s["description"]} for s in self.installed]
+
+    def read_skill(self, name):
+        skill = next((s for s in self.installed if s["name"] == name), None)
+        if skill is None:
+            raise ValueError("no such skill")
+        return skill["body"]
+
 
 # --- a scripted model --------------------------------------------------------
 
@@ -92,8 +111,8 @@ class Model:
         return self.turns[index]
 
 
-DEFINITION = {"name": "Shipper", "model": "openai/gpt-test", "instructions": "Ship things.",
-              "cwd": "/tmp/project"}
+# A posting of the test persona. The persona is made per test, in setUp.
+DEFINITION = {"name": "Shipper", "cwd": "/tmp/project"}
 
 
 class OrchestratorCase(unittest.TestCase):
@@ -107,7 +126,20 @@ class OrchestratorCase(unittest.TestCase):
         self._patch(areas, "PATH", self.home / "areas.json")
         self._patch(areas, "_PENDING", [])
         self._patch(tickets, "TICKETS_DIR", self.home / "tickets")
+        self._patch(personas, "DIR", self.home / "personas")
         self.host = FakeHost()
+        self.host.saved, self.host.library, self.host.installed = [], [], []
+        self.persona = personas.save(personas.load(
+            {"name": "Tester", "model": "openai/gpt-test", "guidelines": "Ship things."}))
+
+    def body(self, **overrides) -> dict:
+        """A posting of the test persona."""
+        return {**DEFINITION, "personaId": self.persona.id, **overrides}
+
+    def context(self, posting, capabilities=None, scope_name="x"):
+        return orchestrator_brief.Context(posting=posting, persona=personas.get(self.persona.id),
+                                          capabilities=capabilities or self.host.caps,
+                                          scope_name=scope_name)
 
     def _patch(self, module, attribute, value):
         patcher = mock.patch.object(module, attribute, value)
@@ -116,7 +148,7 @@ class OrchestratorCase(unittest.TestCase):
 
     def make(self, **overrides) -> orchestrator.Orchestrator:
         """Save (or re-save) the test orchestrator, so a test may run twice."""
-        body = {**DEFINITION, **overrides}
+        body = self.body(**overrides)
         existing = next((o for o in orchestrator.list_all()
                          if o.name.casefold() == str(body["name"]).casefold()
                          and o.scope == str(body.get("scope") or "")), None)
@@ -146,24 +178,24 @@ class OrchestratorCase(unittest.TestCase):
 
 class DefinitionTests(OrchestratorCase):
     def test_a_valid_definition_loads_with_sane_defaults(self):
-        definition = orchestrator.load(DEFINITION)
+        definition = orchestrator.load(self.body())
         self.assertEqual(definition.mode, "ask")          # approval is the default
         self.assertEqual(definition.scope, "")            # global unless given an area
         self.assertEqual(definition.limits.max_concurrent, 3)
         self.assertTrue(definition.id)
 
-    def test_a_name_and_a_model_are_both_required(self):
-        for body in ({"model": "x/y"}, {"name": "A"}, {"name": "A", "model": "with space"},
-                     {"name": "x" * 61, "model": "x/y"}):
+    def test_a_name_and_a_persona_are_both_required(self):
+        for body in ({"personaId": "abc"}, {"name": "A"}, {"name": "A", "model": "with space"},
+                     {"name": "x" * 61, "personaId": "abc"}):
             with self.assertRaises(ValueError):
                 orchestrator.load(body)
 
     def test_limits_are_validated_not_trusted(self):
         with self.assertRaises(ValueError):
-            orchestrator.load({**DEFINITION, "limits": {"maxConcurrent": 99}})
+            orchestrator.load({**self.body(), "limits": {"maxConcurrent": 99}})
         with self.assertRaises(ValueError):
-            orchestrator.load({**DEFINITION, "limits": {"maxSpendUsd": "lots"}})
-        loaded = orchestrator.load({**DEFINITION, "limits": {"maxSpawns": 5, "maxSpendUsd": 1.5}})
+            orchestrator.load({**self.body(), "limits": {"maxSpendUsd": "lots"}})
+        loaded = orchestrator.load({**self.body(), "limits": {"maxSpawns": 5, "maxSpendUsd": 1.5}})
         self.assertEqual(loaded.limits.max_spawns, 5)
         self.assertEqual(loaded.limits.max_spend_usd, 1.5)
 
@@ -171,13 +203,13 @@ class DefinitionTests(OrchestratorCase):
         self.make()
         with self.assertRaises(ValueError):
             # A different orchestrator, same scope, a name that only differs in case.
-            orchestrator.save(orchestrator.load({**DEFINITION, "name": "shipper"}))
+            orchestrator.save(orchestrator.load({**self.body(), "name": "shipper"}))
         self.make(scope="engineering")                     # a different area may reuse it
         self.assertEqual(len(orchestrator.list_all()), 2)
 
     def test_saving_an_edit_keeps_the_same_id(self):
         created = self.make()
-        edited = orchestrator.save(orchestrator.load({**DEFINITION, "id": created.id, "mode": "auto"}))
+        edited = orchestrator.save(orchestrator.load({**self.body(), "id": created.id, "mode": "auto"}))
         self.assertEqual(edited.id, created.id)
         self.assertEqual(orchestrator.get(created.id).mode, "auto")
         self.assertEqual(len(orchestrator.list_all()), 1)
@@ -211,43 +243,42 @@ class StoreTests(OrchestratorCase):
 class MenuTests(OrchestratorCase):
     def names(self, definition, capabilities):
         return [spec["function"]["name"]
-                for spec in orchestrator_brief.tool_specs(definition, capabilities)]
+                for spec in orchestrator_brief.tool_specs(self.context(definition, capabilities))]
 
     def test_a_host_without_a_terminal_is_not_offered_interactive(self):
-        definition = orchestrator.load(DEFINITION)
-        specs = orchestrator_brief.tool_specs(definition, {"interactive": False, "engines": ["claude"]})
+        definition = orchestrator.load(self.body())
+        specs = orchestrator_brief.tool_specs(self.context(definition, {"interactive": False, "engines": ["claude"]}))
         start = next(s for s in specs if s["function"]["name"] == "start_agent")
         self.assertEqual(start["function"]["parameters"]["properties"]["mode"]["enum"], ["background"])
-        with_terminal = orchestrator_brief.tool_specs(definition, {"interactive": True, "engines": ["claude"]})
+        with_terminal = orchestrator_brief.tool_specs(self.context(definition, {"interactive": True, "engines": ["claude"]}))
         start = next(s for s in with_terminal if s["function"]["name"] == "start_agent")
         self.assertIn("interactive", start["function"]["parameters"]["properties"]["mode"]["enum"])
 
     def test_a_scoped_orchestrator_is_not_offered_a_choice_of_work_area(self):
-        definition = orchestrator.load({**DEFINITION, "scope": "engineering"})
-        specs = orchestrator_brief.tool_specs(definition, self.host.caps)
+        definition = orchestrator.load({**self.body(), "scope": "engineering"})
+        specs = orchestrator_brief.tool_specs(self.context(definition, self.host.caps))
         start = next(s for s in specs if s["function"]["name"] == "start_agent")
         self.assertNotIn("areaId", start["function"]["parameters"]["properties"])
-        glob = orchestrator_brief.tool_specs(orchestrator.load(DEFINITION), self.host.caps)
+        glob = orchestrator_brief.tool_specs(self.context(orchestrator.load(self.body()), self.host.caps))
         start = next(s for s in glob if s["function"]["name"] == "start_agent")
         self.assertIn("areaId", start["function"]["parameters"]["properties"])
 
     def test_only_a_global_orchestrator_can_create_work_areas(self):
-        self.assertIn("create_work_area", self.names(orchestrator.load(DEFINITION), self.host.caps))
-        scoped = orchestrator.load({**DEFINITION, "scope": "engineering"})
+        self.assertIn("create_work_area", self.names(orchestrator.load(self.body()), self.host.caps))
+        scoped = orchestrator.load({**self.body(), "scope": "engineering"})
         self.assertNotIn("create_work_area", self.names(scoped, self.host.caps))
 
     def test_every_tool_the_menu_offers_has_a_handler(self):
-        run = orchestrator_run.Run(orchestrator.load(DEFINITION), self.host)
+        run = orchestrator_run.Run(orchestrator.load(self.body()), self.host)
         for name in self.names(run.definition, self.host.caps):
             self.assertTrue(hasattr(run, "_tool_" + name), name)
 
     def test_the_prompt_states_the_mode_the_limits_and_the_scope(self):
-        prompt = orchestrator_brief.system_prompt(orchestrator.load(DEFINITION), self.host.caps, "every area")
+        prompt = orchestrator_brief.system_prompt(self.context(orchestrator.load(self.body()), self.host.caps, "every area"))
         self.assertIn("approval every time", prompt)
         self.assertIn("$5.00", prompt)
         self.assertIn("every area", prompt)
-        auto = orchestrator_brief.system_prompt(orchestrator.load({**DEFINITION, "mode": "auto"}),
-                                              self.host.caps, "every area")
+        auto = orchestrator_brief.system_prompt(self.context(orchestrator.load({**self.body(), "mode": "auto"}), self.host.caps, "every area"))
         self.assertIn("without asking", auto)
 
 
@@ -614,7 +645,7 @@ class WatchingTests(OrchestratorCase):
         self.assertIn({"role": "user", "content": "how is it going?"}, model.requests[2]["messages"])
 
     def test_the_brief_tells_it_not_to_poll_and_to_report_unasked(self):
-        prompt = orchestrator_brief.system_prompt(orchestrator.load(DEFINITION), self.host.caps, "x")
+        prompt = orchestrator_brief.system_prompt(self.context(orchestrator.load(self.body()), self.host.caps, "x"))
         self.assertIn("Never poll", prompt)
         self.assertIn("should never have to ask", prompt)
 
@@ -868,7 +899,7 @@ class RouteTests(OrchestratorCase):
 
     def test_save_list_and_delete(self):
         handler = self.handler()
-        handler._orchestrator_action("save", DEFINITION)
+        handler._orchestrator_action("save", self.body())
         code, payload = self.last()
         self.assertEqual(code, 200)
         identifier = payload["orchestrator"]["id"]
@@ -948,7 +979,7 @@ class RouteTests(OrchestratorCase):
                 mock.patch.object(openrouter, "tool_turn", model):
             handler._orchestrator_action("start", {"id": definition.id, "goal": "Ship"})
             self.settle(handler.runs.get(definition.id))
-        handler._orchestrator_action("save", {**DEFINITION, "id": definition.id, "mode": "auto"})
+        handler._orchestrator_action("save", {**self.body(), "id": definition.id, "mode": "auto"})
         self.assertEqual(handler.runs.get(definition.id).definition.mode, "auto")
 
 

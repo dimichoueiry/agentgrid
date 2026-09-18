@@ -50,8 +50,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from agentgrid import (areas, chat, credentials, discovery, models, notes, openrouter,
-                       orchestrator, orchestrator_run, sync, teams, terminal, tickets,
-                       transcript, voice, workflows)
+                       orchestrator, orchestrator_run, personas, skills, sync, teams, terminal,
+                       tickets, transcript, voice, workflows)
 
 STATIC = Path(__file__).resolve().parent / "static"
 POLL_SECONDS = 2.0
@@ -1377,6 +1377,21 @@ class ServerHost(orchestrator_run.Host):
                        chat.DEFAULT_POSTURE, engine=getattr(session, "engine", "claude"))
         return f"Queued for {session.display_title}."
 
+    # The libraries a persona draws on are the ones the New agent sheet and the
+    # composer already use -- read here, never copied into the persona.
+
+    def saved_agents(self) -> list[dict]:
+        return load_saved_agents()
+
+    def prompts(self) -> list[dict]:
+        return load_saved_prompts("*")
+
+    def skills(self) -> list[dict]:
+        return [{"name": s["name"], "description": s["description"]} for s in skills.list_skills()]
+
+    def read_skill(self, name: str) -> str:
+        return skills.read_skill(name)
+
 
 # --- @-mention file search ---------------------------------------------------
 #
@@ -1698,6 +1713,8 @@ class Handler(BaseHTTPRequestHandler):
             self._teams_stream(query)
         elif route == "/api/orchestrators":
             self._orchestrators()
+        elif route == "/api/personas":
+            self._personas()
         elif route == "/api/orchestrators/journal":
             self._orchestrator_journal(query)
         elif route == "/api/orchestrators/stream":
@@ -2066,6 +2083,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(200, {"ok": True})
         elif route.startswith("/api/orchestrators/"):
             self._orchestrator_action(route[len("/api/orchestrators/"):], body)
+        elif route.startswith("/api/personas/"):
+            self._persona_action(route[len("/api/personas/"):], body)
         else:
             self._send_json(404, {"error": "No such route."})
 
@@ -2237,7 +2256,19 @@ class Handler(BaseHTTPRequestHandler):
         """
         try:
             if action == "save":
-                definition = orchestrator.save(orchestrator.load(body))
+                posting = orchestrator.load(body)
+                personas.get(posting.persona_id)     # a posting needs a persona that exists
+                definition = orchestrator.save(posting)
+                self._send_json(200, {"ok": True, "orchestrator": self.runs.run(definition).snapshot()})
+                return
+            if action == "forget":
+                # Undo from the chat: a lesson on the persona, or a fact on this posting.
+                definition = orchestrator.get(str(body.get("id") or ""))
+                memory_id = str(body.get("memoryId") or "")
+                gone = (personas.forget(definition.persona_id, memory_id)
+                        if body.get("scope") == "persona" else orchestrator.forget(definition.id, memory_id))
+                if not gone:
+                    raise ValueError("That memory was already removed.")
                 self._send_json(200, {"ok": True, "orchestrator": self.runs.run(definition).snapshot()})
                 return
             if action == "delete":
@@ -2265,6 +2296,51 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(404, {"error": "No such route."})
                 return
             self._send_json(200, {"ok": True, "orchestrator": run.snapshot()})
+        except ValueError as error:
+            self._send_json(400, {"error": str(error)})
+
+    # -- persona routes ------------------------------------------------------
+
+    def _personas(self) -> None:
+        """The bank, which postings each persona has, and the libraries a
+        persona can draw on -- everything the editor needs in one read."""
+        postings = orchestrator.list_all()
+        bank = []
+        for persona in personas.list_all():
+            record = persona.to_dict()
+            record["postings"] = [{"id": o.id, "name": o.name, "scope": o.scope}
+                                  for o in postings if o.persona_id == persona.id]
+            bank.append(record)
+        catalog = {
+            "skills": [{"name": s["name"], "description": s["description"]} for s in skills.list_skills()],
+            "agents": [{"name": a["name"], "engine": a["engine"], "model": a["model"],
+                        "summary": next((line.strip()[:160] for line in a["systemPrompt"].splitlines()
+                                         if line.strip()), "")} for a in load_saved_agents()],
+            "prompts": [{"name": p["name"], "description": p["description"]}
+                        for p in load_saved_prompts("*")],
+        }
+        self._send_json(200, {"personas": bank, "catalog": catalog})
+
+    def _persona_action(self, action: str, body: dict) -> None:
+        try:
+            if action == "save":
+                persona = personas.save(personas.load(body))
+                self._send_json(200, {"ok": True, "persona": persona.to_dict()})
+            elif action == "delete":
+                identifier = str(body.get("id") or "")
+                persona = personas.get(identifier)
+                posted = orchestrator.postings_of(identifier)
+                if posted:
+                    raise ValueError(f"{persona.name} is still posted to "
+                                     f"{', '.join(o.name for o in posted)}. Remove those first.")
+                personas.delete(identifier)
+                self._send_json(200, {"ok": True})
+            elif action == "forget":
+                if not personas.forget(str(body.get("id") or ""), str(body.get("memoryId") or "")):
+                    raise ValueError("That memory was already removed.")
+                self._send_json(200, {"ok": True, "persona": personas.get(str(body["id"])).to_dict()})
+            else:
+                self._send_json(404, {"error": "No such route."})
         except ValueError as error:
             self._send_json(400, {"error": str(error)})
 
@@ -3202,8 +3278,36 @@ def remove_connection_file(token: str, path: Path = CONNECTION_FILE) -> None:
         pass
 
 
+def prepare_personas() -> tuple[list[str], list[str]]:
+    """Convert orchestrators from before personas, then offer the starters.
+
+    Order matters: converting first means an existing orchestrator called
+    "Product Manager" becomes that persona, and the starter of the same name
+    is then skipped rather than duplicated. The starters think with whatever
+    model the user's own personas already use, which is a better guess than
+    any default here.
+    """
+    converted = orchestrator.migrate_legacy()
+    # What the user actually runs: personas that are posted somewhere, one
+    # vote per posting. Ties go to the first in the bank, so it is repeatable.
+    bank = {persona.id: persona.model for persona in personas.list_all()}
+    used = [bank[o.persona_id] for o in orchestrator.list_all() if o.persona_id in bank]
+    used = used or list(bank.values())
+    model = collections.Counter(used).most_common(1)[0][0] if used else "openai/gpt-5"
+    seeded = personas.seed_starters({s["name"] for s in skills.list_skills()}, model)
+    return converted, seeded
+
+
 def _resume_orchestrators(runs) -> None:
     """Continue runs the last stop interrupted, and say so on stdout."""
+    try:
+        converted, seeded = prepare_personas()
+        if converted:
+            print("  orchestrators converted to personas: " + ", ".join(converted), flush=True)
+        if seeded:
+            print("  starter personas added: " + ", ".join(seeded), flush=True)
+    except Exception:  # noqa: BLE001 -- the board must start even if this fails
+        pass
     try:
         resumed = runs.resume_all()
     except Exception:  # noqa: BLE001 -- a failed resume must not stop the server

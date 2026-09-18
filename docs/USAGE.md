@@ -337,6 +337,14 @@ completed step, and is told to look at what already exists before it starts
 anything. Come back to the **Chat** tab for what it did, **Agents** for what
 it started, and **Activity** for every decision and every dollar.
 
+**Reuse it.** Open **Orchestrators ▾ → Personas…**. Your orchestrator's
+role, model and defaults live on its *persona*; set *Agents it starts* to
+Opus 5 · Interactive once, tick the saved agents and skills it should use, and
+every team you post it to behaves that way. **Post here** puts the same
+persona on another work area with its own product brief. When you correct it
+("the SEO agent is retired"), it remembers — the chat shows where it kept it,
+with an Undo, and the **Memory** tab lists everything.
+
 Two things worth knowing:
 
 - **The limits are real.** Under Limits: agents at once, agents per run, steps,

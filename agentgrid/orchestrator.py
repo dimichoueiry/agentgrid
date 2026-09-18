@@ -1,9 +1,15 @@
-"""Orchestrators: standing agents that decide which real agents to start.
+"""Orchestrators: a persona posted to a team, deciding which agents to start.
 
-An orchestrator is not a session. It is a definition plus a run state on disk,
-driven by an OpenRouter model, whose only powers are the tools AgentGrid hands
-it -- starting agents, reading what they produced, filing tickets, talking to
-you. It never touches the filesystem or a shell itself; the agents it starts
+An orchestrator is not a session. It is a *posting* -- one persona from the
+bank (`personas`) assigned to a work area and a product -- plus a run state on
+disk, driven by the persona's OpenRouter model, whose only powers are the
+tools AgentGrid hands it: starting agents, reading what they produced, filing
+tickets, talking to you.
+
+Who it is lives on the persona: guidelines, model, agent defaults, toolkit,
+lessons about how to work. Where it works lives here: the team (scope), the
+project, a product brief, the facts it has been told about this team, and its
+runs. Moving a manager to another team is posting the same persona again. It never touches the filesystem or a shell itself; the agents it starts
 are ordinary Claude Code or Codex sessions on this machine, launched through
 exactly the same boundary as the New agent sheet.
 
@@ -49,7 +55,10 @@ ACTIVE_STATUSES = ("running", "waiting")
 
 MAX_NAME = 60
 MAX_INSTRUCTIONS = 20_000
+MAX_BRIEF = 20_000
 MAX_GOAL = 20_000
+MAX_MEMORY_TEXT = 500
+MEMORY_LIMIT = 100
 # The journal is read tail-first for the Activity tab; the cap stops a
 # long-lived orchestrator from turning into an unbounded file.
 JOURNAL_LIMIT = 500
@@ -72,19 +81,32 @@ class Limits:
 
 @dataclass
 class Orchestrator:
+    """A posting: which persona, on which team, with what brief and budget.
+
+    Trust (`mode`) and budget (`limits`) are the posting's, not the
+    persona's: how much rope a manager gets is a decision about one team.
+    `model` and `instructions` are only ever read from files written before
+    personas existed, and are emptied when those are converted.
+    """
+
     id: str
     name: str
-    model: str
+    persona_id: str = ""
     scope: str = ""               # work area id, or "" for every area
-    instructions: str = ""
+    brief: str = ""               # what this team / product is
     mode: str = "ask"
     cwd: str = ""                 # the project it starts from, if it has one
     limits: Limits = field(default_factory=Limits)
+    model: str = ""               # legacy: now the persona's
+    instructions: str = ""        # legacy: now the persona's guidelines
 
     def to_dict(self) -> dict:
-        return {"id": self.id, "name": self.name, "model": self.model, "scope": self.scope,
-                "instructions": self.instructions, "mode": self.mode, "cwd": self.cwd,
-                "limits": self.limits.to_dict()}
+        record = {"id": self.id, "name": self.name, "personaId": self.persona_id,
+                  "scope": self.scope, "brief": self.brief, "mode": self.mode, "cwd": self.cwd,
+                  "limits": self.limits.to_dict()}
+        if self.model or self.instructions:
+            record.update(model=self.model, instructions=self.instructions)
+        return record
 
 
 # ---------------------------------------------------------------------------
@@ -127,20 +149,26 @@ def load(raw: object, *, existing_id: str = "") -> Orchestrator:
     name = str(raw.get("name") or "").strip()
     if not name or len(name) > MAX_NAME:
         raise ValueError(f"Give it a name between 1 and {MAX_NAME} characters.")
-    model = str(raw.get("model") or "").strip()
-    if not model:
-        raise ValueError("Choose an OpenRouter model for the orchestrator.")
-    if len(model) > 200 or any(c.isspace() for c in model):
+    persona_id = str(raw.get("personaId") or "").strip()
+    # A file from before personas carries its own model instead; it is read
+    # so it can be converted, never written in that shape again.
+    model = str(raw.get("model") or "").strip() if not persona_id else ""
+    if not persona_id and not model:
+        raise ValueError("Choose a persona for this orchestrator.")
+    if model and (len(model) > 200 or any(c.isspace() for c in model)):
         raise ValueError("That is not an OpenRouter model ID.")
-    instructions = str(raw.get("instructions") or "")
+    instructions = str(raw.get("instructions") or "") if not persona_id else ""
     if len(instructions) > MAX_INSTRUCTIONS:
         raise ValueError(f"Instructions must be under {MAX_INSTRUCTIONS:,} characters.")
+    brief = str(raw.get("brief") or "")
+    if len(brief) > MAX_BRIEF:
+        raise ValueError(f"Keep the product brief under {MAX_BRIEF:,} characters.")
     mode = raw.get("mode") if raw.get("mode") in MODES else "ask"
     return Orchestrator(
         id=str(raw.get("id") or existing_id or uuid.uuid4().hex),
-        name=name, model=model, scope=str(raw.get("scope") or ""),
-        instructions=instructions, mode=mode, cwd=str(raw.get("cwd") or ""),
-        limits=load_limits(raw.get("limits")),
+        name=name, persona_id=persona_id, scope=str(raw.get("scope") or ""), brief=brief,
+        mode=mode, cwd=str(raw.get("cwd") or ""), limits=load_limits(raw.get("limits")),
+        model=model, instructions=instructions,
     )
 
 
@@ -207,7 +235,7 @@ def delete(orchestrator_id: str) -> None:
     stopped first -- that is the caller's job, since only it holds the runs."""
     with _LOCK:
         home = _home(orchestrator_id)
-        for name in ("definition.json", "state.json", "journal.jsonl"):
+        for name in ("definition.json", "state.json", "journal.jsonl", "memory.json"):
             try:
                 (home / name).unlink()
             except OSError:
@@ -227,7 +255,8 @@ def delete(orchestrator_id: str) -> None:
 def blank_state() -> dict:
     return {"status": "idle", "goal": "", "messages": [], "steps": 0, "spawns": 0,
             "costUsd": 0.0, "children": [], "pending": None, "plan": [], "inbox": [],
-            "reason": "", "startedAt": 0.0, "updatedAt": 0.0, "lastText": ""}
+            "reason": "", "startedAt": 0.0, "updatedAt": 0.0, "lastText": "",
+            "previous": None}
 
 
 def read_state(orchestrator_id: str) -> dict:
@@ -257,6 +286,73 @@ def interrupted(state: dict) -> bool:
     for. A run waiting on an approval is *not* interrupted: it is exactly where
     it should be until the user answers."""
     return state.get("status") == "running"
+
+
+# ---------------------------------------------------------------------------
+# Posting memory: facts about this team -- "the SEO agent is retired", "the
+# domain is mlguerrilla.com". Kept beside the run state but in its own file,
+# because a new run starts a fresh conversation and must not start from zero.
+
+
+def memory(orchestrator_id: str) -> list[dict]:
+    with _LOCK:
+        try:
+            raw = json.loads((_home(orchestrator_id) / "memory.json").read_text("utf-8"))
+        except (OSError, ValueError):
+            return []
+    return [m for m in raw if isinstance(m, dict) and m.get("text")] if isinstance(raw, list) else []
+
+
+def remember(orchestrator_id: str, text: str) -> dict:
+    text = " ".join(str(text or "").split())[:MAX_MEMORY_TEXT]
+    if not text:
+        raise ValueError("Say what to remember.")
+    with _LOCK:
+        items = memory(orchestrator_id)
+        existing = next((m for m in items if m["text"].casefold() == text.casefold()), None)
+        if existing:
+            return existing
+        item = {"id": uuid.uuid4().hex[:12], "text": text, "at": time.time()}
+        _write_json(_home(orchestrator_id) / "memory.json", (items + [item])[-MEMORY_LIMIT:])
+    return item
+
+
+def forget(orchestrator_id: str, memory_id: str) -> bool:
+    with _LOCK:
+        items = memory(orchestrator_id)
+        kept = [m for m in items if m.get("id") != memory_id]
+        if len(kept) == len(items):
+            return False
+        _write_json(_home(orchestrator_id) / "memory.json", kept)
+    return True
+
+
+def postings_of(persona_id: str) -> list[Orchestrator]:
+    return [o for o in list_all() if o.persona_id == persona_id]
+
+
+def migrate_legacy() -> list[str]:
+    """Turn every orchestrator written before personas into persona + posting.
+
+    Its model and instructions become a persona of the same name; the
+    orchestrator keeps its id, runs, journal and memory, and points at it.
+    Idempotent: a converted orchestrator has a persona and is left alone.
+    Returns the names converted.
+    """
+    from agentgrid import personas     # personas does not import this module
+    converted = []
+    with _LOCK:
+        for posting in list_all():
+            if posting.persona_id or not posting.model:
+                continue
+            existing = next((p for p in personas.list_all()
+                             if p.name.casefold() == posting.name.casefold()), None)
+            persona = existing or personas.save(
+                personas.from_legacy(posting.name, posting.model, posting.instructions))
+            posting.persona_id, posting.model, posting.instructions = persona.id, "", ""
+            _write_json(_home(posting.id) / "definition.json", posting.to_dict())
+            converted.append(posting.name)
+    return converted
 
 
 # ---------------------------------------------------------------------------

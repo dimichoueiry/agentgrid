@@ -33,7 +33,14 @@ What keeps it honest:
 
 What the model is offered and told lives next door, in
 `orchestrator_brief`: the menu and the standing prompt are wording, and this
-module is behaviour.
+module is behaviour. Both are rebuilt from the persona at every step, so an
+edit in the persona bank -- or a lesson just remembered -- applies to a run
+already in flight.
+
+The persona's agent defaults and allowed models are enforced here too: a
+start_agent call is filled in from the defaults *before* it is gated, so the
+approval banner shows what will really run, and a model outside the fence is
+refused before anyone is asked to approve it.
 
 The `Host` is the only way out of this module to the machine. That keeps the
 engine testable with a fake host, and it is what a non-macOS host will differ
@@ -49,8 +56,8 @@ import secrets
 import threading
 import time
 
-from agentgrid import areas, openrouter, orchestrator, tickets
-from agentgrid.orchestrator_brief import MAX_WAIT_SECONDS, system_prompt, tool_specs
+from agentgrid import areas, openrouter, orchestrator, personas, tickets
+from agentgrid.orchestrator_brief import MAX_WAIT_SECONDS, Context, system_prompt, tool_specs
 
 # A tool result is context for the next decision, not an archive: a 200k-line
 # transcript summarised into 20k characters still says what happened.
@@ -115,6 +122,22 @@ class Host:
 
     def send_to_agent(self, session_id: str, message: str) -> str:
         """Queue a message onto a running session's chat; returns a confirmation."""
+        raise NotImplementedError
+
+    def saved_agents(self) -> list[dict]:
+        """The agent library: ``{"name", "engine", "model", "systemPrompt"}``."""
+        raise NotImplementedError
+
+    def prompts(self) -> list[dict]:
+        """The prompt library: ``{"name", "description", "body"}``."""
+        raise NotImplementedError
+
+    def skills(self) -> list[dict]:
+        """Installed Claude Code skills: ``{"name", "description"}``."""
+        raise NotImplementedError
+
+    def read_skill(self, name: str) -> str:
+        """One skill's SKILL.md, or ValueError."""
         raise NotImplementedError
 
 
@@ -225,6 +248,10 @@ class Run:
         orchestrator.write_state(self.definition.id, self.state)
 
     def snapshot(self) -> dict:
+        try:
+            persona = self._persona()
+        except ValueError:
+            persona = None
         with self._lock:
             # The lists are copied, not referenced: the worker appends to them
             # while the HTTP thread is serializing this.
@@ -244,6 +271,12 @@ class Run:
                          "at": pending.get("at", 0)} if pending else None),
             "phase": self.phase, "busyAgents": self._busy_agents,
             "lastChangeAt": self._last_change,
+            "model": persona.model if persona else "",
+            "persona": ({"id": persona.id, "name": persona.name,
+                         "agentDefaults": persona.agent_defaults.to_dict(),
+                         "allowedModels": list(persona.allowed_models)} if persona else None),
+            "memory": orchestrator.memory(self.definition.id),
+            "personaMemory": [dict(m) for m in persona.memory] if persona else [],
         }
 
     # -- lifecycle -----------------------------------------------------------
@@ -257,20 +290,27 @@ class Run:
         with self._lock:
             if self.state["status"] in orchestrator.ACTIVE_STATUSES:
                 raise ValueError("This orchestrator is already running. Stop it first.")
-            capabilities = self.host.capabilities()
+            persona = self._persona()
+            old = self.state
             self.state = orchestrator.blank_state()
-            self.state.update(status="running", goal=goal, startedAt=time.time(), messages=[
-                {"role": "system", "content": system_prompt(self.definition, capabilities,
-                                                            self._scope_name())},
-                {"role": "user", "content": "Goal:\n" + goal},
-            ])
+            # A new run is a new conversation, not a new employee: the agents
+            # it started before are still its own, and it is told how the last
+            # run ended. What it was told lives in memory, which is not reset.
+            self.state.update(status="running", goal=goal, startedAt=time.time(),
+                              children=list(old.get("children") or []),
+                              previous=({"goal": old.get("goal"), "reason": old.get("reason")}
+                                        if old.get("goal") else None),
+                              messages=[
+                                  {"role": "system", "content": ""},   # rebuilt every step
+                                  {"role": "user", "content": "Goal:\n" + goal},
+                              ])
             self._cancel.clear()
             self._wake.clear()
             self._finish_summary = None
             self._decision = None
             self._persist()
-        self._emit({"type": "run_started", "goal": goal[:MAX_NOTE], "model": self.definition.model,
-                    "mode": self.definition.mode})
+        self._emit({"type": "run_started", "goal": goal[:MAX_NOTE], "model": persona.model,
+                    "persona": persona.name, "mode": self.definition.mode})
         self._spin()
 
     def resume(self) -> None:
@@ -386,12 +426,17 @@ class Run:
             self._finish("failed", limit)
             return False
 
-        capabilities = self.host.capabilities()
+        try:
+            context = self._context()
+        except ValueError as error:          # the persona was deleted under it
+            self._fail(str(error))
+            return False
+        with self._lock:
+            self.state["messages"][0] = {"role": "system", "content": system_prompt(context)}
         self._set_phase("thinking")
         try:
             turn = openrouter.tool_turn(trim_messages(self.state["messages"]),
-                                        self.definition.model,
-                                        tool_specs(self.definition, capabilities))
+                                        context.persona.model, tool_specs(context))
         except ValueError as error:
             self._fail(str(error))
             return False
@@ -463,6 +508,8 @@ class Run:
         for index, call in enumerate(calls):
             if self._cancel.is_set():
                 return "stopped"
+            if call.get("name") == "start_agent":
+                call = self._shape_start(call)
             gate = self._gate_reason(call)
             if gate:
                 self._request_approval(call, calls[index + 1:], gate)
@@ -556,14 +603,25 @@ class Run:
         name = call.get("name")
         if name == "start_agent":
             args = _parse_args(call) or {}
-            if str(args.get("mode") or "") == "interactive":
-                # On a host with no scriptable terminal there is nothing to
-                # approve: the tool refuses it outright, which is a better
-                # answer than asking the user to authorise a failure.
-                return ("opens an interactive Terminal session on your desktop"
-                        if self.host.capabilities().get("interactive") else "")
+            try:
+                persona = self._persona()
+            except ValueError:
+                return ""
+            interactive = str(args.get("mode") or "") == "interactive"
+            # A request that will be refused -- a model outside the fence, an
+            # unknown saved agent, a terminal this host lacks -- has nothing
+            # to approve: refusing it outright is a better answer than asking
+            # the user to authorise a failure.
+            if self._start_problem(args, persona) or (
+                    interactive and not self.host.capabilities().get("interactive")):
+                return ""
+            terminal = "opens an interactive Terminal session on your desktop"
             if self.definition.mode == "ask":
-                return "starts a new agent"
+                return terminal if interactive else "starts a new agent"
+            # Auto still asks before putting a window in front of the user --
+            # unless their persona says interactive is how they want agents.
+            if interactive and persona.agent_defaults.mode != "interactive":
+                return terminal
         if name == "create_work_area" and self.definition.mode == "ask":
             return "creates a work area"
         return ""
@@ -609,6 +667,12 @@ class Run:
         return {"ok": True, "area": created}
 
     def _tool_start_agent(self, args: dict) -> dict:
+        persona = self._persona()
+        args = self._shape_args(dict(args), persona)
+        problem = self._start_problem(args, persona)
+        if problem:
+            raise ValueError(problem)
+        saved = self._saved_agent(args.get("savedAgent"), persona)
         limits = self.definition.limits
         if self.state["spawns"] >= limits.max_spawns:
             raise ValueError(f"You have started {self.state['spawns']} agents, which is this run's "
@@ -624,14 +688,20 @@ class Run:
         task = str(args.get("task") or "").strip()
         if not task:
             raise ValueError("An agent needs a task.")
-        name = str(args.get("name") or "").strip() or f"{self.definition.name} {self.state['spawns'] + 1}"
+        # An unnamed agent is numbered, so it never shares a name with the
+        # orchestrator itself; a saved agent keeps the name it was saved under.
+        name = self._child_name(str(args.get("name") or "").strip()
+                                or (saved["name"] if saved else
+                                    f"{self.definition.name} {self.state['spawns'] + 1}"))
+        standing = "\n\n".join(part for part in (
+            (saved or {}).get("systemPrompt") or "", str(args.get("systemPrompt") or "")) if part.strip())
         request = {
             "cwd": str(args.get("project") or self.definition.cwd or ""),
             "prompt": task[:MAX_TASK],
             "engine": str(args.get("engine") or "claude"),
             "interactive": interactive,
             "model": str(args.get("model") or ""),
-            "systemPrompt": str(args.get("systemPrompt") or "")[:MAX_TASK],
+            "systemPrompt": standing[:MAX_TASK],
             "name": name[:orchestrator.MAX_NAME],
             # Its own area wins: an orchestrator that belongs to one area has no
             # authority to file work into another.
@@ -641,6 +711,7 @@ class Run:
         launched = self.host.start_agent(request)
         child = {"name": request["name"], "cwd": launched.get("cwd") or request["cwd"],
                  "engine": request["engine"], "interactive": request["interactive"],
+                 "model": request["model"], "savedAgent": saved["name"] if saved else "",
                  "jobId": launched.get("jobId") or "", "sessionId": "",
                  "task": task[:MAX_NOTE], "at": time.time()}
         with self._lock:
@@ -652,6 +723,7 @@ class Run:
             self._persist()
         self._emit({"type": "agent_started", "name": child["name"], "cwd": child["cwd"],
                     "engine": child["engine"], "interactive": child["interactive"],
+                    "model": child["model"], "savedAgent": child["savedAgent"],
                     "task": task[:MAX_NOTE]})
         return {"ok": True, "message": launched.get("message") or "Started.",
                 "agent": {"name": child["name"], "jobId": child["jobId"], "cwd": child["cwd"]}}
@@ -751,6 +823,39 @@ class Run:
         self._emit({"type": "plan", "items": plan})
         return {"ok": True, "items": plan}
 
+    def _tool_remember(self, args: dict) -> dict:
+        """Save a lesson on the persona or a fact on this posting, and say so.
+
+        The model chooses where; the user sees the choice in the chat with an
+        undo, which is what makes letting it choose safe.
+        """
+        scope = "persona" if args.get("scope") == "persona" else "posting"
+        if scope == "persona":
+            persona = self._persona()
+            item, owner = personas.remember(persona.id, str(args.get("text") or "")), persona.name
+        else:
+            item, owner = orchestrator.remember(self.definition.id, str(args.get("text") or "")), self.definition.name
+        self._emit({"type": "memory_saved", "scope": scope, "id": item["id"],
+                    "text": item["text"], "owner": owner})
+        return {"ok": True, "remembered": item["text"], "scope": scope}
+
+    def _tool_read_skill(self, args: dict) -> dict:
+        persona, name = self._persona(), str(args.get("name") or "")
+        if name not in persona.skills:
+            raise ValueError(f"{name[:60]!r} is not one of your skills. Yours: "
+                             f"{', '.join(persona.skills) or 'none'}.")
+        return {"ok": True, "name": name, "text": self.host.read_skill(name)}
+
+    def _tool_read_prompt(self, args: dict) -> dict:
+        persona, name = self._persona(), str(args.get("name") or "")
+        if name not in persona.prompts:
+            raise ValueError(f"{name[:60]!r} is not one of your prompts. Yours: "
+                             f"{', '.join(persona.prompts) or 'none'}.")
+        prompt = next((p for p in self.host.prompts() if p["name"] == name), None)
+        if prompt is None:
+            raise ValueError(f"{name} is no longer in the prompt library.")
+        return {"ok": True, "name": name, "text": prompt.get("body") or ""}
+
     def _tool_message_user(self, args: dict) -> dict:
         text = str(args.get("text") or "").strip()
         if not text:
@@ -767,6 +872,91 @@ class Run:
         return {"ok": True, "finished": True}
 
     # -- helpers -------------------------------------------------------------
+
+    def _persona(self) -> personas.Persona:
+        """Who this posting is, read fresh: an edit in the bank applies at the
+        next step, the same way a change of mode does."""
+        return personas.get(self.definition.persona_id)
+
+    def _context(self) -> Context:
+        """Everything the brief is built from, resolved against what exists.
+
+        A saved agent, skill or prompt the persona names but that has since
+        been removed is simply left out -- the persona is not broken by a
+        library that changed under it.
+        """
+        persona = self._persona()
+        saved = {a["name"].casefold(): a for a in self.host.saved_agents()}
+        installed = {s["name"]: s for s in self.host.skills()}
+        library = {p["name"]: p for p in self.host.prompts()}
+        return Context(
+            posting=self.definition, persona=persona, capabilities=self.host.capabilities(),
+            scope_name=self._scope_name(),
+            team=[saved[n.casefold()] for n in persona.team if n.casefold() in saved],
+            skills=[installed[n] for n in persona.skills if n in installed],
+            prompts=[library[n] for n in persona.prompts if n in library],
+            posting_memory=orchestrator.memory(self.definition.id),
+            previous=self.state.get("previous"))
+
+    def _saved_agent(self, name: object, persona: personas.Persona) -> dict | None:
+        wanted = str(name or "").strip().casefold()
+        if not wanted or wanted not in {n.casefold() for n in persona.team}:
+            return None
+        return next((a for a in self.host.saved_agents() if a["name"].casefold() == wanted), None)
+
+    def _shape_args(self, args: dict, persona: personas.Persona) -> dict:
+        """Fill in what the model left out, from the persona.
+
+        A saved agent brings its own engine and model -- the user chose them
+        when they saved it. Otherwise the persona's defaults apply. Mode
+        always defaults from the persona. Idempotent, so it is safe to apply
+        both when a call is gated and again when it runs.
+        """
+        defaults = persona.agent_defaults
+        saved = self._saved_agent(args.get("savedAgent"), persona)
+        if saved:
+            args["engine"], args["model"] = saved["engine"], saved.get("model") or ""
+        else:
+            args["engine"] = args.get("engine") or defaults.engine
+            args["model"] = args.get("model") or defaults.model
+        args["mode"] = args.get("mode") or defaults.mode
+        return args
+
+    def _shape_start(self, call: dict) -> dict:
+        args = _parse_args(call)
+        try:
+            persona = self._persona()
+        except ValueError:
+            return call
+        if args is None:
+            return call
+        return {**call, "arguments": json.dumps(self._shape_args(args, persona))}
+
+    def _start_problem(self, args: dict, persona: personas.Persona) -> str:
+        """Why this start would be refused, or "". Checked before approval."""
+        if args.get("savedAgent"):
+            if self._saved_agent(args.get("savedAgent"), persona) is None:
+                return (f"{str(args['savedAgent'])[:60]!r} is not one of your saved agents. "
+                        f"Your team: {', '.join(persona.team) or 'none'}.")
+            return ""                   # its model was the user's choice; not fenced
+        model = str(args.get("model") or "")
+        if persona.allowed_models and not persona.allows(model):
+            return (f"{model or 'The default model'} is not allowed for {persona.name}. "
+                    f"Allowed: {', '.join(persona.allowed_models)}. Leave model out to use "
+                    f"{persona.agent_defaults.model}.")
+        return ""
+
+    def _child_name(self, base: str) -> str:
+        """A board name no other agent of this posting has, so it can always
+        be found again by name -- an interactive agent has no job id."""
+        taken = {c.get("name") for c in self.state.get("children") or []}
+        base = base[:orchestrator.MAX_NAME - 3] or self.definition.name
+        if base not in taken:
+            return base
+        number = 2
+        while f"{base} {number}" in taken:
+            number += 1
+        return f"{base} {number}"
 
     def _set_phase(self, phase: str) -> None:
         with self._lock:
@@ -948,7 +1138,12 @@ def _summarize(name: str, args: dict, result: dict) -> str:
     if not result.get("ok", True):
         return f"failed: {str(result.get('error') or '')[:160]}"
     if name == "start_agent":
-        return f"{args.get('name') or 'agent'} in {args.get('project') or ''}"[:160]
+        who = args.get("savedAgent") or args.get("name") or "agent"
+        return f"{who} in {args.get('project') or ''} · {args.get('model') or 'default'} · {args.get('mode') or ''}"[:160]
+    if name == "remember":
+        return f"{args.get('scope')}: {args.get('text') or ''}"[:160]
+    if name in ("read_skill", "read_prompt"):
+        return str(args.get("name") or "")[:80]
     if name in ("read_agent_output", "send_to_agent"):
         return str(args.get("agent") or "")[:80]
     if name in ("move_ticket", "comment_ticket"):

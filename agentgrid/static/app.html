@@ -2722,6 +2722,10 @@ function deleteSession(id) {
    edited in #cQueue. Stop hits /api/chat/cancel. §6.3 only. */
 
 let chatSrc = null, chatRunning = false;
+// Every node the live stream appends to #tScroll is numbered (data-live), so a
+// disk refresh that was already in flight can tell which ones are newer than
+// the copy it fetched.
+let chatLiveSeq = 0;
 // Messages waiting behind the running turn, as the server holds them:
 // {id, message, files, posture, model}, oldest first. The server's copy is
 // the truth -- it is what will be sent -- so every edit goes through it.
@@ -2817,7 +2821,9 @@ function chatAppend(html) {
   const near = host.scrollHeight - host.scrollTop - host.clientHeight < 130;
   host.insertAdjacentHTML("beforeend", html);
   if (near) host.scrollTop = host.scrollHeight;
-  return host.lastElementChild;
+  const el = host.lastElementChild;
+  if (el) el.dataset.live = String(++chatLiveSeq);
+  return el;
 }
 
 function chatOnEvent(ev) {
@@ -3961,6 +3967,9 @@ function renderRoster(s, subs) {
 async function refreshTranscript() {
   if (!openId) return;
   const id = openId, agent = openAgent;
+  // A turn can start while this request is out -- a send, or a queued message
+  // starting -- and its live nodes are newer than the disk copy coming back.
+  const liveFrom = chatLiveSeq;
   let data;
   try {
     data = await api(`/api/transcript?id=${encodeURIComponent(id)}` +
@@ -3976,8 +3985,13 @@ async function refreshTranscript() {
   const nearBottom = host.scrollHeight - host.scrollTop - host.clientHeight < 60;
   $("tTail").textContent = blocks.length >= 600
     ? "Showing the tail — last 600 turns" : "";
+  // Keep those after the history instead of letting the older copy wipe them.
+  // The same nodes move, so a running tool call still finds its trace; once
+  // the turn is on disk, the next poll replaces them like any other live node.
+  const live = [...host.children].filter(n => Number(n.dataset.live) > liveFrom);
   host.innerHTML = blocksHtml(blocks) ||
-    `<div class="mvnote">Nothing here yet.</div>`;
+    (live.length ? "" : `<div class="mvnote">Nothing here yet.</div>`);
+  live.forEach(n => host.appendChild(n));
   if (transFirst || nearBottom) host.scrollTop = host.scrollHeight;
   transFirst = false;
 }

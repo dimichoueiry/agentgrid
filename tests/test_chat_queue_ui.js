@@ -34,6 +34,22 @@ function element(id, inside = []) {
 }
 const elements = {};
 const $ = id => elements[id] ||= element(id);
+// #tScroll keeps real child nodes: a transcript refresh replaces its markup
+// but must be able to hold on to (and move back) the live nodes in it.
+elements.tScroll = (() => {
+  const host = element('tScroll');
+  let kids = [];
+  const node = html => ({html, dataset: {}, remove() { kids = kids.filter(k => k !== this); },
+                         insertAdjacentHTML(_, h) { this.html += h; }});
+  Object.defineProperties(host, {
+    children: {get: () => kids},
+    lastElementChild: {get: () => kids.at(-1) || null},
+    innerHTML: {get: () => kids.map(k => k.html).join(''), set: v => { kids = v ? [node(String(v))] : []; }},
+  });
+  host.insertAdjacentHTML = (_, h) => { kids.push(node(h)); };
+  host.appendChild = n => { kids = kids.filter(k => k !== n); kids.push(n); return n; };
+  return host;
+})();
 ['cInput', 'tScroll', 'cStatus', 'cStatusText', 'cStatusSep', 'cQueueBtn', 'cQueue', 'cQueueList',
  'cStop', 'cModel'].forEach($);
 // The list has no parser behind it: an editor exists when its markup does.
@@ -50,6 +66,7 @@ async function post(path, body) {
   server.calls.push([path, body]);
   if (path === '/api/chat') {
     const id = `q${++server.seq}`;
+    if (server.idle) return {ok: true, id, queued: false};   // runs at once
     server.queue.push({id, message: body.message, files: [], posture: body.posture, model: body.model});
     return {ok: true, id, queued: true};
   }
@@ -76,6 +93,9 @@ const ctx = vm.createContext({
   chatGrow() {}, hideSlash() {}, hideAtFiles() {}, saveChatModel() {}, chatRenderAtt() {},
   chatClearRefs() {}, selectedModel: () => '', CUSTOM_MODEL: '__custom__',
   URL: {revokeObjectURL() {}}, setTimeout,
+  workflowExportButton: () => '', chatToolGist: name => ({verb: name, obj: ''}),
+  // the disk transcript, as refreshTranscript renders it
+  blocksHtml: blocks => blocks.map(b => `<div class="msg ${b.kind} disk">${b.text}</div>`).join(''),
 });
 const section = script.slice(script.indexOf('let chatSrc = null'), script.indexOf('// called from openSession'));
 vm.runInContext(section, ctx);
@@ -83,7 +103,7 @@ vm.runInContext(['fileBadge', 'filePills', 'chatAppend', 'chatOnEvent', 'chatSet
   'chatQueueReset', 'chatSetQueue', 'chatToggleQueue', 'uploadName', 'cqRowHtml', 'chatRenderQueue',
   'chatQueueIndexOfRow', 'cqRefocus', 'cqStartEdit', 'cqCancelEdit', 'cqSave', 'cqRemove', 'cqRestore',
   'cqMoveUp', 'cqReply', 'cqRescue', 'chatEchoStarted', 'cqClick', 'cqInput', 'cqKeydown',
-  'chatSend'].map(extract).join('\n'), ctx);
+  'chatSend', 'refreshTranscript'].map(extract).join('\n'), ctx);
 vm.runInContext('openId = "s1"; chatPosture = "auto"; chatModel = ""; chatAtt = []; chatRefs = [];', ctx);
 const run = code => vm.runInContext(code, ctx);
 // a click on a row's control, as the delegated listener on #cQueue sees it
@@ -235,5 +255,57 @@ const count = () => elements.cQueueBtn.hidden ? 0 : Number(/^(\d+) queued/.exec(
   assert.equal(count(), 0, "another session's queue never shows here");
   assert.equal(elements.cQueue.hidden, true);
 
-  console.log('Chat queue UI: open, show, edit, cancel, remove, undo, move, start and race checks passed');
+  // --- a disk refresh already in flight never wipes a turn that started -----
+  // poll() only starts a refresh while no turn runs, but the reply can land
+  // after one started. The disk copy is older than the live nodes: keep them.
+  const disk = [{kind: 'user', text: 'Set up the demo'}, {kind: 'assistant', text: 'Ready.'}];
+  let land;
+  ctx.api = path => path.startsWith('/api/transcript')
+    ? new Promise(r => { land = r; }) : Promise.resolve(state());
+  run('openAgent = null; transSig = ""; transFirst = false; chatRunning = false');
+  elements.tScroll.innerHTML = '';
+  const order = (...words) => {
+    const html = elements.tScroll.innerHTML, at = words.map(w => html.indexOf(w));
+    assert.ok(at.every((i, k) => i >= 0 && (!k || i > at[k - 1])), `expected ${words.join(' < ')} in ${html}`);
+  };
+
+  // a queued message starts, streams a reply and a tool call, then the refresh lands
+  let refresh = run('refreshTranscript()');
+  run('chatOnEvent')({type: 'queue', queue: [], started: {id: 'q20', message: 'Then run the tests', files: []}});
+  run('chatOnEvent')({type: 'turn_started'});
+  run('chatOnEvent')({type: 'assistant_message', text: 'Running them now.'});
+  run('chatOnEvent')({type: 'tool_use', id: 't1', name: 'Bash', input: {}});
+  land({blocks: disk}); await refresh;
+  order('Set up the demo', 'Ready.', 'Then run the tests', 'Running them now.', 'Bash');
+  assert.ok(!elements.tScroll.innerHTML.includes('Nothing here yet'));
+  // the moved trace is the same node, so its result still lands inside it
+  run('chatOnEvent')({type: 'tool_result', id: 't1', ok: true, summary: '12 passed'});
+  order('Ready.', 'Bash', '12 passed');
+  assert.ok(elements.tScroll.children.at(-1).html.includes('12 passed'), 'inside its own trace');
+
+  // once the turn is on disk, the next refresh replaces the live nodes, once
+  run('chatRunning = false');
+  const landed = [...disk, {kind: 'user', text: 'Then run the tests'}, {kind: 'assistant', text: 'Running them now.'}];
+  refresh = run('refreshTranscript()');
+  land({blocks: landed}); await refresh;
+  assert.equal(elements.tScroll.innerHTML, ctx.blocksHtml(landed), 'no live copy is left beside the disk one');
+
+  // a send echoed while the refresh is out survives it too, even with no history yet
+  run('transSig = ""; chatRunning = false');
+  elements.tScroll.innerHTML = '';
+  server.idle = true;
+  refresh = run('refreshTranscript()');
+  elements.cInput.value = 'Start over';
+  const sending = run('chatSend()');
+  land({blocks: []}); await refresh; await sending;
+  assert.ok(elements.tScroll.innerHTML.includes('<p>Start over</p>'), 'the echo is kept');
+  assert.ok(!elements.tScroll.innerHTML.includes('Nothing here yet'), 'no empty note beside it');
+  // and with nothing live, an empty transcript still says so
+  run('transSig = "x"');
+  elements.tScroll.innerHTML = '';
+  refresh = run('refreshTranscript()');
+  land({blocks: []}); await refresh;
+  assert.ok(elements.tScroll.innerHTML.includes('Nothing here yet'));
+
+  console.log('Chat queue UI: open, show, edit, cancel, remove, undo, move, start, race and in-flight refresh checks passed');
 })().catch(e => { console.error(e); process.exitCode = 1; });

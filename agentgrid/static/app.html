@@ -2730,6 +2730,13 @@ let chatLiveSeq = 0;
 // {id, message, files, posture, model}, oldest first. The server's copy is
 // the truth -- it is what will be sent -- so every edit goes through it.
 let chatQueue = [], chatQueueOpen = false, cqSig = "";
+// Every copy of the queue the server sends (a `queue` event, a state poll or a
+// /api/chat/queue reply) carries a monotonic revision and a per-process epoch.
+// A copy is applied only when its revision beats the last one applied, so an
+// older snapshot arriving late can't overwrite a newer queue. The epoch resets
+// the watermark after a server restart, when the counter starts over below our
+// high mark. -1 means nothing has been applied yet.
+let chatQueueRev = -1, chatQueueEpoch = null;
 let cqEdit = null;                 // {id, draft, orig} while a queued message is being edited
 let panelTab = "chat", chatDisabled = false, chatEngine = "claude";
 let chatPosture = localStorage.getItem("agentgrid.chatPosture") || "auto";
@@ -2865,6 +2872,9 @@ function chatOnEvent(ev) {
     case "queue":
       // Any tab's edit, a Stop, or a waiting message starting. One that waited
       // was never echoed when sent, so it is shown now, as its turn begins.
+      // Drop a copy older than one already applied -- and with it a `started`
+      // that a Stop has already overtaken, so no never-run message is echoed.
+      if (!chatQueueAccept(ev.rev, ev.epoch)) break;
       if (ev.started) chatEchoStarted(ev.started);
       chatSetQueue(ev.queue);
       break;
@@ -2929,7 +2939,9 @@ async function chatSyncState(adoptRunning = false) {
   try { st = await api(`/api/chat/state?session=${encodeURIComponent(id)}`); }
   catch (_) { return; }
   if (id !== openId || !st) return;
-  chatSetQueue(st.queue);
+  // A poll can land after a newer `queue` event; apply its queue only if it is
+  // not older than what we show. Running state is separate and always adopted.
+  if (chatQueueAccept(st.rev, st.epoch)) chatSetQueue(st.queue);
   if (adoptRunning && typeof st.running === "boolean" && !chatRunning)
     chatRunning = st.running;
   chatSetStatus();
@@ -2944,8 +2956,26 @@ async function chatSyncState(adoptRunning = false) {
 
 function chatQueueReset() {
   chatQueue = []; chatQueueOpen = false; cqEdit = null; cqSig = "";
+  chatQueueRev = -1; chatQueueEpoch = null;
   const panel = $("cQueue"); if (panel) panel.hidden = true;
   const count = $("cQueueBtn"); if (count) count.hidden = true;
+}
+
+// True when a queue copy is fresh enough to apply. A copy from a new server run
+// (a different epoch) always applies and resets the watermark; otherwise only a
+// strictly newer revision does, so a stale one that overtook a newer one on the
+// wire is dropped. A copy with no revision (an older server, or a reply that
+// carries none) always applies -- there is nothing to order it by.
+function chatQueueAccept(rev, epoch) {
+  if (typeof rev !== "number") return true;
+  if (epoch !== undefined && epoch !== chatQueueEpoch) {
+    chatQueueEpoch = epoch ?? null;
+    chatQueueRev = rev;
+    return true;
+  }
+  if (rev <= chatQueueRev) return false;
+  chatQueueRev = rev;
+  return true;
 }
 
 function chatSetQueue(list) {
@@ -3097,12 +3127,13 @@ async function cqMoveUp(qid) {
   cqReply(sid, r);
 }
 
-// Every reply carries the server's queue: redraw from it, right or wrong.
+// Every reply carries the server's queue: redraw from it, right or wrong --
+// unless a newer copy has already been applied, when this one is stale.
 function cqReply(sid, r, onGone) {
   if (sid !== openId || !r) return;
   if (r.gone && onGone) onGone();
   else if (r.error) toast(r.error);
-  if (Array.isArray(r.queue)) chatSetQueue(r.queue);
+  if (Array.isArray(r.queue) && chatQueueAccept(r.rev, r.epoch)) chatSetQueue(r.queue);
 }
 
 // An edit that lost the race with its message starting: hand the words back.

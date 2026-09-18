@@ -19,6 +19,12 @@ What keeps it honest:
   becomes `waiting` (the board's "Needs you"), and the worker thread exits.
   Approving or declining resumes from disk -- so an approval can outlive a
   server restart, and nothing is held open waiting for a human.
+- **AgentGrid does the waiting.** While an orchestrator's agents work, the
+  harness watches the board for it -- free, no model calls -- and wakes it
+  only when one of them finishes, blocks or leaves, with the tail of that
+  agent's output attached. A model that ends its turn with a progress note
+  while its agents work is watching, not waiting on the user; only a run
+  with nothing in flight hands the turn back to a person.
 - **The state is written after every step.** A run interrupted mid-step (the
   lid closed) resumes from the last completed step: the unfinished model turn
   is dropped and the model is told to check what already exists before it
@@ -53,6 +59,18 @@ MAX_TOOL_RESULT = 20_000
 # always kept; the middle is dropped before the tail.
 CONTEXT_BUDGET = 120_000
 WAIT_CHUNK_SECONDS = 2.0
+# How often the watcher looks at the board. The fleet itself refreshes about
+# every two seconds, so looking faster only re-reads the same answer.
+WATCH_POLL_SECONDS = 3.0
+# A child is "starting" for this long after launch, before the fleet has seen
+# it -- so a run that has just started an agent does not read "not on the
+# board yet" as "gone".
+CHILD_GRACE_SECONDS = 90
+# How much of an agent's output rides along with the news that it changed, so
+# the model rarely needs a separate read to decide what to do.
+UPDATE_TAIL_CHARS = 1500
+# A child in one of these is still busy; any move out of them is news.
+BUSY_STATUSES = ("working", "starting")
 # Free text the model supplies is truncated wherever it is stored or shown.
 MAX_TASK = 20_000
 MAX_NOTE = 4_000
@@ -170,6 +188,11 @@ class Run:
         self._deleted = False                 # the definition is gone; stop writing
         self._decision: dict | None = None    # an answered approval, applied by the worker
         self._finish_summary: str | None = None
+        # What the worker is doing right now, for the panel's status line.
+        # In memory only: after a restart there is nothing in flight to show.
+        self.phase = ""                       # thinking | acting | watching | ""
+        self._busy_agents = 0
+        self._last_change = 0.0
 
     # -- events: the same subscribe/emit shape the chat panel already speaks --
 
@@ -219,6 +242,8 @@ class Run:
             "pending": ({"id": pending["id"], "tool": pending["call"]["name"],
                          "args": _safe_args(pending["call"]), "reason": pending.get("reason", ""),
                          "at": pending.get("at", 0)} if pending else None),
+            "phase": self.phase, "busyAgents": self._busy_agents,
+            "lastChangeAt": self._last_change,
         }
 
     # -- lifecycle -----------------------------------------------------------
@@ -362,6 +387,7 @@ class Run:
             return False
 
         capabilities = self.host.capabilities()
+        self._set_phase("thinking")
         try:
             turn = openrouter.tool_turn(trim_messages(self.state["messages"]),
                                         self.definition.model,
@@ -373,22 +399,54 @@ class Run:
             self._fail("Could not reach OpenRouter. The run stopped; start it again when the "
                        "connection is back.")
             return False
+        finally:
+            self._set_phase("")
         with self._lock:
             self.state["steps"] += 1
             self.state["costUsd"] = float(self.state.get("costUsd") or 0) + float(turn.get("costUsd") or 0)
             self.state["messages"].append(turn["raw"])
             self._persist()
-        if turn["text"].strip():
-            self._emit({"type": "note", "text": turn["text"][:MAX_NOTE]})
         if not turn["calls"]:
-            # Plain prose ends the turn: the orchestrator is talking to the
-            # user, so it waits for them rather than spending another step.
-            with self._lock:
-                self.state.update(status="waiting", lastText=turn["text"][:MAX_GOAL_TEXT])
-                self._persist()
-            self._emit({"type": "message", "text": turn["text"][:MAX_NOTE], "waiting": True})
-            return False
-        return self._handle(self._run_calls(turn["calls"]))
+            return self._after_prose(turn["text"])
+        if turn["text"].strip():
+            # Reasoning said alongside tool calls: the Activity tab's business,
+            # not the conversation's.
+            self._emit({"type": "note", "text": turn["text"][:MAX_NOTE]})
+        self._set_phase("acting")
+        try:
+            outcome = self._run_calls(turn["calls"])
+        finally:
+            self._set_phase("")
+        return self._handle(outcome)
+
+    def _after_prose(self, text: str) -> bool:
+        """A turn that ended in words rather than tool calls.
+
+        With agents still working, the words are a progress note: they go to
+        the user, and AgentGrid watches the agents at no cost until one of
+        them changes -- the model is woken with the news, never left waiting
+        for someone to ask how it is going. With nothing in flight, the
+        orchestrator is talking to the user, so the turn is theirs.
+        """
+        text = text.strip()
+        statuses = self._child_statuses()
+        if any(status in BUSY_STATUSES for status in statuses.values()):
+            if text:
+                with self._lock:
+                    self.state["lastText"] = text[:MAX_GOAL_TEXT]
+                    self._persist()
+                self._emit({"type": "message", "text": text[:MAX_NOTE], "waiting": False})
+            changes = self._watch(baseline=statuses)
+            if changes:
+                self._tell_model(changes)
+            # No changes means the wait was cut short -- by a message from the
+            # user, which the next step reads, or by a stop, which ends it.
+            return not self._cancel.is_set()
+        with self._lock:
+            self.state.update(status="waiting", lastText=text[:MAX_GOAL_TEXT])
+            self._persist()
+        self._emit({"type": "message", "text": text[:MAX_NOTE], "waiting": True})
+        return False
 
     def _handle(self, outcome: str) -> bool:
         if outcome == "finished":
@@ -636,9 +694,11 @@ class Run:
             seconds = max(1, min(int(args.get("seconds") or 30), MAX_WAIT_SECONDS))
         except (TypeError, ValueError):
             seconds = 30
-        waited = self._sleep(seconds)
-        return {"ok": True, "waitedSeconds": round(waited),
-                "interrupted": waited < seconds - WAIT_CHUNK_SECONDS,
+        started = time.monotonic()
+        changes = self._watch(limit=seconds)
+        return {"ok": True, "waitedSeconds": round(time.monotonic() - started),
+                "changed": self._describe(changes),
+                "interrupted": not changes and time.monotonic() - started < seconds - WAIT_CHUNK_SECONDS,
                 **self._tool_list_agents({})}
 
     def _tool_list_tickets(self, args: dict) -> dict:
@@ -708,16 +768,98 @@ class Run:
 
     # -- helpers -------------------------------------------------------------
 
-    def _sleep(self, seconds: float) -> float:
-        """Wait, but stay answerable: a stop or a user message ends it early."""
+    def _set_phase(self, phase: str) -> None:
+        with self._lock:
+            self.phase = phase
+
+    def _child_statuses(self) -> dict:
+        """Each child's board status by name.
+
+        `starting` covers the gap between launch and the fleet first seeing
+        it; `gone` is a child that has left the board. Also caches how many
+        are busy, which is what the status line shows.
+        """
+        resolved = self._sessions_by_child()
+        now = time.time()
+        statuses = {}
+        for child in self.state.get("children") or []:
+            session = resolved.get(child["name"])
+            if session:
+                statuses[child["name"]] = str(session.get("status") or "")
+            elif now - float(child.get("at") or 0) < CHILD_GRACE_SECONDS:
+                statuses[child["name"]] = "starting"
+            else:
+                statuses[child["name"]] = "gone"
+        with self._lock:
+            self._busy_agents = sum(status in BUSY_STATUSES for status in statuses.values())
+        return statuses
+
+    def _watch(self, limit: float | None = None, baseline: dict | None = None) -> list[dict]:
+        """Wait, for free, until one of its agents changes.
+
+        Returns ``[{"name", "from", "to"}]``, or ``[]`` when the wait ended
+        for another reason: a message from the user, a stop, or `limit`.
+        An agent being picked up (starting -> working) is expected, not news.
+        """
+        before = dict(baseline) if baseline is not None else self._child_statuses()
         started = time.monotonic()
-        while time.monotonic() - started < seconds:
-            if self._cancel.is_set() or self._wake.is_set():
-                break
-            remaining = seconds - (time.monotonic() - started)
-            if self._wake.wait(min(WAIT_CHUNK_SECONDS, remaining)):
-                break
-        return time.monotonic() - started
+        self._set_phase("watching")
+        try:
+            while not self._cancel.is_set():
+                remaining = None if limit is None else limit - (time.monotonic() - started)
+                if remaining is not None and remaining <= 0:
+                    return []
+                pause = WATCH_POLL_SECONDS if remaining is None else min(WATCH_POLL_SECONDS, remaining)
+                if self._wake.wait(max(0.0, pause)):
+                    return []
+                now = self._child_statuses()
+                changes = [{"name": name, "from": before.get(name, ""), "to": status}
+                           for name, status in now.items()
+                           if status != before.get(name)
+                           and not (before.get(name) == "starting" and status == "working")]
+                if changes:
+                    with self._lock:
+                        self._last_change = time.time()
+                    return changes
+                before.update(now)
+            return []
+        finally:
+            self._set_phase("")
+
+    def _describe(self, changes: list[dict]) -> list[dict]:
+        """Announce each change on the board and attach what the agent said.
+
+        The tail rides along so the model can usually decide without a
+        separate read -- one call per change instead of two.
+        """
+        described = []
+        resolved = self._sessions_by_child() if changes else {}
+        for change in changes:
+            entry = dict(change)
+            session = resolved.get(change["name"])
+            if session and change["to"] not in BUSY_STATUSES:
+                try:
+                    entry["output"] = self.host.read_output(session.get("sessionId") or "",
+                                                            UPDATE_TAIL_CHARS)
+                except ValueError:
+                    pass
+            self._emit({"type": "agent_update", "name": change["name"],
+                        "from": change["from"], "to": change["to"]})
+            described.append(entry)
+        return described
+
+    def _tell_model(self, changes: list[dict]) -> None:
+        """Wake the model with what changed while it was not looking."""
+        lines = ["AgentGrid update — your agents changed while you waited:"]
+        for entry in self._describe(changes):
+            lines.append(f"- {entry['name']}: {entry['from'] or 'new'} → {entry['to']}")
+            if entry.get("output"):
+                lines.append("  Last output:\n  " + entry["output"].strip().replace("\n", "\n  "))
+        lines.append("Decide what happens next. If it matters to the user, tell them with "
+                     "message_user — they should not have to ask.")
+        with self._lock:
+            self.state["messages"].append({"role": "user", "content": "\n".join(lines)})
+            self._persist()
 
     def _sessions_by_child(self) -> dict:
         """Map each child record to a live session, by job id, then by name."""

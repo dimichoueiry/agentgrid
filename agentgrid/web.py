@@ -337,6 +337,26 @@ def codex_chat_block(session, chat_manager) -> str | None:
     return None
 
 
+def follow_up_block(session, chat_manager) -> str | None:
+    """Why an orchestrator's follow-up would not reach this agent, or None.
+
+    Resuming a Claude session that is still running starts a *copy* of it --
+    the CLI says so in `--help` -- so a message sent mid-turn would be
+    answered by a stranger while the real agent never sees it. That is worse
+    than refusing: the orchestrator would report instructions as delivered.
+    A turn this server itself is running is fine to queue behind.
+
+    Kept to the orchestrator for now; the chat panel has the same exposure
+    and deserves the same rule once someone has watched it happen there.
+    """
+    if chat_manager.state(session.session_id).get("running"):
+        return None
+    if getattr(session, "status", "") == "working":
+        return ("That agent is mid-turn, and a message now would start a separate copy it "
+                "never sees. You will be woken when it finishes; send it then.")
+    return None
+
+
 def _overlay_chat(sessions: list[dict], chat_manager) -> list[dict]:
     """`claude agents` never reports a headless chat turn (`claude -p --resume`) as the
     session working, yet the panel is driving exactly that. The ChatManager knows, so a
@@ -1350,7 +1370,7 @@ class ServerHost(orchestrator_run.Host):
 
     def send_to_agent(self, session_id: str, message: str) -> str:
         session = self._session(session_id)
-        blocked = codex_chat_block(session, self.chat)
+        blocked = codex_chat_block(session, self.chat) or follow_up_block(session, self.chat)
         if blocked:
             raise ValueError(blocked)
         self.chat.send(session.session_id, session.cwd, message,

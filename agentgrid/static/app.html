@@ -1100,20 +1100,56 @@ body.area-overview .viewnav,body.area-overview #searchBox,body.area-overview #ne
 .oplan{list-style:none;margin:0;padding:0;font-size:12.5px}
 .oplan li{padding:4px 0;border-bottom:1px solid var(--line)}
 .oplan li.done{color:var(--text-2);text-decoration:line-through}
-#orchDialog{width:min(560px,calc(100vw - 32px));padding:26px;background:var(--card);color:var(--text);
+.odlg{width:min(560px,calc(100vw - 32px));padding:26px;background:var(--card);color:var(--text);
   border:1px solid var(--line-2);border-radius:12px}
-#orchDialog::backdrop{background:#0005}
-#orchDialog h2{margin:0 0 6px;font-size:20px;font-weight:550}
-#orchDialog label{display:block;margin:16px 0}
-#orchDialog input,#orchDialog textarea,#orchDialog select{display:block;width:100%;padding:10px;margin-top:6px}
-#orchDialog textarea{resize:vertical;min-height:110px}
-#orchDialog p{color:var(--text-2);font-size:12px}
-#orchDialog fieldset{margin:16px 0;padding:10px 12px;border:1px solid var(--line-2);border-radius:8px}
-#orchDialog legend{font-size:11px;color:var(--text-2);padding:0 4px}
-#orchDialog fieldset label{display:block;margin:6px 0;font-size:12.5px}
-#orchDialog fieldset input{display:inline-block;width:auto;margin:0 6px 0 0}
-#orchDialog fieldset label span{display:block;margin-left:22px;font-size:11.5px;color:var(--text-2)}
-#orchDialog summary{font-size:12.5px;color:var(--text-2);cursor:pointer}
+.odlg::backdrop{background:#0005}
+.odlg h2{margin:0 0 6px;font-size:20px;font-weight:550}
+.odlg label{display:block;margin:16px 0}
+.odlg input,.odlg textarea,.odlg select{display:block;width:100%;padding:10px;margin-top:6px}
+.odlg textarea{resize:vertical;min-height:110px}
+.odlg p{color:var(--text-2);font-size:12px}
+.odlg fieldset{margin:16px 0;padding:10px 12px;border:1px solid var(--line-2);border-radius:8px}
+.odlg legend{font-size:11px;color:var(--text-2);padding:0 4px}
+.odlg fieldset label{display:block;margin:6px 0;font-size:12.5px}
+.odlg fieldset input[type=radio]{display:inline-block;width:auto;margin:0 6px 0 0}
+.odlg fieldset label:has(input[type=radio]) span{display:block;margin-left:22px;font-size:11.5px;color:var(--text-2)}
+.odlg summary{font-size:12.5px;color:var(--text-2);cursor:pointer}
+.odlg.wide{width:min(680px,calc(100vw - 32px))}
+/* The persona editor is long; its actions stay in reach instead of below the
+   fold. Negative bottom offsets the dialog's own padding so it sits flush. */
+.odlg-actions{position:sticky;bottom:-26px;margin:0 -26px -26px;padding:10px 26px 16px;
+  background:var(--card);border-top:1px solid var(--line)}
+.odlg-actions p.err:empty{display:none}
+.odlg .orow2{display:flex;gap:8px;align-items:center;margin-top:6px}
+.odlg .orow2 select{margin-top:0;flex:1 1 auto}
+.odlg .orow2 .btn{flex:0 0 auto}
+.pdefaults{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:0 10px}
+.pdefaults label{margin:6px 0!important;font-size:11.5px!important;color:var(--text-2)}
+/* a pick list: a short scrolling column of checkboxes with what each one is */
+.opick{max-height:170px;overflow:auto;margin:4px 0}
+.opick label{display:flex!important;gap:8px;align-items:flex-start;margin:0!important;padding:5px 2px;
+  font-size:12.5px!important;border-bottom:1px solid var(--line)}
+.opick label input{flex:0 0 auto;margin:2px 0 0!important;width:auto!important}
+.opick label span{display:block!important;margin:0!important}
+.opick .odesc{font-size:11px;color:var(--text-2)}
+.opick .omissing{color:var(--failed)}
+.opick:empty::before{content:attr(data-empty);font-size:11.5px;color:var(--text-3)}
+.pbank{display:flex;flex-direction:column;gap:6px;max-height:min(52vh,460px);overflow:auto}
+.pbank-row{display:flex;gap:10px;align-items:center;padding:10px 12px;border:1px solid var(--line);border-radius:8px}
+.pbank-row .pmain{flex:1 1 auto;min-width:0}
+.pbank-row strong{display:block;font-size:13px;font-weight:560}
+.pbank-row .pmeta{font-size:11px;color:var(--text-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.omem{display:flex;gap:8px;align-items:baseline;padding:5px 0;border-bottom:1px solid var(--line);font-size:12.5px}
+.omem span{flex:1 1 auto}
+.omem button{flex:0 0 auto;font:inherit;font-size:11px;color:var(--text-3);background:transparent;
+  border:0;cursor:pointer;padding:0 2px}
+.omem button:hover{color:var(--failed)}
+.omem-h{font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--text-3);margin:12px 0 4px}
+.omem-h:first-child{margin-top:0}
+.oline .oundo{font:inherit;font-size:11px;color:var(--text-2);background:transparent;border:0;
+  text-decoration:underline;cursor:pointer;margin-left:8px;padding:0}
+.oline .oundone{font-size:11px;color:var(--text-3);margin-left:8px}
+@media(max-width:640px){.pdefaults{grid-template-columns:1fr}}
 .orchlimits{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 12px}
 .orchlimits label{margin:10px 0;font-size:11.5px;color:var(--text-2)}
 @media(max-width:640px){.orchlimits{grid-template-columns:1fr}
@@ -1303,7 +1339,8 @@ body.area-overview .viewnav,body.area-overview #searchBox,body.area-overview #ne
       <option value="ask">Ask me</option>
       <option value="auto">Auto</option>
     </select>
-    <button class="btn sm" id="orchSettings" title="Model, instructions and limits">Settings</button>
+    <button class="btn sm" id="orchPersonaBtn" title="Who it is: guidelines, defaults, team, skills">Persona</button>
+    <button class="btn sm" id="orchSettings" title="This posting: brief, work area and limits">Settings</button>
     <button class="btn sm" id="orchStop" hidden title="Stop this run">Stop</button>
     <button class="btn sm" id="orchClose" title="Close (Esc)">Close</button>
   </div>
@@ -1312,6 +1349,7 @@ body.area-overview .viewnav,body.area-overview #searchBox,body.area-overview #ne
     <button type="button" data-otab="chat" aria-pressed="true">Chat</button>
     <button type="button" data-otab="plan">Plan</button>
     <button type="button" data-otab="agents">Agents</button>
+    <button type="button" data-otab="memory">Memory</button>
     <button type="button" data-otab="activity">Activity</button>
   </div>
   <div class="op-bodywrap">
@@ -1324,27 +1362,29 @@ body.area-overview .viewnav,body.area-overview #searchBox,body.area-overview #ne
     <button class="btn key" id="orchSend">Start</button>
   </form>
 </dialog>
-<dialog id="orchDialog" aria-labelledby="orchDialogTitle"><form id="orchForm">
+<dialog id="orchDialog" class="odlg" aria-labelledby="orchDialogTitle"><form id="orchForm">
   <h2 id="orchDialogTitle">New orchestrator</h2>
-  <p>An orchestrator runs on an OpenRouter model. It has no files or shell of its own: it works by
-     starting real Claude Code or Codex agents and reading what they produce.</p>
+  <p>Post a persona from your bank to this team. Who it is — its guidelines, model and how it
+     starts agents — comes from the persona; what this team is about goes in the brief.</p>
   <p class="err" id="orchConnHint" hidden>Connect OpenRouter under Providers first.</p>
-  <label>Name<input id="orchName" maxlength="60" required autocomplete="off" placeholder="e.g. Shipper"></label>
+  <label>Persona
+    <span class="orow2"><select id="orchPersona" required></select>
+      <button class="btn sm" type="button" id="orchNewPersona">New persona…</button></span>
+    <span class="hint" id="orchPersonaHint"></span></label>
+  <label>Name<input id="orchName" maxlength="60" required autocomplete="off" placeholder="e.g. Product Manager · MLG"></label>
   <label>Work area<select id="orchScope"></select></label>
-  <label>Model
-    <input id="orchModel" list="orchModels" required autocomplete="off" spellcheck="false"
-           placeholder="e.g. openai/gpt-5">
-    <datalist id="orchModels"></datalist></label>
   <label>Starts agents in<select id="orchProject"></select></label>
   <fieldset>
     <legend>Starting agents</legend>
     <label><input type="radio" name="orchmode" value="ask" checked> Ask me every time
       <span>Each agent it wants to start waits here for your approval, however long that takes.</span></label>
     <label><input type="radio" name="orchmode" value="auto"> Auto, inside the limits
-      <span>It starts agents on its own. Opening a Terminal window on your desktop still asks.</span></label>
+      <span>It starts agents on its own. Opening a Terminal window still asks, unless the persona
+        starts agents interactive by default.</span></label>
   </fieldset>
-  <label>Standing instructions<textarea id="orchInstructions" maxlength="20000"
-    placeholder="How should it work? What does finished look like?"></textarea></label>
+  <label>Product brief <span class="hint">what this team and product are — the persona brings the rest</span>
+    <textarea id="orchBrief" maxlength="20000"
+      placeholder="What is the product, who is it for, what matters right now?"></textarea></label>
   <details id="orchAdvanced">
     <summary>Limits</summary>
     <div class="orchlimits">
@@ -1362,6 +1402,55 @@ body.area-overview .viewnav,body.area-overview #searchBox,body.area-overview #ne
     <div class="spacer"></div>
     <button class="btn" type="button" id="orchCancel">Cancel</button>
     <button class="btn key" id="orchSave">Save</button>
+  </div>
+</form></dialog>
+<dialog id="personaBank" class="odlg" aria-labelledby="personaBankTitle">
+  <h2 id="personaBankTitle">Personas</h2>
+  <p>The managers you own. Edit one here and every team it is posted to has the change on its next
+     step; post one to a team from the Orchestrators menu.</p>
+  <div class="pbank" id="personaList"></div>
+  <div style="display:flex;gap:8px;margin-top:16px">
+    <button class="btn" type="button" id="personaNew">+ New persona</button>
+    <div class="spacer"></div>
+    <button class="btn" type="button" id="personaBankClose">Close</button>
+  </div>
+</dialog>
+<dialog id="personaDialog" class="odlg wide" aria-labelledby="personaDialogTitle"><form id="personaForm">
+  <h2 id="personaDialogTitle">New persona</h2>
+  <p class="err" id="personaPostedHint" hidden></p>
+  <label>Name<input id="pName" maxlength="60" required autocomplete="off" placeholder="e.g. Product Manager"></label>
+  <label>One-line description<input id="pDescription" maxlength="200" autocomplete="off"
+    placeholder="What it is for, as the bank lists it"></label>
+  <label>Thinks with <span class="hint">an OpenRouter model</span>
+    <input id="pModel" list="pModels" required autocomplete="off" spellcheck="false" placeholder="e.g. openai/gpt-5">
+    <datalist id="pModels"></datalist></label>
+  <label>Guidelines <span class="hint">its role, how it works, what good looks like</span>
+    <textarea id="pGuidelines" maxlength="20000"
+      placeholder="You are a product manager. You own the outcome, not the code…"></textarea></label>
+  <fieldset>
+    <legend>Agents it starts</legend>
+    <div class="pdefaults">
+      <label>Engine<select id="pEngine"><option value="claude">Claude</option><option value="codex">Codex</option></select></label>
+      <label>Model<input id="pAgentModel" list="pAgentModels" autocomplete="off" spellcheck="false"
+        placeholder="CLI default"><datalist id="pAgentModels"></datalist></label>
+      <label>Session<select id="pMode"><option value="interactive">Interactive (macOS)</option>
+        <option value="background">Background</option></select></label>
+    </div>
+    <label>Only allow these models <span class="hint">comma separated; empty allows any — AgentGrid refuses anything else</span>
+      <input id="pAllowed" autocomplete="off" spellcheck="false" placeholder="claude-opus-5"></label>
+  </fieldset>
+  <fieldset><legend>Its team — saved agents it can start as saved</legend><div class="opick" id="pTeam"></div></fieldset>
+  <fieldset><legend>Skills it knows — it tells agents which to use</legend><div class="opick" id="pSkills"></div></fieldset>
+  <fieldset><legend>Reusable prompts</legend><div class="opick" id="pPrompts"></div></fieldset>
+  <fieldset id="pMemoryBox"><legend>What it has learned about how to work</legend><div id="pMemory"></div></fieldset>
+  <div class="odlg-actions">
+    <p class="err" id="personaFormError" role="alert"></p>
+    <div style="display:flex;gap:8px">
+    <button class="btn danger" type="button" id="personaDelete" hidden>Delete</button>
+    <div class="spacer"></div>
+    <button class="btn" type="button" id="personaCancel">Cancel</button>
+    <button class="btn key" id="personaSave">Save persona</button>
+    </div>
   </div>
 </form></dialog>
 <dialog id="areaDialog" aria-labelledby="areaDialogTitle"><form id="areaForm">
@@ -4908,6 +4997,9 @@ async function poll() {
 
 let orchestrators = [], orchCaps = {interactive: true};
 let openOrch = "", orchTab = "chat", orchEvents = [], orchSrc = null, orchEditing = "";
+// The persona bank and the libraries a persona can draw on, from /api/personas.
+let personaData = {personas: [], catalog: {skills: [], agents: [], prompts: []}};
+let personaEditing = "", personaThen = null;
 
 const ORCH_STATE = {
   idle:    {label: "Not started", cls: ""},
@@ -4918,7 +5010,7 @@ const ORCH_STATE = {
   stopped: {label: "Stopped",     cls: ""},
 };
 // Chat shows what was said and what changed; Activity shows everything.
-const ORCH_SPOKEN = new Set(["run_started", "user_message", "message", "run_done", "agent_update",
+const ORCH_SPOKEN = new Set(["run_started", "user_message", "message", "run_done", "agent_update", "memory_saved",
                              "error", "approval_requested", "approval_resolved",
                              "agent_started", "limit", "resumed"]);
 
@@ -4955,7 +5047,7 @@ function renderOrchestrators() {
   const mine = visibleOrchestrators();
   const markup = mine.map(o => {
     const state = orchFor(o);
-    const bits = [o.model];
+    const bits = [o.persona && o.persona.name !== o.name ? o.persona.name : o.model];
     if (!o.scope && activeArea) bits.push("all areas");
     if (o.spawns) bits.push(`${o.spawns} agent${o.spawns === 1 ? "" : "s"}`);
     if (o.costUsd) bits.push(orchMoney(o.costUsd));
@@ -4967,7 +5059,8 @@ function renderOrchestrators() {
   }).join("") +
     (mine.length ? `<div class="osep"></div>` :
       `<p class="ohint">An orchestrator takes a goal and starts the agents to do it.</p>`) +
-    `<button class="oadd" data-add-orch>+ New orchestrator</button>`;
+    `<button class="oadd" data-add-orch>+ New orchestrator</button>` +
+    `<button class="oadd" data-open-bank>Personas…</button>`;
   if (host._markup !== markup) { host._markup = markup; host.innerHTML = markup; }
   // The button belongs to the board; the breadcrumb itself also shows over
   // notes and tickets, where an orchestrator is not what you are looking at.
@@ -4983,15 +5076,16 @@ function renderOrchestrators() {
 
 /* ---- the editor: what it is, not what it is doing ---- */
 
-async function editOrchestrator(id = "") {
+async function editOrchestrator(id = "", presetPersona = "") {
   orchEditing = id;
   const existing = orchestrators.find(o => o.id === id);
-  $("orchDialogTitle").textContent = existing ? "Orchestrator settings" : "New orchestrator";
+  $("orchDialogTitle").textContent = existing ? "Orchestrator settings" : "Post a persona";
   $("orchFormError").textContent = "";
   $("orchDelete").hidden = !existing;
   $("orchName").value = existing?.name || "";
-  $("orchModel").value = existing?.model || "";
-  $("orchInstructions").value = existing?.instructions || "";
+  // A new posting names itself after its persona and team until you type.
+  $("orchName")._auto = !existing;
+  $("orchBrief").value = existing?.brief || "";
   const limits = existing?.limits || {};
   $("orchConcurrent").value = limits.maxConcurrent ?? 3;
   $("orchSpawns").value = limits.maxSpawns ?? 20;
@@ -5007,7 +5101,10 @@ async function editOrchestrator(id = "") {
       `<option value="${esc(a.id)}"${a.id === scope ? " selected" : ""}>${esc(a.name)}</option>`).join("");
   $("orchScope").value = scope || "";
   $("orchDialog").showModal();
-  $("orchName").focus();
+  await loadPersonas();
+  fillPersonaSelect(existing?.personaId || presetPersona || personaData.personas[0]?.id || "");
+  suggestPostingName();
+  $("orchPersona").focus();
   // Both lists are worth waiting for, but neither should block the dialog.
   try {
     const data = await api("/api/projects");
@@ -5017,8 +5114,6 @@ async function editOrchestrator(id = "") {
   $("orchProject").innerHTML = `<option value="">Let it choose from your projects</option>` +
     projectsCache.filter(p => !p.hidden).map(p =>
       `<option value="${esc(p.path)}"${p.path === chosen ? " selected" : ""}>${esc(p.label || p.name)}</option>`).join("");
-  await loadOpenRouterModels();
-  $("orchModels").innerHTML = workflowModelOptions("openrouter");
   // Asked here rather than on every board poll: the answer only matters while
   // this dialog is open, and it is a Keychain read.
   try {
@@ -5030,10 +5125,10 @@ async function saveOrchestrator() {
   const body = {
     id: orchEditing || undefined,
     name: $("orchName").value,
+    personaId: $("orchPersona").value,
     scope: $("orchScope").value,
-    model: $("orchModel").value.trim(),
     cwd: $("orchProject").value,
-    instructions: $("orchInstructions").value,
+    brief: $("orchBrief").value,
     mode: document.querySelector('input[name=orchmode]:checked')?.value || "ask",
     limits: {
       maxConcurrent: $("orchConcurrent").value,
@@ -5052,6 +5147,148 @@ async function saveOrchestrator() {
   const saved = result.orchestrator;
   toast(orchEditing ? `Saved "${saved.name}".` : `Created "${saved.name}".`);
   if (!orchEditing) openOrchestrator(saved.id);
+}
+
+function fillPersonaSelect(selected) {
+  $("orchPersona").innerHTML = personaData.personas.length
+    ? personaData.personas.map(p => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join("")
+    : `<option value="">No personas yet — make one</option>`;
+  $("orchPersona").value = selected && personaData.personas.some(p => p.id === selected)
+    ? selected : (personaData.personas[0]?.id || "");
+  const persona = personaData.personas.find(p => p.id === $("orchPersona").value);
+  $("orchPersonaHint").textContent = persona ? personaSummary(persona) : "";
+}
+
+// What a persona is, in one line: the brain it thinks with and the shape of
+// the agents it starts -- the two things people most need to see before
+// posting it somewhere.
+function personaSummary(persona) {
+  const d = persona.agentDefaults || {};
+  return `${persona.description ? persona.description + " · " : ""}thinks with ${persona.model} · ` +
+    `starts agents as ${d.engine || "claude"} · ${d.model || "CLI default"} · ${d.mode || "background"}`;
+}
+
+function suggestPostingName() {
+  if (!$("orchName")._auto) return;
+  const persona = personaData.personas.find(p => p.id === $("orchPersona").value);
+  const area = areaData.areas.find(a => a.id === $("orchScope").value);
+  $("orchName").value = persona ? `${persona.name} · ${area ? area.name : "All areas"}` : "";
+}
+
+/* ---- the persona bank: who they are, edited in one place ---- */
+
+async function loadPersonas() {
+  try {
+    const data = await api("/api/personas");
+    if (data && !data.error) personaData = data;
+  } catch (e) { /* keep the last known bank */ }
+  return personaData;
+}
+
+async function openPersonaBank() {
+  await loadPersonas();
+  renderPersonaBank();
+  if (!$("personaBank").open) $("personaBank").showModal();
+}
+
+function renderPersonaBank() {
+  $("personaList").innerHTML = personaData.personas.map(p => {
+    const posted = p.postings.length ? `posted to ${p.postings.map(x => x.name).join(", ")}` : "not posted yet";
+    const lessons = `${p.memory.length} lesson${p.memory.length === 1 ? "" : "s"}`;
+    return `<div class="pbank-row"><div class="pmain"><strong>${esc(p.name)}</strong>
+      <div class="pmeta" title="${esc(personaSummary(p))}">${esc(personaSummary(p))}</div>
+      <div class="pmeta">${esc(posted)} · ${esc(lessons)}</div></div>
+      <button class="btn sm" type="button" data-pedit="${esc(p.id)}">Edit</button>
+      <button class="btn sm" type="button" data-ppost="${esc(p.id)}">Post here</button></div>`;
+  }).join("") || `<p class="hint">No personas yet. Make one, then post it to a team.</p>`;
+}
+
+// A pick list over one of the user's libraries. Something the persona names
+// that has since been removed stays listed and checked, marked missing, so
+// saving the persona does not silently drop it.
+function renderPick(id, items, chosen, describe) {
+  const picked = new Set((chosen || []).map(x => x.toLowerCase()));
+  const known = new Set(items.map(i => i.name.toLowerCase()));
+  $(id).innerHTML = items.map(i =>
+    `<label><input type="checkbox" value="${esc(i.name)}"${picked.has(i.name.toLowerCase()) ? " checked" : ""}>` +
+    `<span>${esc(i.name)}<span class="odesc">${esc(describe(i) || "")}</span></span></label>`).join("") +
+    (chosen || []).filter(x => !known.has(x.toLowerCase())).map(name =>
+      `<label><input type="checkbox" value="${esc(name)}" checked><span>${esc(name)}` +
+      `<span class="odesc omissing">not found — skipped until it is back</span></span></label>`).join("");
+}
+function pickedValues(id) {
+  return [...$(id).querySelectorAll("input:checked")].map(input => input.value);
+}
+
+function renderPersonaMemory(persona) {
+  const lessons = persona?.memory || [];
+  $("pMemoryBox").hidden = !persona;
+  $("pMemory").innerHTML = lessons.map(m =>
+    `<div class="omem"><span>${esc(m.text)}</span><button type="button" data-pforget="${esc(m.id)}" title="Forget this">✕</button></div>`).join("")
+    || `<p class="hint">Nothing yet. When you correct it, it can remember the lesson here.</p>`;
+}
+
+async function openPersonaEditor(id = "", then = null) {
+  personaEditing = id; personaThen = then;
+  await loadPersonas();
+  const persona = personaData.personas.find(p => p.id === id);
+  const used = personaData.personas.map(p => p.model);
+  // A new persona starts where the user's own defaults are: the brain they
+  // already use, and Opus 5 interactive for the agents it starts.
+  const defaults = persona?.agentDefaults || {engine: "claude", model: "claude-opus-5", mode: "interactive"};
+  $("personaDialogTitle").textContent = persona ? `Edit ${persona.name}` : "New persona";
+  $("personaFormError").textContent = "";
+  $("pName").value = persona?.name || "";
+  $("pDescription").value = persona?.description || "";
+  $("pModel").value = persona?.model || used[0] || "";
+  $("pGuidelines").value = persona?.guidelines || "";
+  $("pEngine").value = defaults.engine || "claude";
+  $("pAgentModel").value = defaults.model || "";
+  $("pMode").value = defaults.mode || "background";
+  $("pAllowed").value = (persona ? persona.allowedModels : ["claude-opus-5"]).join(", ");
+  const catalog = personaData.catalog || {};
+  renderPick("pTeam", catalog.agents || [], persona?.team,
+             a => a.summary || `${a.engine} · ${a.model || "default model"}`);
+  renderPick("pSkills", catalog.skills || [], persona?.skills, sk => sk.description);
+  renderPick("pPrompts", catalog.prompts || [], persona?.prompts, pr => pr.description);
+  $("pTeam").dataset.empty = "No saved agents yet — save one from the New agent sheet.";
+  $("pSkills").dataset.empty = "No Claude Code skills found in ~/.claude/skills.";
+  $("pPrompts").dataset.empty = "No saved prompts yet.";
+  renderPersonaMemory(persona);
+  $("personaPostedHint").hidden = !persona?.postings.length;
+  $("personaPostedHint").textContent = persona?.postings.length
+    ? `Posted to ${persona.postings.map(x => x.name).join(", ")} — changes apply to all of them.` : "";
+  $("personaDelete").hidden = !persona;
+  if (!$("personaDialog").open) $("personaDialog").showModal();
+  $("pName").focus();
+  await loadOpenRouterModels();
+  $("pModels").innerHTML = workflowModelOptions("openrouter");
+  $("pAgentModels").innerHTML = workflowModelOptions($("pEngine").value);
+}
+
+async function savePersona() {
+  const body = {
+    id: personaEditing || undefined,
+    name: $("pName").value,
+    description: $("pDescription").value,
+    model: $("pModel").value.trim(),
+    guidelines: $("pGuidelines").value,
+    agentDefaults: {engine: $("pEngine").value, model: $("pAgentModel").value.trim(), mode: $("pMode").value},
+    allowedModels: $("pAllowed").value.split(",").map(x => x.trim()).filter(Boolean),
+    team: pickedValues("pTeam"), skills: pickedValues("pSkills"), prompts: pickedValues("pPrompts"),
+  };
+  const result = await post("/api/personas/save", body);
+  if (!result || result.error) {
+    $("personaFormError").textContent = result?.error || "Could not save the persona.";
+    return;
+  }
+  $("personaDialog").close();
+  await loadPersonas();
+  if ($("personaBank").open) renderPersonaBank();
+  toast(personaEditing ? `Saved ${result.persona.name} — every posting has the change.` : `Created ${result.persona.name}.`);
+  const then = personaThen; personaThen = null;
+  if (then) then(result.persona);
+  loadOrchestrators();
 }
 
 /* ---- the panel: what it is doing ---- */
@@ -5114,7 +5351,7 @@ function renderOrchPanel() {
   if (!o) { closeOrchestrator(); return; }
   const state = orchFor(o);
   $("orchPanelName").textContent = o.name;
-  const facts = [o.model, orchScopeName(o), state.label];
+  const facts = [o.persona?.name, o.model, orchScopeName(o), state.label].filter(Boolean);
   if (o.spawns) facts.push(`${o.spawns} agent${o.spawns === 1 ? "" : "s"} started`);
   if (o.steps) facts.push(`${o.steps} step${o.steps === 1 ? "" : "s"}`);
   if (o.costUsd) facts.push(orchMoney(o.costUsd));
@@ -5133,6 +5370,7 @@ function renderOrchPanel() {
   paintOrchBody(orchTab === "chat" ? orchChatHTML(o)
     : orchTab === "plan" ? orchPlanHTML(o)
     : orchTab === "agents" ? orchAgentsHTML(o)
+    : orchTab === "memory" ? orchMemoryHTML(o)
     : orchActivityHTML());
 }
 
@@ -5196,7 +5434,9 @@ function renderOrchApproval(o) {
   if (host._pending === o.pending.id) return;
   host._pending = o.pending.id;
   const args = o.pending.args || {};
-  const fixed = [args.project || o.cwd, args.mode || "background", args.engine || "claude",
+  // Already filled in from the persona's defaults, so this is what will run.
+  const fixed = [args.savedAgent ? `saved agent ${args.savedAgent}` : "", args.project || o.cwd,
+                 args.engine || "claude", args.model || "CLI default model", args.mode || "background",
                  args.ticketKey].filter(Boolean).join(" · ");
   host.hidden = false;
   host.innerHTML =
@@ -5215,7 +5455,7 @@ function renderOrchApproval(o) {
      </div>`;
 }
 
-function orchLine(event) {
+function orchLine(event, liveMemory = new Set()) {
   const when = event.at ? new Date(event.at * 1000).toLocaleTimeString() : "";
   const said = (who, text, cls = "said") =>
     `<div class="oline ${cls}"><span class="owho">${esc(who)} · ${esc(when)}</span>${esc(text)}</div>`;
@@ -5226,7 +5466,17 @@ function orchLine(event) {
     case "message":             return said("orchestrator", event.text || "");
     case "note":                return said("thinking", event.text || "");
     case "agent_started":       return said("started an agent",
-      `${event.name || "agent"} · ${event.interactive ? "interactive" : "background"} · ${event.cwd || ""}\n${event.task || ""}`, "mine");
+      `${event.name || "agent"} · ${event.model || "default model"} · ${event.interactive ? "interactive" : "background"} · ${event.cwd || ""}\n${event.task || ""}`, "mine");
+    case "memory_saved": {
+      // Where it chose to keep it, and a way to take it back -- which is what
+      // makes letting it choose safe.
+      const where = event.scope === "persona" ? `remembered for every ${event.owner || "persona"} posting`
+                                              : "remembered for this team";
+      const control = liveMemory.has(event.id)
+        ? `<button class="oundo" type="button" data-forget-scope="${esc(event.scope)}" data-forget-id="${esc(event.id)}">Undo</button>`
+        : `<span class="oundone">forgotten</span>`;
+      return `<div class="oline mine"><span class="owho">${esc(where)} · ${esc(when)}</span>${esc(event.text || "")}${control}</div>`;
+    }
     case "approval_requested":  return said("waiting for you",
       `Asked for your approval: this ${event.reason || "starts a new agent"}.`, "mine");
     case "approval_resolved":   return said(event.approved ? "you approved" : "you declined",
@@ -5241,12 +5491,25 @@ function orchLine(event) {
 }
 
 function orchChatHTML(o) {
-  const lines = orchEvents.filter(e => ORCH_SPOKEN.has(e.type)).map(orchLine).join("");
+  const live = new Set([...(o.memory || []), ...(o.personaMemory || [])].map(m => m.id));
+  const lines = orchEvents.filter(e => ORCH_SPOKEN.has(e.type)).map(e => orchLine(e, live)).join("");
   if (lines) return lines;
   return `<p class="hint">Give it a goal below. It will plan, start agents to do the work, check
     what they produced and report back here.${o.mode === "ask"
       ? " Every agent it wants to start will wait here for your approval."
       : " It starts agents on its own, inside its limits."}</p>`;
+}
+
+// What it knows, split the way it was stored: lessons travel with the persona
+// to every team, facts stay with this one. Both can be taken back here.
+function orchMemoryHTML(o) {
+  const row = (m, scope) => `<div class="omem"><span>${esc(m.text)}</span>` +
+    `<button type="button" data-forget-scope="${scope}" data-forget-id="${esc(m.id)}" title="Forget this">✕</button></div>`;
+  return `<div class="omem-h">How ${esc(o.persona?.name || "it")} works — on every team</div>` +
+    ((o.personaMemory || []).map(m => row(m, "persona")).join("") ||
+      `<p class="hint">Nothing yet. Correct it once and it can keep the lesson.</p>`) +
+    `<div class="omem-h">Facts about this team</div>` +
+    ((o.memory || []).map(m => row(m, "posting")).join("") || `<p class="hint">Nothing yet.</p>`);
 }
 
 function orchPlanHTML(o) {
@@ -5324,6 +5587,7 @@ function bindOrchestrators() {
     const card = e.target.closest("[data-orch]");
     if (card) { closeFilters(); openOrchestrator(card.dataset.orch); return; }
     if (e.target.closest("[data-add-orch]")) { closeFilters(); editOrchestrator(); }
+    if (e.target.closest("[data-open-bank]")) { closeFilters(); openPersonaBank(); }
   };
   $("orchForm").onsubmit = async (e) => {
     e.preventDefault();
@@ -5344,6 +5608,53 @@ function bindOrchestrators() {
   $("orchClose").onclick = () => closeOrchestrator();
   $("orchPanel").addEventListener("close", () => { openOrch = ""; if (orchSrc) { orchSrc.close(); orchSrc = null; } });
   $("orchSettings").onclick = () => editOrchestrator(openOrch);
+  $("orchPersonaBtn").onclick = () => { const o = orchOpen(); if (o?.persona) openPersonaEditor(o.persona.id); };
+  $("orchPersona").onchange = () => { fillPersonaSelect($("orchPersona").value); suggestPostingName(); };
+  $("orchScope").addEventListener("change", suggestPostingName);
+  $("orchName").addEventListener("input", () => { $("orchName")._auto = false; });
+  $("orchNewPersona").onclick = () => openPersonaEditor("", persona => {
+    fillPersonaSelect(persona.id); suggestPostingName();
+  });
+  $("orchBody").addEventListener("click", async (e) => {
+    const button = e.target.closest("[data-forget-id]");
+    if (!button) return;
+    const result = await orchAction("forget", {scope: button.dataset.forgetScope,
+                                               memoryId: button.dataset.forgetId}, "Could not forget that.");
+    if (result) toast("Forgotten.");
+  });
+  $("personaBankClose").onclick = () => $("personaBank").close();
+  $("personaNew").onclick = () => openPersonaEditor("", () => renderPersonaBank());
+  $("personaList").onclick = (e) => {
+    const edit = e.target.closest("[data-pedit]"), postHere = e.target.closest("[data-ppost]");
+    if (edit) openPersonaEditor(edit.dataset.pedit);
+    if (postHere) { $("personaBank").close(); editOrchestrator("", postHere.dataset.ppost); }
+  };
+  $("personaForm").onsubmit = async (e) => {
+    e.preventDefault();
+    $("personaSave").disabled = true;
+    try { await savePersona(); } finally { $("personaSave").disabled = false; }
+  };
+  $("personaCancel").onclick = () => { personaThen = null; $("personaDialog").close(); };
+  $("pEngine").onchange = () => { $("pAgentModels").innerHTML = workflowModelOptions($("pEngine").value); };
+  $("personaDelete").onclick = async () => {
+    const persona = personaData.personas.find(p => p.id === personaEditing);
+    if (!confirm(`Delete the ${persona?.name || "this"} persona? Its lessons go with it.`)) return;
+    const result = await post("/api/personas/delete", {id: personaEditing});
+    if (!result || result.error) { $("personaFormError").textContent = result?.error || "Could not delete it."; return; }
+    $("personaDialog").close();
+    await loadPersonas();
+    if ($("personaBank").open) renderPersonaBank();
+    toast("Persona deleted.");
+  };
+  $("pMemory").onclick = async (e) => {
+    const button = e.target.closest("[data-pforget]");
+    if (!button) return;
+    const result = await post("/api/personas/forget", {id: personaEditing, memoryId: button.dataset.pforget});
+    if (!result || result.error) { toast(result?.error || "Could not forget that."); return; }
+    await loadPersonas();
+    renderPersonaMemory(personaData.personas.find(p => p.id === personaEditing));
+    loadOrchestrators();
+  };
   $("orchStop").onclick = () => orchAction("stop", {}, "Could not stop it.");
   $("orchModeLive").onchange = async (e) => {
     const o = orchOpen();

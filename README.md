@@ -423,6 +423,44 @@ create new ones. Click one to open its window:
 own checklist), **Agents** (what it started, with live status read off the
 board) and **Activity** (every decision, tool call, approval and dollar).
 
+### Personas: the managers you own
+
+An orchestrator is a **persona** posted to a **team**. The persona is who it
+is, kept in a bank (**Orchestrators ▾ → Personas…**) and edited in one place:
+
+- **Guidelines** — its role, how it works, what good looks like.
+- **Thinks with** — the OpenRouter model it reasons on.
+- **Agents it starts** — default engine, model and session (a new persona
+  starts at Claude · Opus 5 · interactive), plus an **allowed models** list.
+  Defaults fill whatever the model leaves out; anything outside the allowed
+  list is refused by Agent Grid before you are asked to approve it, so "stop
+  starting Opus 4.5 background agents" is said once, here.
+- **Its team** — saved agents from the agent library it may start *as saved*:
+  their engine, model and standing instructions, with its task as the brief.
+- **Skills and prompts** — Claude Code skills it knows about (it tells agents
+  which to use, and can read one in full) and prompts from your prompt library.
+  The brief carries names and one-line descriptions; full text is fetched only
+  when needed.
+- **What it has learned** — lessons about how to work, on every team.
+
+A **posting** is that persona on one team: the work area, the project, a
+**product brief**, facts it has been told about *this* team, its runs, and its
+own trust (Ask me / Auto) and budget. One persona can be posted to several
+teams at once — *Product Manager · MLG* and *Product Manager · COS* share the
+guidelines and lessons, not the product facts. Edit the persona and every
+posting uses the change on its next step, including a run already in flight.
+
+When you correct it, it saves the correction with `remember` — as a persona
+lesson or a fact about this team — and the chat says which, with an **Undo**.
+Everything it keeps is listed in the panel's **Memory** tab. **Start again**
+begins a fresh conversation but keeps its agents, its memory, and how the last
+run ended.
+
+Orchestrators made before personas existed are converted the first time the
+board starts: each becomes a persona of the same name (its instructions become
+the guidelines) with one posting that keeps its id, runs, journal and memory.
+Two starters, *Product Manager* and *Engineering Lead*, are offered once.
+
 ### It reports without being asked
 
 While its agents work, Agent Grid watches them *for* the orchestrator — no
@@ -965,7 +1003,8 @@ Everything agentgrid itself writes lives under `~/.agentgrid/`:
 ├── read.json           # how far you had read each session
 ├── note-meta.json      # page arrangement and pins
 ├── tickets/            # one JSON file per ticket, plus the key counters
-├── orchestrators/      # one directory each: definition, run state, journal
+├── orchestrators/      # one directory per posting: definition, run state, journal, memory
+├── personas/           # one JSON per persona: guidelines, defaults, toolkit, lessons
 ├── sync.json           # notes-sync remote, branch and last-sync time (no secrets)
 └── notes/              # the daily pads, plain markdown (a git repo once you sync)
 ```

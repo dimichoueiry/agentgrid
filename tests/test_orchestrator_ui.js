@@ -236,4 +236,87 @@ assert.ok(status()[0].includes('Waiting for your reply') && status()[1].includes
 vm.runInContext(`orchestrators[1].pending = {id: 'p3', tool: 'start_agent', args: {}}; renderOrchPanel()`, ctx);
 assert.ok(status()[0].includes('Waiting for your approval'), status()[0]);
 
-console.log('Orchestrator UI: scope, menu, badge, panel tabs, approvals, scroll, status line and escaping checks passed');
+// --- personas: who it is, shown wherever it matters -------------------------
+vm.runInContext(`orchestrators = ${JSON.stringify(ORCHS)};
+  orchestrators[0].name = 'Product Manager · Engineering';
+  orchestrators[0].persona = {id: 'pm', name: 'Product Manager',
+    agentDefaults: {engine: 'claude', model: 'claude-opus-5', mode: 'interactive'}};
+  activeArea = 'engineering'; view = 'board'; renderOrchestrators()`, ctx);
+const menu = elements.orchMenu.innerHTML;
+assert.ok(menu.includes('data-open-bank') && menu.includes('Personas'), 'the bank is one click from the menu');
+// A row named after its persona does not repeat it; one with its own name does.
+vm.runInContext(`orchestrators[0].name = 'Shipper'; renderOrchestrators()`, ctx);
+assert.ok(elements.orchMenu.innerHTML.includes('Product Manager'), elements.orchMenu.innerHTML);
+
+// the approval banner shows what will really run, defaults filled in
+elements.orchApproval = {...element()};
+vm.runInContext(`openOrch = '2'; orchestrators[1].status = 'waiting'; orchestrators[1].phase = '';
+  orchestrators[1].pending = {id: 'p9', tool: 'start_agent', reason: 'starts a new agent',
+    args: {project: '/repo', task: 'Build lesson 4', engine: 'claude', model: 'claude-opus-5',
+           mode: 'interactive', savedAgent: 'MLG-Lesson-Builder'}};
+  $('orchApproval')._pending = ''; renderOrchPanel()`, ctx);
+const shown = elements.orchApproval.innerHTML;
+assert.ok(shown.includes('saved agent MLG-Lesson-Builder'), shown);
+assert.ok(shown.includes('claude-opus-5') && shown.includes('interactive'), shown);
+
+// the panel names its persona
+vm.runInContext(`orchestrators[1].persona = {id: 'cos', name: 'Chief of Staff', agentDefaults: {}};
+  orchestrators[1].pending = null; renderOrchPanel()`, ctx);
+assert.ok(elements.orchPanelSub.textContent.startsWith('Chief of Staff'), elements.orchPanelSub.textContent);
+
+// --- memory: kept where it belongs, visible, and reversible -----------------
+vm.runInContext(`orchestrators[1].personaMemory = [{id: 'm1', text: 'Keep prompts short.'}];
+  orchestrators[1].memory = [{id: 'm2', text: 'The SEO agent is retired.'}];
+  orchTab = 'memory'; renderOrchPanel()`, ctx);
+const mem = elements.orchBody.innerHTML;
+assert.ok(mem.includes('How Chief of Staff works') && mem.includes('Keep prompts short.'), mem);
+assert.ok(mem.includes('Facts about this team') && mem.includes('The SEO agent is retired.'), mem);
+assert.ok(mem.includes('data-forget-scope="persona" data-forget-id="m1"'), mem);
+assert.ok(mem.includes('data-forget-scope="posting" data-forget-id="m2"'), mem);
+// In the chat, a saved memory says where it went and offers an undo...
+vm.runInContext(`orchTab = 'chat'; orchEvents = [
+  {at: 1, type: 'memory_saved', scope: 'persona', id: 'm1', text: 'Keep prompts short.', owner: 'Chief of Staff'},
+  {at: 2, type: 'memory_saved', scope: 'posting', id: 'gone', text: 'Old fact.', owner: 'COS'}];
+  renderOrchPanel()`, ctx);
+const said = elements.orchBody.innerHTML;
+assert.ok(said.includes('remembered for every Chief of Staff posting'), said);
+assert.ok(said.includes('data-forget-id="m1"') && said.includes('Undo'), said);
+// ...and one that has since been removed says so instead of offering a dead button.
+assert.ok(said.includes('remembered for this team') && said.includes('forgotten'), said);
+assert.ok(!said.includes('data-forget-id="gone"'), said);
+
+// --- the persona bank -------------------------------------------------------
+elements.personaList = {...element()};
+vm.runInContext(`personaData = {personas: [
+  {id: 'pm', name: 'Product Manager', description: 'Turns goals into shipped work.', model: 'openai/gpt-5.6',
+   agentDefaults: {engine: 'claude', model: 'claude-opus-5', mode: 'interactive'},
+   postings: [{id: 'a', name: 'Product Manager · MLG'}, {id: 'b', name: 'Product Manager · COS'}],
+   memory: [{id: 'm', text: 'x'}]},
+  {id: 'el', name: 'Engineering Lead', description: '', model: 'openai/gpt-5.6', agentDefaults: {},
+   postings: [], memory: []}], catalog: {skills: [], agents: [], prompts: []}};
+  renderPersonaBank()`, ctx);
+const bank = elements.personaList.innerHTML;
+assert.ok(bank.includes('posted to Product Manager · MLG, Product Manager · COS'), bank);
+assert.ok(bank.includes('1 lesson') && bank.includes('not posted yet'), bank);
+assert.ok(bank.includes('starts agents as claude · claude-opus-5 · interactive'), bank);
+assert.ok(bank.includes('data-ppost="el"') && bank.includes('data-pedit="pm"'), bank);
+
+// a pick list keeps a named-but-missing item, checked and marked, so saving
+// the persona never silently drops it
+elements.pSkills = {...element()};
+vm.runInContext(`renderPick('pSkills', [{name: 'worktree-task', description: 'Isolate work.'},
+                                        {name: 'sales-playbook', description: 'Sell.'}],
+                            ['worktree-task', 'gone-skill'], s => s.description)`, ctx);
+const pick = elements.pSkills.innerHTML;
+assert.ok(/value="worktree-task" checked/.test(pick), pick);
+assert.ok(!/value="sales-playbook" checked/.test(pick), pick);
+assert.ok(/value="gone-skill" checked/.test(pick) && pick.includes('not found'), pick);
+// a persona summary is the line people read before posting one
+assert.equal(vm.runInContext(`personaSummary({model: 'openai/gpt-5.6', description: '',
+  agentDefaults: {engine: 'claude', model: '', mode: 'background'}})`, ctx),
+  'thinks with openai/gpt-5.6 · starts agents as claude · CLI default · background');
+// persona names are escaped wherever they appear
+vm.runInContext(`personaData.personas[0].name = '<img src=x>'; renderPersonaBank()`, ctx);
+assert.ok(!elements.personaList.innerHTML.includes('<img src=x>'));
+
+console.log('Orchestrator UI: scope, menu, badge, panel tabs, approvals, scroll, status line, personas, memory and escaping checks passed');

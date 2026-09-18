@@ -59,10 +59,13 @@ def _tool(name: str, description: str, properties: dict, required: list[str] | N
 def tool_specs(context: Context) -> list[dict]:
     capabilities, persona, posting = context.capabilities, context.persona, context.posting
     defaults = persona.agent_defaults
-    modes = ["background"] + (["interactive"] if capabilities.get("interactive") else [])
+    locked = defaults.locked_mode()
+    # A locked session is the only one the menu can express.
+    modes = [locked] if locked else (
+        ["background"] + (["interactive"] if capabilities.get("interactive") else []))
     engines = capabilities.get("engines") or ["claude"]
-    shaped = (f"Leave engine, model and mode out to use your defaults "
-              f"({_defaults_line(persona)}).")
+    shaped = (f"Leave engine and model out to use your defaults ({_defaults_line(persona)})."
+              + (f" Every agent you start runs {locked}; AgentGrid enforces it." if locked else ""))
     start_properties = {
         "project": {"type": "string", "description": "Absolute path from list_projects."},
         "task": {"type": "string", "description": "The full brief for this agent."},
@@ -172,7 +175,9 @@ def tool_specs(context: Context) -> list[dict]:
 
 def _defaults_line(persona: personas.Persona) -> str:
     defaults = persona.agent_defaults
-    return f"{defaults.engine} · {defaults.model or 'the CLI default model'} · {defaults.mode}"
+    session = (f"always {defaults.locked_mode()}" if defaults.locked_mode()
+               else "a session of your choosing")
+    return f"{defaults.engine} · {defaults.model or 'the CLI default model'} · {session}"
 
 
 def _bullets(items: list[dict], render) -> list[str]:
@@ -206,8 +211,12 @@ def system_prompt(context: Context) -> str:
     if persona.guidelines.strip():
         lines += ["", "## Who you are", persona.guidelines.strip()]
     lines += ["", "## How agents you start are shaped",
-              f"Your defaults: {_defaults_line(persona)}. Leave engine, model and mode out and "
+              f"Your defaults: {_defaults_line(persona)}. Leave engine and model out and "
               f"these are used; AgentGrid fills them in."]
+    if persona.agent_defaults.locked_mode():
+        lines.append(f"Every agent you start runs {persona.agent_defaults.locked_mode()}. That is "
+                     f"the user's rule: AgentGrid applies it whatever you ask for, so do not ask "
+                     f"for the other kind.")
     if persona.allowed_models:
         lines.append("Agents may only run on: " + ", ".join(persona.allowed_models)
                      + ". Any other model is refused, so do not ask for one.")

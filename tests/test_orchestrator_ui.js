@@ -298,7 +298,7 @@ vm.runInContext(`personaData = {personas: [
 const bank = elements.personaList.innerHTML;
 assert.ok(bank.includes('posted to Product Manager · MLG, Product Manager · COS'), bank);
 assert.ok(bank.includes('1 lesson') && bank.includes('not posted yet'), bank);
-assert.ok(bank.includes('starts agents as claude · claude-opus-5 · interactive'), bank);
+assert.ok(bank.includes('starts agents as claude · claude-opus-5 · always interactive'), bank);
 assert.ok(bank.includes('data-ppost="el"') && bank.includes('data-pedit="pm"'), bank);
 
 // a pick list keeps a named-but-missing item, checked and marked, so saving
@@ -314,7 +314,10 @@ assert.ok(/value="gone-skill" checked/.test(pick) && pick.includes('not found'),
 // a persona summary is the line people read before posting one
 assert.equal(vm.runInContext(`personaSummary({model: 'openai/gpt-5.6', description: '',
   agentDefaults: {engine: 'claude', model: '', mode: 'background'}})`, ctx),
-  'thinks with openai/gpt-5.6 · starts agents as claude · CLI default · background');
+  'thinks with openai/gpt-5.6 · starts agents as claude · CLI default · always background');
+// "let it decide" says so, rather than looking like a rule
+assert.ok(vm.runInContext(`personaSummary({model: 'm', agentDefaults: {mode: 'either'}})`, ctx)
+  .endsWith('session its choice'));
 // persona names are escaped wherever they appear
 vm.runInContext(`personaData.personas[0].name = '<img src=x>'; renderPersonaBank()`, ctx);
 assert.ok(!elements.personaList.innerHTML.includes('<img src=x>'));

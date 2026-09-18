@@ -247,6 +247,52 @@ class PersonaRunTests(OrchestratorCase):
         self.assertEqual(run.state["status"], "done")
         self.assertTrue(self.host.started[0]["interactive"])
 
+    def test_an_always_interactive_persona_starts_interactive_whatever_the_model_asks(self):
+        """The bug that prompted the rule: Session said Interactive, the model
+        asked for background, and got it. Now the persona's session wins."""
+        self.use(agentDefaults={"engine": "claude", "model": "claude-opus-5", "mode": "interactive"})
+        model = Model(turn("", [("start_agent", {"project": "/tmp/project", "task": "research",
+                                                 "mode": "background", "name": "M9"})]),
+                      turn("", [("finish", {"summary": "ok"})]))
+        self.run_with(model, mode="auto")
+        self.assertTrue(self.host.started[0]["interactive"])
+
+    def test_an_always_background_persona_never_opens_a_window(self):
+        self.use(agentDefaults={"engine": "claude", "model": "", "mode": "background"})
+        run = self.run_with(self.start_calls(mode="interactive"), mode="auto")
+        self.assertFalse(self.host.started[0]["interactive"])
+        self.assertIsNone(run.state["pending"], "background never needs the terminal approval")
+
+    def test_let_it_decide_leaves_the_choice_to_the_model(self):
+        self.use(agentDefaults={"engine": "claude", "model": "", "mode": "either"})
+        self.run_with(self.start_calls(mode="background"), mode="auto")
+        self.assertFalse(self.host.started[0]["interactive"])
+        self.host.started.clear()
+        self.run_with(self.start_calls(), mode="auto")
+        self.assertFalse(self.host.started[0]["interactive"], "saying nothing means background")
+
+    def test_the_menu_only_offers_the_session_it_is_allowed(self):
+        self.use(agentDefaults={"engine": "claude", "model": "", "mode": "interactive"})
+        specs = orchestrator_brief.tool_specs(self.context(orchestrator.load(self.body())))
+        start = next(s for s in specs if s["function"]["name"] == "start_agent")
+        self.assertEqual(start["function"]["parameters"]["properties"]["mode"]["enum"], ["interactive"])
+        self.assertIn("AgentGrid enforces it", start["function"]["description"])
+        brief = orchestrator_brief.system_prompt(self.context(orchestrator.load(self.body())))
+        self.assertIn("Every agent you start runs interactive", brief)
+
+    def test_a_host_without_a_terminal_says_why_an_interactive_only_persona_cannot_start(self):
+        self.use(agentDefaults={"engine": "claude", "model": "", "mode": "interactive"})
+        self.host.caps = {**self.host.caps, "interactive": False}
+        run = self.run_with(self.start_calls(), mode="auto")
+        self.assertEqual(self.host.started, [])
+        refusal = json.loads([m for m in run.state["messages"] if m.get("role") == "tool"][0]["content"])
+        self.assertIn("only starts interactive agents", refusal["error"])
+
+    def test_a_persona_saved_before_the_rule_lets_the_model_choose(self):
+        loaded = personas.load({"name": "Old", "model": "x/y", "agentDefaults": {"engine": "claude"}})
+        self.assertEqual(loaded.agent_defaults.mode, "either")
+        self.assertEqual(loaded.agent_defaults.locked_mode(), "")
+
     def test_remember_puts_lessons_on_the_persona_and_facts_on_the_posting(self):
         model = Model(turn("", [("remember", {"text": "Keep prompts short.", "scope": "persona"}),
                                 ("remember", {"text": "The SEO agent is retired.", "scope": "posting"})]),

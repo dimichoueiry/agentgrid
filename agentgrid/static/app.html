@@ -1433,8 +1433,10 @@ body.area-overview .viewnav,body.area-overview #searchBox,body.area-overview #ne
       <label>Engine<select id="pEngine"><option value="claude">Claude</option><option value="codex">Codex</option></select></label>
       <label>Model<input id="pAgentModel" list="pAgentModels" autocomplete="off" spellcheck="false"
         placeholder="CLI default"><datalist id="pAgentModels"></datalist></label>
-      <label>Session<select id="pMode"><option value="interactive">Interactive (macOS)</option>
-        <option value="background">Background</option></select></label>
+      <label>Session <span class="hint">enforced</span><select id="pMode">
+        <option value="interactive">Always interactive (macOS)</option>
+        <option value="background">Always background</option>
+        <option value="either">Let it decide</option></select></label>
     </div>
     <label>Only allow these models <span class="hint">comma separated; empty allows any — AgentGrid refuses anything else</span>
       <input id="pAllowed" autocomplete="off" spellcheck="false" placeholder="claude-opus-5"></label>
@@ -5164,8 +5166,9 @@ function fillPersonaSelect(selected) {
 // posting it somewhere.
 function personaSummary(persona) {
   const d = persona.agentDefaults || {};
+  const session = d.mode === "interactive" || d.mode === "background" ? `always ${d.mode}` : "session its choice";
   return `${persona.description ? persona.description + " · " : ""}thinks with ${persona.model} · ` +
-    `starts agents as ${d.engine || "claude"} · ${d.model || "CLI default"} · ${d.mode || "background"}`;
+    `starts agents as ${d.engine || "claude"} · ${d.model || "CLI default"} · ${session}`;
 }
 
 function suggestPostingName() {
@@ -5244,7 +5247,7 @@ async function openPersonaEditor(id = "", then = null) {
   $("pGuidelines").value = persona?.guidelines || "";
   $("pEngine").value = defaults.engine || "claude";
   $("pAgentModel").value = defaults.model || "";
-  $("pMode").value = defaults.mode || "background";
+  $("pMode").value = defaults.mode || "either";
   $("pAllowed").value = (persona ? persona.allowedModels : ["claude-opus-5"]).join(", ");
   const catalog = personaData.catalog || {};
   renderPick("pTeam", catalog.agents || [], persona?.team,

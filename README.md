@@ -1019,6 +1019,7 @@ missing or corrupt file — these are optional enrichments, and deleting
 ```bash
 python3 -m unittest discover -s tests -v     # run from the repo root
 node tests/test_chat_ui.js                   # the chat composer
+node tests/test_chat_markdown_ui.js          # how chat replies render (markdown)
 node tests/test_tickets_ui.js                # the ticket board
 node tests/test_orchestrator_ui.js           # the orchestrator strip and panel
 ```

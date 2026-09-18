@@ -399,20 +399,54 @@ body.split .notes{
 .msg.assistant .who{color:var(--claude)}
 .msg .body{color:var(--text-2);overflow-wrap:anywhere}
 .msg.user .body{color:var(--text)}   /* short, worth reading exactly */
-.msg .body .t-h{display:block;margin:6px 0 2px;font-weight:600}
-.msg .body .t-li{display:list-item;margin-left:18px}
-/* markdown tables; display:block + overflow lets a wide one scroll rather than
-   burst the narrow chat column */
-.msg .body .t-tbl{display:block;overflow-x:auto;max-width:100%;border-collapse:collapse;
-  margin:8px 0;font-size:12.5px}
-.msg .body .t-tbl th,.msg .body .t-tbl td{border:1px solid var(--line-2);
-  padding:5px 9px;text-align:left;vertical-align:top}
-.msg .body .t-tbl th{font-weight:600;background:var(--card-2);color:var(--text);white-space:nowrap}
-.msg .body .t-tbl td{color:var(--text-2)}
+/* markdown (md()): blocks carry no margin of their own; a sibling gets one
+   step of space above it, so a reply reads as paragraphs, not a wall, and
+   nothing doubles up at the bubble's edges. Weight and --text lift headings
+   and bold out of the --text-2 body; size barely moves, so a heading never
+   shouts inside a chat column. */
+.md{line-height:1.6}
+.md>*,.md li>*,.md blockquote>*{margin:0}
+.md>*+*,.md blockquote>*+*{margin-top:9px}
+.md>*+:is(h1,h2,h3,h4,h5,h6){margin-top:15px}
+.md :is(h1,h2,h3,h4,h5,h6){font-size:13.5px;font-weight:600;line-height:1.35;color:var(--text)}
+.md h1{font-size:15.5px;letter-spacing:-.01em}
+.md h2{font-size:14.5px;letter-spacing:-.005em}
+.md strong{font-weight:600;color:var(--text)}
+.md :is(ul,ol){padding-left:21px}
+.md li::marker{color:var(--text-3)}
+.md li+li,.md li>*+*{margin-top:3px}
+.md .loose>li+li,.md .loose>li>*+*{margin-top:8px}
+.md li.task{list-style:none}
+/* the rail's hand-drawn box, sat in the bullet's gutter */
+.md li.task input{appearance:none;-webkit-appearance:none;position:relative;
+  width:12px;height:12px;margin:0 7px 0 -19px;vertical-align:-1px;
+  border:1px solid var(--line-2);border-radius:3px;background:transparent}
+.md li.task input:checked{background:var(--card-hover)}
+.md li.task input:checked::after{content:"";position:absolute;left:3px;top:0;width:3px;height:6px;
+  border:solid var(--text-3);border-width:0 1.5px 1.5px 0;transform:rotate(45deg)}
+.md blockquote{padding:0 0 0 11px;border-left:2px solid var(--line-2);color:var(--text-2)}
+.md hr{height:0;border:0;border-top:1px solid var(--line);margin:14px 0}
+.md code{font-family:var(--mono);font-size:.87em;padding:1px 5px;border-radius:4px;
+  background:var(--card-hover);border:1px solid var(--line);overflow-wrap:anywhere}
+.md pre code{font-size:inherit;padding:0;border:0;border-radius:0;background:none}
+/* a link Claude/Codex wrote to a local file: the words stay, the path is on hover */
+.md .t-ref{color:var(--text);border-bottom:1px dotted var(--text-3)}
+/* tables: display:block + overflow lets a wide one scroll rather than burst
+   the narrow chat column; cells wrap only at word breaks (anywhere would let
+   the table squeeze a column to one letter wide) */
+.md .t-tbl{display:block;overflow-x:auto;max-width:100%;width:max-content;
+  border-collapse:collapse;font-size:12.5px;line-height:1.5}
+.md .t-tbl th,.md .t-tbl td{border:1px solid var(--line-2);padding:5px 9px;
+  text-align:left;vertical-align:top;overflow-wrap:normal}
+.md .t-tbl th{font-weight:600;background:var(--card-hover);color:var(--text);white-space:nowrap}
+.md .t-tbl td{color:var(--text-2)}
 pre.t-code{
   font-family:var(--mono);font-size:11px;line-height:1.55;background:var(--bg);
   border:1px solid var(--line);border-radius:6px;padding:8px 10px;overflow-x:auto;
 }
+/* code in a reply: a step up from 11px so it reads beside 13.5px prose; long
+   lines scroll sideways, never wrap into a jagged column */
+.md pre.t-code{font-size:12px;white-space:pre;tab-size:4;overflow-wrap:normal}
 /* tool traces stay unfilled on the page background — the layer under the dialogue */
 .trace{margin:0 0 12px;padding:0 2px}
 .tcall,.tres,.tthink,.tsum{font-family:var(--mono);font-size:10.5px;line-height:1.7;color:var(--text-3)}
@@ -1993,60 +2027,232 @@ function isTyping() {
   return !!el && (/^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName) || el.isContentEditable);
 }
 
-/* markdown-lite. Order matters: fences are pulled out FIRST into private-use
-   sentinels so nothing inside a code block gets inline formatting, the text is
-   escaped, THEN inline rules run over the escaped text, and the fences are
-   restored last. Deliberately not a full parser. */
-// GFM tables: a header row, a |---|---| delimiter, then body rows. Runs on the
-// already-inline-formatted text (cells keep their bold/code/links) but BEFORE
-// fenced code is put back, so a table inside a code block is never eaten. A
-// wide table scrolls; ragged rows are padded/truncated to the header width.
-function mdTables(text) {
-  if (text.indexOf("|") < 0) return text;            // fast path: no pipes, no tables
-  const isDelim = s => /\|/.test(s) && /-/.test(s) && /^[\s|:-]+$/.test(s);
-  const cells = s => s.trim().replace(/^\|/, "").replace(/\|$/, "")
-    .replace(/\\\|/g, "").split("|").map(c => c.replace(//g, "|").trim());
+/* chat markdown. One renderer for every reply -- Claude and Codex, streamed
+   live or read back from disk -- and for ticket bodies and comments. A small
+   line-based block parser (fences, headings, rules, quotes, lists, GFM tables,
+   paragraphs) hands each block's text to mdInline. It emits real <p>/<ul>/
+   <pre>/<table> elements, so spacing comes from CSS, never from stray
+   newlines. Safe by construction: text is escaped before any tag is added,
+   the only tags are the ones built here, and a link keeps an href only for
+   http(s)/mailto. Tolerant of half-written input: an unclosed fence runs to
+   the end as code, an unclosed ** or [ stays literal. Deliberately not a full
+   CommonMark parser. Private-use chars U+E000-E002 are internal sentinels and
+   are stripped from input so a message cannot forge one. */
+const MD_FENCE = /^( {0,3})(`{3,}|~{3,})(.*)$/;
+const MD_HEAD = /^ {0,3}(#{1,6})(?:[ \t]+(.*))?$/;
+const MD_HR = /^ {0,3}([-*_])(?:[ \t]*\1){2,}[ \t]*$/;
+const MD_ITEM = /^( {0,3})([-+*]|\d{1,9}[.)])([ \t]+|$)(.*)$/;
+const MD_QUOTE = /^ {0,3}> ?(.*)$/;
+const MD_SETEXT = /^ {0,3}(=+|-{2,})[ \t]*$/;
+const MD_LINK = /(!?)\[((?:[^[\]\n]|\[[^[\]\n]*\])*)\]\(\s*<?([^\s()<>\uE000\uE001]*(?:\([^\s()<>\uE000\uE001]*\)[^\s()<>\uE000\uE001]*)*)>?(?:\s+"([^"\n\uE000\uE001]*)")?\s*\)/g;
+
+function md(raw) {
+  const lines = String(raw ?? "").replace(/[\uE000-\uE002]/g, "").replace(/\r\n?/g, "\n").split("\n");
+  return `<div class="md">${mdBlocks(lines)}</div>`;
+}
+
+// a backtick fence's info string may not hold a backtick (```a``` is inline code)
+function mdFence(line) {
+  const m = MD_FENCE.exec(line);
+  return m && !(m[2][0] === "`" && m[3].includes("`")) ? m : null;
+}
+// leading columns, a tab counting to the next multiple of 4
+function mdIndent(line) {
+  let n = 0;
+  for (const c of line) { if (c === " ") n++; else if (c === "\t") n += 4 - n % 4; else break; }
+  return n;
+}
+function mdDedent(line, n) {
+  let col = 0, i = 0;
+  for (; i < line.length && col < n; i++) {
+    if (line[i] === " ") col++; else if (line[i] === "\t") col += 4 - col % 4; else break;
+  }
+  return line.slice(i);
+}
+const mdIsDelim = s => s.includes("|") && s.includes("-") && /^[\s|:-]+$/.test(s);
+const mdTableAt = (lines, i) => lines[i].includes("|") && i + 1 < lines.length && mdIsDelim(lines[i + 1]);
+// can this line cut a paragraph short? (CommonMark's rule: an ordered list
+// only interrupts when it starts at 1, so "2024. was a year" stays prose)
+function mdBreaks(lines, i) {
+  const l = lines[i], m = MD_ITEM.exec(l);
+  if (mdFence(l) || MD_HEAD.test(l) || MD_HR.test(l) || MD_QUOTE.test(l)) return true;
+  if (m && m[4].trim() && (!/\d/.test(m[2]) || parseInt(m[2], 10) === 1)) return true;
+  return mdTableAt(lines, i);
+}
+
+function mdBlocks(lines) {
+  const out = [];
+  let i = 0, m;
+  while (i < lines.length) {
+    const line = lines[i];
+    if (!line.trim()) { i++; continue; }
+    if ((m = mdFence(line))) {
+      const close = new RegExp(`^ {0,3}${m[2][0] === "~" ? "~" : "`"}{${m[2].length},}[ \\t]*$`);
+      const lang = m[3].trim().split(/\s+/)[0];
+      const body = [];
+      for (i++; i < lines.length && !close.test(lines[i]); i++) body.push(mdDedent(lines[i], m[1].length));
+      i++;                     // the closing fence -- or past the end while it is still streaming
+      out.push(`<pre class="t-code"${lang ? ` data-lang="${esc(lang)}"` : ""}><code>${esc(body.join("\n"))}</code></pre>`);
+    } else if (mdTableAt(lines, i)) {
+      const t = mdTable(lines, i); out.push(t.html); i = t.next;
+    } else if ((m = MD_HEAD.exec(line))) {
+      const text = (m[2] || "").replace(/(?:^|[ \t]+)#+[ \t]*$/, "").trim();   // "## Title ##"
+      out.push(`<h${m[1].length}>${mdInline(text)}</h${m[1].length}>`); i++;
+    } else if (MD_HR.test(line)) {
+      out.push("<hr>"); i++;
+    } else if (MD_QUOTE.test(line)) {
+      const inner = [];
+      for (; i < lines.length && (m = MD_QUOTE.exec(lines[i])); i++) inner.push(m[1]);
+      out.push(`<blockquote>${mdBlocks(inner)}</blockquote>`);
+    } else if (MD_ITEM.test(line)) {
+      const l = mdList(lines, i); out.push(l.html); i = l.next;
+    } else {
+      // a paragraph keeps its line breaks: in chat a newline is meant
+      const para = [line.trim()];
+      let level = 0;
+      for (i++; i < lines.length && lines[i].trim(); i++) {
+        if ((m = MD_SETEXT.exec(lines[i]))) { level = m[1][0] === "=" ? 1 : 2; i++; break; }
+        if (mdBreaks(lines, i)) break;
+        para.push(lines[i].trim());
+      }
+      const html = mdInline(para.join("\n"));
+      out.push(level ? `<h${level}>${html}</h${level}>` : `<p>${html}</p>`);
+    }
+  }
+  return out.join("");
+}
+
+// A list and everything nested in it. An item owns the lines indented to its
+// content column; this also accepts 2 spaces under "1. " (a common slip), and
+// anything inside an open fence. A blank line between items or between an
+// item's blocks makes the list loose, which only widens its spacing.
+function mdList(lines, i) {
+  const first = MD_ITEM.exec(lines[i]), ordered = /\d/.test(first[2]);
+  const items = [];
+  let cur = null, gap = false, loose = false;
+  for (; i < lines.length; i++) {
+    const line = lines[i], m = MD_ITEM.exec(line);
+    if (!line.trim()) { if (cur) cur.lines.push(""); gap = true; continue; }
+    if (cur && (cur.fence || mdIndent(line) >= Math.min(cur.indent, cur.marker + 2))) {
+      if (gap && !cur.fence) loose = true;
+      const own = mdDedent(line, cur.indent);
+      if (/^ {0,3}(`{3,}|~{3,})/.test(own)) cur.fence = !cur.fence;
+      cur.lines.push(own);
+    } else if (m && /\d/.test(m[2]) === ordered) {
+      if (cur && gap) loose = true;
+      const pad = m[4] ? Math.min(mdIndent(m[3]), 4) : 1;
+      cur = {marker: m[1].length, indent: m[1].length + m[2].length + pad, lines: [m[4]], fence: false};
+      if (mdFence(m[4])) cur.fence = true;
+      items.push(cur);
+    } else if (cur && !gap && !m && !mdBreaks(lines, i)) {
+      cur.lines.push(line.trim());          // a lazy continuation of the item's text
+    } else break;
+    gap = false;
+  }
+  const lis = items.map(it => {
+    while (it.lines.length && !it.lines[it.lines.length - 1].trim()) it.lines.pop();
+    const task = /^\[([ xX])\](?:[ \t]+|$)/.exec(it.lines[0] || "");
+    if (task) it.lines[0] = it.lines[0].slice(task[0].length);
+    let html = mdBlocks(it.lines);
+    if (task) {
+      const box = `<input type="checkbox" disabled${task[1] === " " ? "" : " checked"}>`;
+      html = html.startsWith("<p>") ? `<p>${box}${html.slice(3)}` : box + html;
+    }
+    return `<li${task ? ' class="task"' : ""}>${html}</li>`;
+  });
+  const tag = ordered ? "ol" : "ul", start = ordered ? parseInt(first[2], 10) : 1;
+  return {next: i, html: `<${tag}${start !== 1 ? ` start="${start}"` : ""}${loose ? ' class="loose"' : ""}>` +
+    `${lis.join("")}</${tag}>`};
+}
+
+// GFM tables: a header row, a |---|:--:| delimiter, then rows up to a blank
+// line. Ragged rows are padded/truncated to the header; \| is a literal pipe.
+// A header with no rows yet (mid-stream) still renders as a table.
+function mdTable(lines, i) {
+  const cells = s => s.trim().replace(/\\\|/g, "\uE002").replace(/^\|/, "").replace(/\|$/, "")
+    .split("|").map(c => c.replace(/\uE002/g, "|").trim());
   const align = c => {
     const l = c.startsWith(":"), r = c.endsWith(":");
     return l && r ? "center" : r ? "right" : l ? "left" : "";
   };
-  const lines = text.split("\n"), out = [];
-  for (let i = 0; i < lines.length; i++) {
-    if (lines[i].indexOf("|") >= 0 && i + 1 < lines.length && isDelim(lines[i + 1])) {
-      const head = cells(lines[i]);
-      const aligns = cells(lines[i + 1]).map(align);
-      const rows = [];
-      let j = i + 2;
-      for (; j < lines.length && lines[j].trim() && lines[j].indexOf("|") >= 0 && !isDelim(lines[j]); j++)
-        rows.push(cells(lines[j]));
-      const cell = (tag, c, k) => `<${tag}${aligns[k] ? ` style="text-align:${aligns[k]}"` : ""}>${c || ""}</${tag}>`;
-      out.push('<table class="t-tbl"><thead><tr>' +
-        head.map((c, k) => cell("th", c, k)).join("") + "</tr></thead><tbody>" +
-        rows.map(r => "<tr>" + head.map((_, k) => cell("td", r[k], k)).join("") + "</tr>").join("") +
-        "</tbody></table>");
-      i = j - 1;
-    } else {
-      out.push(lines[i]);
-    }
-  }
-  return out.join("\n");
+  const head = cells(lines[i]), aligns = cells(lines[i + 1]).map(align), rows = [];
+  let j = i + 2;
+  for (; j < lines.length && lines[j].trim() && lines[j].includes("|") && !mdIsDelim(lines[j]); j++)
+    rows.push(cells(lines[j]));
+  const cell = (tag, c, k) =>
+    `<${tag}${aligns[k] ? ` style="text-align:${aligns[k]}"` : ""}>${mdInline(c || "")}</${tag}>`;
+  return {next: j, html: '<table class="t-tbl"><thead><tr>' + head.map((c, k) => cell("th", c, k)).join("") +
+    "</tr></thead><tbody>" + rows.map(r => "<tr>" + head.map((_, k) => cell("td", r[k], k)).join("") + "</tr>").join("") +
+    "</tbody></table>"};
 }
 
-function md(raw) {
-  const fences = [];
-  let text = String(raw ?? "").replace(/```[\w-]*\n?([\s\S]*?)```/g,
-    (_, code) => `${fences.push(code.replace(/\n$/, "")) - 1}`);
-  text = esc(text)
-    .replace(/`([^`\n]+)`/g, "<code>$1</code>")
-    .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>")
-    .replace(/^(#{1,6})\s+(.*)$/gm, (_, h, t) => `<b class="t-h">${t}</b>`)
-    // the lookahead keeps checkbox lines from being eaten as list items
-    .replace(/^\s*[-*]\s+(?!\[[ xX]\])(.*)$/gm, "<span class='t-li'>$1</span>")
-    .replace(/\b(https?:\/\/[^\s<)]+)/g, '<a href="$1" target="_blank" rel="noreferrer">$1</a>')
-    .replace(/@([a-z0-9][a-z0-9._-]*)/gi, '<a href="#" class="mention" data-slug="$1">@$1</a>');
-  text = mdTables(text);
-  return text.replace(/(\d+)/g,
-    (_, i) => `<pre class="t-code">${esc(fences[Number(i)])}</pre>`);
+// `code` spans, CommonMark style: a run of N backticks closes only on a run of
+// exactly N, so ``a ` b`` works and an unmatched run stays literal
+function mdCodeSpans(s, hold) {
+  let out = "", i = 0;
+  for (;;) {
+    const a = s.indexOf("`", i);
+    if (a < 0) return out + s.slice(i);
+    let b = a; while (s[b] === "`") b++;
+    let c = b, close = -1;
+    while ((c = s.indexOf("`", c)) >= 0) {
+      let d = c; while (s[d] === "`") d++;
+      if (d - c === b - a) { close = c; break; }
+      c = d;
+    }
+    if (close < 0) { out += s.slice(i, b); i = b; continue; }
+    let code = s.slice(b, close).replace(/\n/g, " ");
+    if (code.length > 2 && code[0] === " " && code.endsWith(" ") && code.trim()) code = code.slice(1, -1);
+    out += s.slice(i, a) + hold(`<code>${esc(code)}</code>`);
+    i = close + (b - a);
+  }
+}
+
+// Inline rules over one block's raw text. Code spans, escapes and links are
+// lifted out into sentinels first so nothing inside them is formatted twice;
+// the rest is escaped, emphasis runs over the escaped text, then the
+// sentinels are put back.
+function mdInline(raw) {
+  const keep = [], hold = h => `\uE000${keep.push(h) - 1}\uE001`;
+  const link = (href, text, title) => /^(?:https?:|mailto:)/i.test(href)
+    ? `<a href="${esc(href)}" target="_blank" rel="noreferrer"${title ? ` title="${esc(title)}"` : ""}>${text}</a>`
+    // a relative or local path (Codex cites files this way) or an unsafe scheme:
+    // keep the words, show the target on hover, navigate nowhere
+    : `<span class="t-ref" title="${esc(href)}">${text}</span>`;
+  let t = mdCodeSpans(String(raw), hold)
+    .replace(/\\([!-/:-@[-`{-~])/g, (_, c) => hold(esc(c)))
+    // images are never fetched; they become a link to the picture
+    .replace(MD_LINK, (_, bang, label, href, title) =>
+      hold(link(href, mdFmt(label, false) || esc(bang ? "image" : href), title)))
+    .replace(/<((?:https?:\/\/|mailto:)[^\s<>]+)>/gi, (_, u) => hold(link(u, esc(u))))
+    .replace(/https?:\/\/[^\s<>\uE000\uE001]+/gi, u => {
+      // trailing punctuation and an unmatched ")" belong to the sentence
+      let tail = "";
+      while (/[.,:;!?'"*_~)\]]$/.test(u)) {
+        if (u.endsWith(")") && (u.match(/\(/g) || []).length >= (u.match(/\)/g) || []).length) break;
+        tail = u.slice(-1) + tail; u = u.slice(0, -1);
+      }
+      return hold(link(u, esc(u))) + tail;
+    });
+  const put = s => s.replace(/\uE000(\d+)\uE001/g, (_, n) => put(keep[Number(n)]));
+  return put(mdFmt(t, true)).replace(/\n/g, "<br>");
+}
+
+// escape, then emphasis. No span crosses a line break, which also bounds the
+// worst case by the longest line. `mentions` is off inside a link's own label
+function mdFmt(s, mentions) {
+  s = esc(s)
+    .replace(/&lt;br\s*\/?&gt;/gi, "<br>")           // models put <br> in table cells
+    .replace(/\*\*\*(?=\S)([^\n]*?\S)\*\*\*/g, "<strong><em>$1</em></strong>")
+    .replace(/\*\*(?=\S)([^\n]*?\S)\*\*/g, "<strong>$1</strong>")
+    .replace(/(^|[^\w])__(?=\S)([^\n]*?\S)__(?!\w)/g, "$1<strong>$2</strong>")
+    .replace(/(^|[^\w*])\*(?=[^\s*])([^\n]*?[^\s*])\*(?![\w*])/g, "$1<em>$2</em>")
+    .replace(/(^|[^\w])_(?=[^\s_])([^\n]*?[^\s_])_(?!\w)/g, "$1<em>$2</em>")
+    .replace(/~~(?=\S)([^\n]*?\S)~~/g, "<del>$1</del>");
+  return mentions
+    ? s.replace(/(^|[^\w@/.])@([a-z0-9](?:[a-z0-9._-]*[a-z0-9_-])?)/gi,
+      '$1<a href="#" class="mention" data-slug="$2">@$2</a>')
+    : s;
 }
 
 // ticket keys become links in the rail and history, never in the editor

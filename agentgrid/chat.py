@@ -17,7 +17,9 @@ Two things it guarantees:
 - **A queue, not an interrupt.** A message sent while a turn is running is held
   and started when that turn finishes -- one turn per session at a time. That is
   the honest ceiling for the CLI (headless `-p` is one-shot); mid-turn injection
-  would need the paid-API SDK, which we deliberately don't use.
+  would need the paid-API SDK, which we deliberately don't use. A held message
+  can still be read, edited, reordered or removed until it starts, and a
+  `queue` event tells every open tab when the queue changes.
 
 Everything fails soft. A crashed subprocess, a torn JSON line, a vanished client
 -- each is caught and, at most, turns into an `error` event; nothing here raises
@@ -275,7 +277,14 @@ class ChatSession:
         self._api_cancel = threading.Event()
         self._api_response = None
         self._cancel_generation = 0
-        self._pending: queue.Queue = queue.Queue()
+        # Waiting turns, oldest first, each {id, message, posture, model,
+        # attachments, generation, waited}. Guarded by _lock. `_current` is the
+        # entry the worker holds from the moment it is taken until its turn ends.
+        self._pending: list[dict] = []
+        self._current: dict | None = None
+        self._queue_seq = 0
+        # Recently removed entries (id -> (index, entry)), so Remove can be undone.
+        self._removed: dict[str, tuple[int, dict]] = {}
         self._subscribers: list[queue.Queue] = []
         self._lock = threading.Lock()
         self._proc: subprocess.Popen | None = None
@@ -304,26 +313,123 @@ class ChatSession:
     # -- turns --------------------------------------------------------------
 
     def send(self, message: str, posture: str, model: str = "",
-             attachments: list[str] | None = None) -> None:
-        """Queue a message; start the worker if it isn't already draining."""
+             attachments: list[str] | None = None) -> dict:
+        """Queue a message; start the worker if it isn't already draining.
+
+        Returns the entry's id and whether it waits behind other work. A
+        message that waits is not shown as sent: it sits in the queue, where it
+        can still be edited, and a `queue` event announces it when it starts.
+        """
         with self._lock:
-            self._pending.put((message, posture, model, list(attachments or []), self._cancel_generation))
-            if self._worker is None or not self._worker.is_alive():
-                self._worker = threading.Thread(target=self._drain, daemon=True)
-                self._worker.start()
+            self._queue_seq += 1
+            entry = {"id": f"q{self._queue_seq}", "message": message, "posture": posture,
+                     "model": model, "attachments": list(attachments or []),
+                     "generation": self._cancel_generation,
+                     "waited": self._current is not None or bool(self._pending)}
+            self._pending.append(entry)
+            self._ensure_worker()
+            snapshot = self._queue_view()
+        if entry["waited"]:
+            self._emit({"type": "queue", "queue": snapshot, "started": None})
+        return {"id": entry["id"], "queued": entry["waited"]}
+
+    def _ensure_worker(self) -> None:
+        # Caller holds _lock.
+        if self._worker is None or not self._worker.is_alive():
+            self._worker = threading.Thread(target=self._drain, daemon=True)
+            self._worker.start()
 
     def _drain(self) -> None:
         while True:
             with self._lock:
-                try:
-                    message, posture, model, attachments, generation = self._pending.get_nowait()
-                except queue.Empty:
+                self._current = None
+                if not self._pending:
                     self._worker = None
                     return
-                if generation != self._cancel_generation:
+                entry = self._pending.pop(0)
+                if entry["generation"] != self._cancel_generation:
                     continue
+                self._current = entry
                 self._api_cancel.clear()
-            self._run_turn(message, posture, model, attachments)
+                snapshot = self._queue_view()
+            if entry["waited"]:
+                # Before turn_started, so the browser shows the message first.
+                self._emit({"type": "queue", "queue": snapshot,
+                            "started": self._public(entry)})
+            self._run_turn(entry["message"], entry["posture"], entry["model"],
+                           entry["attachments"])
+
+    # -- the queue, as the browser sees and edits it ------------------------
+
+    @staticmethod
+    def _public(entry: dict) -> dict:
+        return {"id": entry["id"], "message": entry["message"],
+                "posture": entry["posture"], "model": entry["model"],
+                "files": [os.path.basename(p) for p in entry["attachments"]]}
+
+    def _queue_view(self) -> list[dict]:
+        # Caller holds _lock.
+        return [self._public(entry) for entry in self._pending]
+
+    def _find(self, entry_id: str) -> int:
+        # Caller holds _lock.
+        for index, entry in enumerate(self._pending):
+            if entry["id"] == entry_id:
+                return index
+        return -1
+
+    def _queue_changed(self) -> None:
+        with self._lock:
+            snapshot = self._queue_view()
+        self._emit({"type": "queue", "queue": snapshot, "started": None})
+
+    def edit_queued(self, entry_id: str, message: str) -> bool:
+        """Replace a waiting message's text. False once it has started or gone."""
+        message = message.strip()
+        with self._lock:
+            index = self._find(entry_id)
+            if index < 0:
+                return False
+            if not message and not self._pending[index]["attachments"]:
+                raise ValueError("A queued message can't be empty. Remove it instead.")
+            self._pending[index]["message"] = message
+        self._queue_changed()
+        return True
+
+    def remove_queued(self, entry_id: str) -> bool:
+        with self._lock:
+            index = self._find(entry_id)
+            if index < 0:
+                return False
+            self._removed[entry_id] = (index, self._pending.pop(index))
+            while len(self._removed) > 20:
+                self._removed.pop(next(iter(self._removed)))
+        self._queue_changed()
+        return True
+
+    def move_queued(self, entry_id: str, to: int) -> bool:
+        with self._lock:
+            index = self._find(entry_id)
+            if index < 0:
+                return False
+            entry = self._pending.pop(index)
+            self._pending.insert(max(0, min(int(to), len(self._pending))), entry)
+        self._queue_changed()
+        return True
+
+    def restore_queued(self, entry_id: str) -> bool:
+        """Undo a Remove: put the entry back where it was, if Stop hasn't cleared it."""
+        with self._lock:
+            index, entry = self._removed.pop(entry_id, (-1, None))
+            if entry is None or entry["generation"] != self._cancel_generation:
+                return False
+            # It may start at once if the queue drained meanwhile; either way
+            # it was never shown as sent, so announce it when it starts.
+            entry["waited"] = True
+            self._pending.insert(min(index, len(self._pending)), entry)
+            self._ensure_worker()
+        self._queue_changed()
+        return True
 
     def _run_turn(self, message: str, posture: str, model: str = "",
                   attachments: list[str] | None = None) -> None:
@@ -453,11 +559,8 @@ class ChatSession:
             threading.Thread(target=response.close, daemon=True).start()
         with self._lock:
             proc = self._proc
-        try:
-            while True:
-                self._pending.get_nowait()
-        except queue.Empty:
-            pass
+            self._pending.clear()
+            self._removed.clear()
         if proc and proc.poll() is None:
             try:
                 os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
@@ -465,10 +568,12 @@ class ChatSession:
                 pass
         self._emit({"type": "turn_done", "ok": False, "result": None,
                     "cancelled": True, "stats": {}})
+        self._emit({"type": "queue", "queue": [], "started": None})
 
     def state(self) -> dict:
         with self._lock:
-            return {"running": self._running, "queued": self._pending.qsize()}
+            return {"running": self._running, "queued": len(self._pending),
+                    "queue": self._queue_view()}
 
 
 # ---------------------------------------------------------------------------
@@ -492,8 +597,31 @@ class ChatManager:
 
     def send(self, session_id: str, cwd: str, message: str, posture: str,
              model: str = "", attachments: list[str] | None = None,
-             engine: str = "claude") -> None:
-        self.session(session_id, cwd, engine).send(message, posture, model, attachments)
+             engine: str = "claude") -> dict:
+        return self.session(session_id, cwd, engine).send(message, posture, model, attachments)
+
+    def queue_action(self, session_id: str, action: str, entry_id: str,
+                     message: object = None, index: object = None) -> bool:
+        """Edit, remove, move or restore one waiting message.
+
+        False means the entry is no longer waiting (it started, or Stop cleared
+        it). ValueError means the request itself is wrong.
+        """
+        with self._lock:
+            existing = self._sessions.get(session_id)
+        if existing is None:
+            return False
+        if action == "edit":
+            return existing.edit_queued(entry_id, str(message or ""))
+        if action == "remove":
+            return existing.remove_queued(entry_id)
+        if action == "restore":
+            return existing.restore_queued(entry_id)
+        if action == "move":
+            if isinstance(index, bool) or not isinstance(index, int):
+                raise ValueError("Say where to move it.")
+            return existing.move_queued(entry_id, index)
+        raise ValueError(f"Unknown queue action: {action}.")
 
     def cancel(self, session_id: str) -> None:
         with self._lock:
@@ -504,4 +632,4 @@ class ChatManager:
     def state(self, session_id: str) -> dict:
         with self._lock:
             existing = self._sessions.get(session_id)
-        return existing.state() if existing else {"running": False, "queued": 0}
+        return existing.state() if existing else {"running": False, "queued": 0, "queue": []}

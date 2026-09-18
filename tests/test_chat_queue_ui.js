@@ -100,7 +100,7 @@ const ctx = vm.createContext({
 const section = script.slice(script.indexOf('let chatSrc = null'), script.indexOf('// called from openSession'));
 vm.runInContext(section, ctx);
 vm.runInContext(['fileBadge', 'filePills', 'chatAppend', 'chatOnEvent', 'chatSetStatus', 'chatSyncState',
-  'chatQueueReset', 'chatSetQueue', 'chatToggleQueue', 'uploadName', 'cqRowHtml', 'chatRenderQueue',
+  'chatQueueReset', 'chatQueueAccept', 'chatSetQueue', 'chatToggleQueue', 'uploadName', 'cqRowHtml', 'chatRenderQueue',
   'chatQueueIndexOfRow', 'cqRefocus', 'cqStartEdit', 'cqCancelEdit', 'cqSave', 'cqRemove', 'cqRestore',
   'cqMoveUp', 'cqReply', 'cqRescue', 'chatEchoStarted', 'cqClick', 'cqInput', 'cqKeydown',
   'chatSend', 'refreshTranscript'].map(extract).join('\n'), ctx);
@@ -254,6 +254,31 @@ const count = () => elements.cQueueBtn.hidden ? 0 : Number(/^(\d+) queued/.exec(
   run('chatQueueReset()');
   assert.equal(count(), 0, "another session's queue never shows here");
   assert.equal(elements.cQueue.hidden, true);
+
+  // --- an out-of-order queue update is dropped; a newer one wins (AG-11) -------
+  // Each copy carries a revision and an epoch. A copy older than the last one
+  // applied is ignored, even the started message it carries, so a Stop that a
+  // stale `started` overtook never echoes a message that will not run.
+  run('chatQueueReset()');
+  const qr = n => ({id: `qr${n}`, message: `m${n}`, files: []});
+  run('chatOnEvent')({type: 'queue', rev: 5, epoch: 'e1', queue: [qr(1), qr(2)], started: null});
+  assert.equal(count(), 2, 'the first copy applies');
+  run('chatOnEvent')({type: 'queue', rev: 3, epoch: 'e1', queue: [qr(1)], started: null});
+  assert.equal(count(), 2, 'an older revision is ignored');
+  run('chatOnEvent')({type: 'queue', rev: 6, epoch: 'e1', queue: [qr(1)], started: null});
+  assert.equal(count(), 1, 'a newer revision applies');
+  elements.tScroll.innerHTML = '';
+  run('chatOnEvent')({type: 'queue', rev: 4, epoch: 'e1', queue: [], started: {id: 'qr1', message: 'm1', files: []}});
+  assert.equal(elements.tScroll.innerHTML, '', 'a stale copy does not echo the started message it carries');
+  assert.equal(count(), 1, 'and its queue is not applied');
+  // a poll reply is subject to the same watermark
+  ctx.api = async () => ({running: true, queued: 0, queue: [], rev: 2, epoch: 'e1'});
+  await run('chatSyncState()');
+  assert.equal(count(), 1, 'a stale state poll is ignored');
+  // a new server run (different epoch) resets the watermark, even at a low rev
+  run('chatOnEvent')({type: 'queue', rev: 1, epoch: 'e2', queue: [qr(1), qr(2), qr(3)], started: null});
+  assert.equal(count(), 3, 'a new epoch resets the revision watermark');
+  ctx.api = async () => state();
 
   // --- a disk refresh already in flight never wipes a turn that started -----
   // poll() only starts a refresh while no turn runs, but the reply can land

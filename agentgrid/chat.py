@@ -32,6 +32,7 @@ import json
 import os
 import queue
 import re
+import secrets
 import signal
 import subprocess
 import threading
@@ -260,6 +261,12 @@ def _summarize(content: object) -> str:
 # ---------------------------------------------------------------------------
 # One chattable session: a turn queue, a running subprocess, and SSE fan-out.
 
+# Queue revisions count from zero in each server run, so a tab that outlived a
+# restart would keep a revision the new run can never beat and freeze its queue.
+# The epoch, minted once per process, travels with every revision; a tab forgets
+# its revision when the epoch changes.
+QUEUE_EPOCH = secrets.token_hex(4)
+
 
 class ChatSession:
     """Serial turns over one Claude Code or Codex session, streamed to N browser tabs.
@@ -283,6 +290,14 @@ class ChatSession:
         self._pending: list[dict] = []
         self._current: dict | None = None
         self._queue_seq = 0
+        # A monotonic revision stamped on every copy of the queue sent to the
+        # browser (a `queue` event or a /api/chat/state reply). It is bumped
+        # under _lock in the same critical section that reads the queue, so the
+        # revisions order snapshots by when they were taken -- even though they
+        # are emitted outside the lock and so can overtake one another. A tab
+        # applies a copy only if its revision beats the last one it applied, so
+        # an older snapshot arriving late can no longer overwrite a newer queue.
+        self._queue_rev = 0
         # Recently removed entries (id -> (index, entry)), so Remove can be undone.
         self._removed: dict[str, tuple[int, dict]] = {}
         self._subscribers: list[queue.Queue] = []
@@ -306,9 +321,40 @@ class ChatSession:
 
     def _emit(self, event: dict) -> None:
         with self._lock:
-            channels = list(self._subscribers)
-        for channel in channels:
+            self._emit_locked(event)
+
+    def _emit_locked(self, event: dict) -> None:
+        """Fan an event out to every subscriber. Caller holds _lock.
+
+        put() on an unbounded Queue never blocks, so fanning out inside the
+        lock cannot deadlock -- and it lets a queue change be announced in the
+        very critical section that made it. No Stop or racing edit can slip
+        between deciding to announce a change and announcing it, so a `started`
+        can never trail a cancel (AG-10) and two changes always reach a tab in
+        the order they were made (AG-11).
+        """
+        for channel in self._subscribers:
             channel.put(event)
+
+    def _snapshot(self) -> tuple[int, list[dict]]:
+        """The queue and a fresh revision for it. Caller holds _lock.
+
+        Reading the queue and numbering that reading are one step, so two
+        snapshots taken under the lock are always numbered in the order they
+        were taken -- which is what lets a stale one be recognised later.
+        """
+        self._queue_rev += 1
+        return self._queue_rev, self._queue_view()
+
+    def _emit_queue(self, rev: int, snapshot: list[dict], started: dict | None = None) -> None:
+        """Announce a queue snapshot to every tab. Caller holds _lock.
+
+        The revision and the per-process epoch travel with it, so a tab drops a
+        copy older than the one it shows and forgets its revision after a server
+        restart (when the counter starts over).
+        """
+        self._emit_locked({"type": "queue", "queue": snapshot, "rev": rev,
+                           "epoch": QUEUE_EPOCH, "started": started})
 
     # -- turns --------------------------------------------------------------
 
@@ -328,9 +374,9 @@ class ChatSession:
                      "waited": self._current is not None or bool(self._pending)}
             self._pending.append(entry)
             self._ensure_worker()
-            snapshot = self._queue_view()
-        if entry["waited"]:
-            self._emit({"type": "queue", "queue": snapshot, "started": None})
+            if entry["waited"]:
+                rev, snapshot = self._snapshot()
+                self._emit_queue(rev, snapshot)
         return {"id": entry["id"], "queued": entry["waited"]}
 
     def _ensure_worker(self) -> None:
@@ -351,13 +397,30 @@ class ChatSession:
                     continue
                 self._current = entry
                 self._api_cancel.clear()
-                snapshot = self._queue_view()
-            if entry["waited"]:
-                # Before turn_started, so the browser shows the message first.
-                self._emit({"type": "queue", "queue": snapshot,
-                            "started": self._public(entry)})
+            if entry["waited"] and not self._announce_start(entry):
+                # A Stop landed after this entry was taken but before its turn
+                # was announced. cancel() has already emitted turn_done and an
+                # empty queue, so drop the entry instead of announcing a start
+                # that would relight "Working…" with no turn behind it (AG-10).
+                continue
             self._run_turn(entry["message"], entry["posture"], entry["model"],
                            entry["attachments"])
+
+    def _announce_start(self, entry: dict) -> bool:
+        """Tell every tab that a waited message's turn is beginning.
+
+        Emitted before turn_started so the browser shows the message first. The
+        generation is re-checked under the lock: if a Stop slipped in between
+        this entry being dequeued and here, its generation no longer matches
+        and False is returned so the caller drops it rather than announcing a
+        turn that will never run.
+        """
+        with self._lock:
+            if entry["generation"] != self._cancel_generation:
+                return False
+            rev, snapshot = self._snapshot()
+            self._emit_queue(rev, snapshot, started=self._public(entry))
+        return True
 
     # -- the queue, as the browser sees and edits it ------------------------
 
@@ -368,8 +431,12 @@ class ChatSession:
                 "files": [os.path.basename(p) for p in entry["attachments"]]}
 
     def _queue_view(self) -> list[dict]:
-        # Caller holds _lock.
-        return [self._public(entry) for entry in self._pending]
+        # Caller holds _lock. Only messages that waited are the queue: one sent
+        # into an idle session sits in _pending for the instant before the
+        # worker takes it, but it was shown as sent, not queued, so it is left
+        # out -- otherwise a state() poll in that instant would show a phantom
+        # entry no later event corrects.
+        return [self._public(entry) for entry in self._pending if entry["waited"]]
 
     def _find(self, entry_id: str) -> int:
         # Caller holds _lock.
@@ -377,11 +444,6 @@ class ChatSession:
             if entry["id"] == entry_id:
                 return index
         return -1
-
-    def _queue_changed(self) -> None:
-        with self._lock:
-            snapshot = self._queue_view()
-        self._emit({"type": "queue", "queue": snapshot, "started": None})
 
     def edit_queued(self, entry_id: str, message: str) -> bool:
         """Replace a waiting message's text. False once it has started or gone."""
@@ -393,7 +455,11 @@ class ChatSession:
             if not message and not self._pending[index]["attachments"]:
                 raise ValueError("A queued message can't be empty. Remove it instead.")
             self._pending[index]["message"] = message
-        self._queue_changed()
+            # Snapshot and announce in the same critical section as the change,
+            # so its revision orders it against any concurrent change and no
+            # older snapshot can overtake it on the way to a tab.
+            rev, snapshot = self._snapshot()
+            self._emit_queue(rev, snapshot)
         return True
 
     def remove_queued(self, entry_id: str) -> bool:
@@ -404,7 +470,8 @@ class ChatSession:
             self._removed[entry_id] = (index, self._pending.pop(index))
             while len(self._removed) > 20:
                 self._removed.pop(next(iter(self._removed)))
-        self._queue_changed()
+            rev, snapshot = self._snapshot()
+            self._emit_queue(rev, snapshot)
         return True
 
     def move_queued(self, entry_id: str, to: int) -> bool:
@@ -414,7 +481,8 @@ class ChatSession:
                 return False
             entry = self._pending.pop(index)
             self._pending.insert(max(0, min(int(to), len(self._pending))), entry)
-        self._queue_changed()
+            rev, snapshot = self._snapshot()
+            self._emit_queue(rev, snapshot)
         return True
 
     def restore_queued(self, entry_id: str) -> bool:
@@ -428,12 +496,16 @@ class ChatSession:
             entry["waited"] = True
             self._pending.insert(min(index, len(self._pending)), entry)
             self._ensure_worker()
-        self._queue_changed()
+            rev, snapshot = self._snapshot()
+            self._emit_queue(rev, snapshot)
         return True
 
     def _run_turn(self, message: str, posture: str, model: str = "",
                   attachments: list[str] | None = None) -> None:
         if self._api_cancel.is_set():
+            # A Stop landed before this turn started. cancel() has already
+            # emitted the cancelled turn_done, so drop the turn silently rather
+            # than emit a second one.
             return
         if self.engine == "openrouter":
             from agentgrid import openrouter
@@ -489,8 +561,21 @@ class ChatSession:
             return
 
         with self._lock:
-            self._proc = proc
-            self._running = True
+            # A Stop can land while Popen is running: cancel() then finds no
+            # _proc to kill and kills nothing, and without this the turn would
+            # stream to completion after "Stopped". Re-check under the lock
+            # before registering the process; if a Stop got in, kill it here.
+            stop_during_launch = self._api_cancel.is_set()
+            if not stop_during_launch:
+                self._proc = proc
+                self._running = True
+        if stop_during_launch:
+            if proc.poll() is None:
+                try:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+                except OSError:
+                    pass
+            return
 
         last_noise = ""
         hard_error = ""
@@ -551,29 +636,41 @@ class ChatSession:
     def cancel(self) -> None:
         """Stop the current turn and drop anything queued behind it."""
         with self._lock:
+            # Bumping the generation, setting the flag, emptying the queue and
+            # announcing the end are one critical section. A message sent during
+            # a Stop then either lands before it (older generation, dropped with
+            # the rest) or after it (new generation, kept) -- never appended
+            # between a bump and a clear in two separate locks and silently
+            # lost. Announcing under the lock also keeps a `started` from
+            # _announce_start from trailing the cancel out of order (AG-10).
             self._cancel_generation += 1
             self._api_cancel.set()
-        response = self._api_response
+            proc = self._proc
+            response = self._api_response
+            self._pending.clear()
+            self._removed.clear()
+            rev, snapshot = self._snapshot()
+            self._emit_locked({"type": "turn_done", "ok": False, "result": None,
+                               "cancelled": True, "stats": {}})
+            self._emit_queue(rev, snapshot)
         if response is not None:
             # Closing a blocked transport must not stall the Stop HTTP request.
             threading.Thread(target=response.close, daemon=True).start()
-        with self._lock:
-            proc = self._proc
-            self._pending.clear()
-            self._removed.clear()
         if proc and proc.poll() is None:
             try:
                 os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
             except OSError:
                 pass
-        self._emit({"type": "turn_done", "ok": False, "result": None,
-                    "cancelled": True, "stats": {}})
-        self._emit({"type": "queue", "queue": [], "started": None})
 
     def state(self) -> dict:
+        # A read, so it reports the current revision rather than minting one: a
+        # poll that ties an in-flight `queue` event carries the same snapshot,
+        # so there is nothing to reorder. (state() is polled often, once per
+        # session on every sessions refresh -- it must not churn the counter.)
         with self._lock:
-            return {"running": self._running, "queued": len(self._pending),
-                    "queue": self._queue_view()}
+            snapshot = self._queue_view()
+            return {"running": self._running, "queued": len(snapshot),
+                    "queue": snapshot, "rev": self._queue_rev, "epoch": QUEUE_EPOCH}
 
 
 # ---------------------------------------------------------------------------

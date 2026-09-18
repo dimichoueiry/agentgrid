@@ -2421,10 +2421,19 @@ class Handler(BaseHTTPRequestHandler):
         that is actually sent. A message that already started (or that Stop
         cleared) is no longer waiting: that is a 409. Every reply carries the
         current queue, so the caller can redraw from it either way.
+
+        Undo (`restore`) can start a turn at once if the queue has drained, so
+        it is refused like a send when a Codex thread is held elsewhere. The
+        message stays removed but can still be restored: `held` says so.
         """
         session = self._session_by_id(str(body.get("sessionId") or ""))
         if session is None:
             self._send_json(404, {"error": "Unknown session."})
+            return
+        blocked = codex_chat_block(session, self.chat) if body.get("action") == "restore" else None
+        if blocked:
+            self._send_json(409, {"error": blocked, "held": True,
+                                  **self.chat.state(session.session_id)})
             return
         try:
             found = self.chat.queue_action(session.session_id, str(body.get("action") or ""),

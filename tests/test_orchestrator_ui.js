@@ -29,6 +29,7 @@ const ctx = vm.createContext({
             {key: 'complete', name: 'Done', match: s => s.status === 'complete'},
             {key: 'idle', name: 'Idle', match: s => s.status === 'idle'}],
   toast() {}, api: async () => ({}), post: async () => ({}),
+  ageStr: sec => `${Math.round(sec / 60)}m`,
   EventSource: function () { this.close = () => {}; },
   console,
 });
@@ -168,4 +169,71 @@ vm.runInContext(`orchEvents = [{at: 1, type: 'message', text: '<script>bad()</sc
   openOrch = '2'; orchTab = 'chat'; renderOrchPanel()`, ctx);
 assert.ok(!elements.orchBody.innerHTML.includes('<script>bad()'), 'messages are escaped');
 
-console.log('Orchestrator UI: scope, menu, badge, panel tabs, approvals and escaping checks passed');
+// --- the reader keeps their place ------------------------------------------
+// A body that scrolls: 1000px of content in a 300px window.
+const body = elements.orchBody;
+Object.assign(body, {scrollHeight: 1000, clientHeight: 300});
+elements.orchNewer = {...element(), hidden: true};
+vm.runInContext(`openOrch = '1'; orchTab = 'chat'; orchEvents = [{at: 1, type: 'message', text: 'one'}];
+  $('orchBody')._tab = ''; renderOrchPanel()`, ctx);
+assert.equal(body.scrollTop, 1000, 'opening a chat lands on the newest line');
+// Scrolled up to read, then something new arrives: stay put, say so.
+body.scrollTop = 200;
+vm.runInContext(`orchEvents.push({at: 2, type: 'message', text: 'two'}); renderOrchPanel()`, ctx);
+assert.equal(body.scrollTop, 200, 'a repaint never yanks someone who scrolled up');
+assert.equal(elements.orchNewer.hidden, false, 'the pill says there is more below');
+// Nothing changed (the 2s poll): the DOM is not touched at all.
+body.innerHTML = 'reader-is-selecting-text';
+vm.runInContext('renderOrchPanel()', ctx);
+assert.equal(body.innerHTML, 'reader-is-selecting-text', 'an unchanged repaint is invisible');
+// At the bottom, it follows the conversation.
+elements.orchNewer.hidden = true;
+body.scrollTop = 700;                    // 1000 - 700 - 300 = 0: at the bottom
+vm.runInContext(`orchEvents.push({at: 3, type: 'message', text: 'three'}); renderOrchPanel()`, ctx);
+assert.equal(body.scrollTop, 1000);
+assert.equal(elements.orchNewer.hidden, true);
+// Activity runs newest-first: it opens at the top and is then left alone.
+vm.runInContext(`orchTab = 'activity'; renderOrchPanel()`, ctx);
+assert.equal(body.scrollTop, 0, 'activity opens on the newest entry, at the top');
+body.scrollTop = 450;
+vm.runInContext(`orchEvents.push({at: 4, type: 'tool', name: 'list_agents', ok: true}); renderOrchPanel()`, ctx);
+assert.equal(body.scrollTop, 450);
+
+// --- an agent changing is part of the story --------------------------------
+vm.runInContext(`orchTab = 'chat'; orchEvents = [
+  {at: 5, type: 'agent_update', name: 'parser-fix', from: 'working', to: 'done'},
+  {at: 6, type: 'agent_update', name: 'docs', from: 'working', to: 'blocked'}]; renderOrchPanel()`, ctx);
+assert.ok(body.innerHTML.includes('parser-fix') && body.innerHTML.includes('finished its turn'), body.innerHTML);
+assert.ok(body.innerHTML.includes('needs input'), body.innerHTML);
+
+// --- the approval banner keeps what you typed -------------------------------
+const approval = elements.orchApproval;
+vm.runInContext(`openOrch = '2'; orchestrators[1].status = 'waiting';
+  orchestrators[1].pending = {id: 'p1', tool: 'start_agent', reason: 'starts a new agent',
+    args: {project: '/repo', task: 'Fix the parser', name: 'parser-fix'}};
+  $('orchApproval')._pending = ''; renderOrchPanel()`, ctx);
+assert.ok(approval.innerHTML.includes('Fix the parser'));
+approval.innerHTML = 'you-are-typing-here';
+vm.runInContext('renderOrchPanel()', ctx);
+assert.equal(approval.innerHTML, 'you-are-typing-here', 'a poll must not wipe an edit in progress');
+vm.runInContext(`orchestrators[1].pending = {id: 'p2', tool: 'start_agent', reason: 'starts a new agent',
+  args: {task: 'Write the docs'}}; renderOrchPanel()`, ctx);
+assert.ok(approval.innerHTML.includes('Write the docs'), 'a new request does rebuild it');
+
+// --- one line that answers "how is it going?" -------------------------------
+const status = () => [elements.orchStatus.innerHTML, elements.orchStatus.className];
+vm.runInContext(`orchestrators[1].pending = null; orchestrators[1].status = 'running';
+  orchestrators[1].phase = 'watching'; orchestrators[1].busyAgents = 2;
+  orchestrators[1].lastChangeAt = Date.now() / 1000 - 180; renderOrchPanel()`, ctx);
+assert.ok(status()[0].includes('Watching 2 agents'), status()[0]);
+assert.ok(status()[0].includes('it will report when one changes'), status()[0]);
+assert.ok(status()[0].includes('last change 3m ago'), status()[0]);
+assert.ok(status()[1].includes('live'));
+vm.runInContext(`orchestrators[1].phase = 'thinking'; renderOrchPanel()`, ctx);
+assert.ok(status()[0].includes('Thinking'), status()[0]);
+vm.runInContext(`orchestrators[1].phase = ''; orchestrators[1].status = 'waiting'; renderOrchPanel()`, ctx);
+assert.ok(status()[0].includes('Waiting for your reply') && status()[1].includes('needs'), status()[0]);
+vm.runInContext(`orchestrators[1].pending = {id: 'p3', tool: 'start_agent', args: {}}; renderOrchPanel()`, ctx);
+assert.ok(status()[0].includes('Waiting for your approval'), status()[0]);
+
+console.log('Orchestrator UI: scope, menu, badge, panel tabs, approvals, scroll, status line and escaping checks passed');

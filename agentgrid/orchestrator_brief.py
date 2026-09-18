@@ -61,12 +61,16 @@ def tool_specs(definition: orchestrator.Orchestrator, capabilities: dict) -> lis
               {"agent": {"type": "string", "description": "Session id, or the name you gave it."},
                "chars": {"type": "integer", "description": "How much of the tail to read (default 6000)."}},
               ["agent"]),
-        _tool("send_to_agent", "Send a follow-up instruction to a running agent, as if you had "
-              "typed it into its chat.",
+        _tool("send_to_agent", "Send a follow-up instruction to an agent, as if you had typed it "
+              "into its chat. Only reaches an agent that is not mid-turn: a message to a working "
+              "agent is refused, because it would start a separate copy that agent never sees. "
+              "You are woken when it finishes; send then.",
               {"agent": {"type": "string"}, "message": {"type": "string"}},
               ["agent", "message"]),
-        _tool("wait_for_agents", "Pause for a while and then look again. Use this instead of "
-              "polling in a tight loop; the user can interrupt you at any time.",
+        _tool("wait_for_agents", "Wait until one of your agents finishes, gets blocked or stops, "
+              "for at most the given time. Returns the moment something changes, with the tail of "
+              "that agent's output, so you rarely need read_agent_output afterwards. Ending your "
+              "turn with a progress note does the same wait for you, with no limit.",
               {"seconds": {"type": "integer", "description": f"1 to {MAX_WAIT_SECONDS}."}},
               ["seconds"]),
         _tool("list_tickets", "Read the ticket board.",
@@ -93,8 +97,9 @@ def tool_specs(definition: orchestrator.Orchestrator, capabilities: dict) -> lis
                   "text": {"type": "string"}, "done": {"type": "boolean"}},
                   "required": ["text"], "additionalProperties": False}}},
               ["items"]),
-        _tool("message_user", "Say something to the user in your chat. They may not be watching, "
-              "so this is a report, not a question you can wait on.",
+        _tool("message_user", "Tell the user what changed. Do it whenever an agent finishes, gets "
+              "blocked, or you start something new: they should never have to ask how it is going. "
+              "They may not be watching, so this is a report, not a question you can wait on.",
               {"text": {"type": "string"}}, ["text"]),
         _tool("finish", "End this run. Only call it when the goal is met or cannot be met, and "
               "say which.", {"summary": {"type": "string"}}, ["summary"]),
@@ -132,14 +137,20 @@ def system_prompt(definition: orchestrator.Orchestrator, capabilities: dict, sco
         "How to work:",
         "- Look before you act: list_agents and list_tickets tell you what already exists.",
         "- One agent, one bounded job. Tell it how to report back.",
-        "- After starting agents, wait_for_agents, then read_agent_output to check the work. Follow "
-        "up with send_to_agent rather than starting a duplicate.",
-        "- Keep the user oriented with message_user at the milestones, not every step.",
+        "- After starting agents, end your turn with a one-line progress note. AgentGrid watches "
+        "your agents for you, at no cost, and wakes you the moment one finishes, gets blocked or "
+        "stops, with the tail of its output. Never poll.",
+        "- When you are woken, check the work, tell the user what changed with message_user, and "
+        "decide the next step. Follow up with send_to_agent rather than starting a duplicate.",
+        "- The user should never have to ask how it is going: report every agent that finishes, "
+        "gets blocked or fails, and every new one you start.",
         "- Use tickets for work worth seeing on the board, and set_plan for your own small steps.",
         "- End with finish, saying what was achieved and what was not.",
         "",
-        "Every turn must either call tools or, if you reply with plain text, the run pauses and "
-        "waits for the user to reply. Do not pause when you could be working.",
+        "Ending a turn in plain text while your agents work is a progress note: the user sees it "
+        "and you are woken when an agent changes. With nothing running, plain text hands the "
+        "turn to the user and the run pauses until they reply -- do that only when you need "
+        "their input. When the goal is met, call finish.",
         "",
         f"Limits enforced by AgentGrid, not by you: at most {limits.max_concurrent} agents running "
         f"at once, {limits.max_spawns} agents started per run, {limits.max_steps} steps, and "

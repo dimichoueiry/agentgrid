@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -501,6 +502,158 @@ class ConversationTests(OrchestratorCase):
         run.stop()
         self.assertEqual(run.state["status"], "stopped")
         self.assertEqual([e["type"] for e in orchestrator.journal(run.definition.id)][-1], "run_done")
+
+
+# --- watching its agents, for free ------------------------------------------
+
+class WatchingTests(OrchestratorCase):
+    """The orchestrator should never need to be asked how it is going.
+
+    These pin the two halves of that: prose while agents work is a progress
+    note rather than a pause, and AgentGrid -- not the model -- does the
+    waiting, waking it only when an agent actually changes.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self._patch(orchestrator_run, "WATCH_POLL_SECONDS", 0.01)
+
+    def later(self, seconds, change):
+        timer = threading.Timer(seconds, change)
+        timer.start()
+        self.addCleanup(timer.cancel)
+
+    def started_then_prose(self, *after):
+        return Model(
+            turn("", [("start_agent", {"project": "/tmp/project", "task": "t", "name": "worker"})]),
+            turn("Started worker; I'll report when it's done."),
+            *after,
+        )
+
+    def test_prose_while_an_agent_works_is_a_progress_note_not_a_pause(self):
+        self.host.outputs["s1"] = "All tests pass."
+        self.later(0.2, lambda: self.host.sessions[0].update(status="done"))
+        model = self.started_then_prose(turn("", [("finish", {"summary": "worker finished"})]))
+        run = self.run_with(model, mode="auto")
+        self.assertEqual(run.state["status"], "done")
+        self.assertEqual(len(model.requests), 3)                # no call was spent polling
+        journal = orchestrator.journal(run.definition.id)
+        notes = [e for e in journal if e["type"] == "message"]
+        self.assertEqual(notes[0]["text"], "Started worker; I'll report when it's done.")
+        self.assertFalse(notes[0]["waiting"])
+        update = next(e for e in journal if e["type"] == "agent_update")
+        self.assertEqual((update["name"], update["from"], update["to"]), ("worker", "working", "done"))
+
+    def test_the_model_is_woken_with_what_changed_and_what_the_agent_said(self):
+        self.host.outputs["s1"] = "Fixed the parser; 12 tests added."
+        self.later(0.2, lambda: self.host.sessions[0].update(status="blocked"))
+        model = self.started_then_prose(turn("", [("finish", {"summary": "ok"})]))
+        self.run_with(model, mode="auto")
+        woken = model.requests[2]["messages"][-1]
+        self.assertEqual(woken["role"], "user")
+        self.assertIn("worker: working → blocked", woken["content"])
+        self.assertIn("12 tests added", woken["content"])
+        self.assertIn("message_user", woken["content"])
+
+    def test_prose_with_nothing_running_still_hands_the_turn_to_the_user(self):
+        run = self.run_with(Model(turn("Which repo did you mean?")), mode="auto")
+        self.assertEqual(run.state["status"], "waiting")
+        self.assertTrue([e for e in orchestrator.journal(run.definition.id)
+                         if e["type"] == "message"][0]["waiting"])
+
+    def test_a_finished_agent_is_not_waited_on(self):
+        self.host.sessions.append({"sessionId": "s9", "jobId": "job9", "title": "old",
+                                   "customName": "old", "status": "done"})
+        run = orchestrator_run.Run(self.make(mode="auto"), self.host)
+        run.state["children"] = [{"name": "old", "jobId": "job9", "at": time.time()}]
+        model = Model(turn("All done here."))
+        with mock.patch.object(openrouter, "tool_turn", model):
+            run.state.update(status="running", messages=[{"role": "system", "content": "s"},
+                                                         {"role": "user", "content": "g"}])
+            run._spin()
+            self.settle(run)
+        self.assertEqual(run.state["status"], "waiting")
+
+    def test_being_picked_up_is_not_news_but_disappearing_is(self):
+        run = orchestrator_run.Run(self.make(mode="auto"), self.host)
+        long_ago = time.time() - orchestrator_run.CHILD_GRACE_SECONDS - 5
+        run.state["children"] = [{"name": "fresh", "jobId": "jobF", "at": time.time()},
+                                 {"name": "lost", "jobId": "jobL", "at": long_ago}]
+        statuses = run._child_statuses()
+        self.assertEqual(statuses, {"fresh": "starting", "lost": "gone"})
+        # starting -> working is the expected pickup: the watch keeps going
+        self.host.sessions.append({"sessionId": "sF", "jobId": "jobF", "title": "fresh",
+                                   "customName": "fresh", "status": "working"})
+        self.assertEqual(run._watch(limit=0.1, baseline=statuses), [])
+
+    def test_wait_for_agents_returns_the_moment_something_changes(self):
+        self.host.outputs["s1"] = "done and dusted"
+        run = self.run_one_agent()
+        self.later(0.15, lambda: self.host.sessions[0].update(status="done"))
+        started = time.monotonic()
+        result = run._tool_wait_for_agents({"seconds": 30})
+        self.assertLess(time.monotonic() - started, 5)
+        self.assertEqual(result["changed"][0]["to"], "done")
+        self.assertEqual(result["changed"][0]["output"], "done and dusted")
+        self.assertFalse(result["interrupted"])
+
+    def test_a_message_from_the_user_cuts_the_watch_short(self):
+        model = self.started_then_prose(turn("", [("finish", {"summary": "answered"})]))
+        definition = self.make(mode="auto")
+        run = orchestrator_run.Run(definition, self.host)
+        with mock.patch.object(openrouter, "tool_turn", model):
+            run.start("Ship it")
+            deadline = time.monotonic() + 5
+            while run.phase != "watching" and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertEqual(run.snapshot()["phase"], "watching")
+            self.assertEqual(run.snapshot()["busyAgents"], 1)
+            run.submit("how is it going?")
+            self.settle(run)
+        self.assertEqual(run.state["status"], "done")
+        self.assertIn({"role": "user", "content": "how is it going?"}, model.requests[2]["messages"])
+
+    def test_the_brief_tells_it_not_to_poll_and_to_report_unasked(self):
+        prompt = orchestrator_brief.system_prompt(orchestrator.load(DEFINITION), self.host.caps, "x")
+        self.assertIn("Never poll", prompt)
+        self.assertIn("should never have to ask", prompt)
+
+    def run_one_agent(self):
+        run = orchestrator_run.Run(self.make(mode="auto"), self.host)
+        run.state.update(status="running")
+        run._tool_start_agent({"project": "/tmp/project", "task": "t", "name": "worker"})
+        return run
+
+
+class FollowUpTests(unittest.TestCase):
+    """A follow-up that could not arrive is refused, never silently forked."""
+
+    def session(self, status):
+        return SimpleNamespace(session_id="s1", status=status, engine="claude",
+                               cwd="/tmp", display_title="worker", pid=None)
+
+    def test_a_working_agent_refuses_a_follow_up(self):
+        chat = SimpleNamespace(state=lambda sid: {"running": False})
+        self.assertIn("separate copy", web.follow_up_block(self.session("working"), chat))
+
+    def test_an_agent_between_turns_takes_one(self):
+        chat = SimpleNamespace(state=lambda sid: {"running": False})
+        for status in ("done", "idle", "blocked"):
+            self.assertIsNone(web.follow_up_block(self.session(status), chat))
+
+    def test_a_turn_this_server_is_running_is_fine_to_queue_behind(self):
+        chat = SimpleNamespace(state=lambda sid: {"running": True})
+        self.assertIsNone(web.follow_up_block(self.session("working"), chat))
+
+    def test_the_host_refuses_rather_than_forking(self):
+        sent = []
+        chat = SimpleNamespace(state=lambda sid: {"running": False},
+                               send=lambda *a, **k: sent.append(a))
+        fleet = SimpleNamespace(raw=lambda: [self.session("working")])
+        host = web.ServerHost(fleet, chat)
+        with self.assertRaises(ValueError):
+            host.send_to_agent("s1", "also add docs")
+        self.assertEqual(sent, [])
 
 
 # --- the tools ---------------------------------------------------------------

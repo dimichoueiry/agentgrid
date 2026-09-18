@@ -1055,7 +1055,26 @@ body.area-overview .viewnav,body.area-overview #searchBox,body.area-overview #ne
 .op-tabs button{font:inherit;font-size:12px;color:var(--text-2);background:transparent;border:0;
   border-bottom:1.5px solid transparent;padding:4px 8px;cursor:pointer}
 .op-tabs button[aria-pressed=true]{color:var(--text);border-bottom-color:var(--text)}
+.op-bodywrap{position:relative;flex:1 1 auto;min-height:0;display:flex}
 .op-body{flex:1 1 auto;overflow:auto;padding:12px 14px}
+/* Never yank someone who scrolled up to read: say there is more instead. */
+.op-newer{position:absolute;left:50%;bottom:10px;transform:translateX(-50%);
+  font:inherit;font-size:11.5px;color:var(--text);background:var(--card);
+  border:1px solid var(--line-2);border-radius:999px;padding:4px 12px;cursor:pointer;
+  box-shadow:0 4px 14px rgba(0,0,0,.18)}
+.op-newer:hover{background:var(--card-hover)}
+/* What it is doing right now, so "how is it going?" never has to be typed. */
+.op-status{display:flex;align-items:center;gap:7px;min-height:26px;padding:4px 14px;
+  font-size:11.5px;color:var(--text-2);border-top:1px solid var(--line)}
+.op-status:empty{display:none}
+.op-status .odot{width:6px;height:6px;border-radius:50%;background:var(--text-3);flex:0 0 auto}
+.op-status.live .odot{background:var(--working);animation:opulse 1.4s ease-in-out infinite}
+.op-status.needs .odot{background:var(--accent)}
+.op-status.needs{color:var(--text)}
+@keyframes opulse{50%{opacity:.25}}
+@media(prefers-reduced-motion:reduce){.op-status.live .odot{animation:none}}
+.oline.sys{font-size:11.5px;color:var(--text-2);margin:-2px 0 8px}
+.oline.sys .owho{display:inline;margin-right:6px}
 .op-composer{display:flex;gap:8px;align-items:flex-end;padding:10px 14px;border-top:1px solid var(--line-2)}
 .op-composer textarea{flex:1 1 auto;resize:vertical;min-height:40px;padding:8px 10px;font-size:12.5px}
 /* an approval is a banner, not a toast: it waits as long as the user does */
@@ -1295,7 +1314,11 @@ body.area-overview .viewnav,body.area-overview #searchBox,body.area-overview #ne
     <button type="button" data-otab="agents">Agents</button>
     <button type="button" data-otab="activity">Activity</button>
   </div>
-  <div class="op-body" id="orchBody"></div>
+  <div class="op-bodywrap">
+    <div class="op-body" id="orchBody"></div>
+    <button class="op-newer" id="orchNewer" type="button" hidden>New below ↓</button>
+  </div>
+  <div class="op-status" id="orchStatus" role="status" aria-live="polite"></div>
   <form class="op-composer" id="orchComposer">
     <textarea id="orchInput" rows="2" maxlength="20000"></textarea>
     <button class="btn key" id="orchSend">Start</button>
@@ -4895,7 +4918,7 @@ const ORCH_STATE = {
   stopped: {label: "Stopped",     cls: ""},
 };
 // Chat shows what was said and what changed; Activity shows everything.
-const ORCH_SPOKEN = new Set(["run_started", "user_message", "message", "run_done",
+const ORCH_SPOKEN = new Set(["run_started", "user_message", "message", "run_done", "agent_update",
                              "error", "approval_requested", "approval_resolved",
                              "agent_started", "limit", "resumed"]);
 
@@ -5037,6 +5060,9 @@ function orchOpen() { return orchestrators.find(o => o.id === openOrch); }
 
 async function openOrchestrator(id) {
   openOrch = id; orchTab = "chat"; orchEvents = [];
+  // Another orchestrator is another conversation: open it at its newest line,
+  // with its own approval, not the last one's scroll position or half-typed task.
+  $("orchBody")._tab = ""; $("orchApproval")._pending = "";
   $("orchApproval").hidden = true;
   $("orchInput").value = "";
   if (!$("orchPanel").open) $("orchPanel").showModal();
@@ -5103,16 +5129,72 @@ function renderOrchPanel() {
   $("orchTabs").querySelectorAll("button").forEach(b =>
     b.setAttribute("aria-pressed", String(b.dataset.otab === orchTab)));
   renderOrchApproval(o);
-  $("orchBody").innerHTML = orchTab === "chat" ? orchChatHTML(o)
+  renderOrchStatus(o);
+  paintOrchBody(orchTab === "chat" ? orchChatHTML(o)
     : orchTab === "plan" ? orchPlanHTML(o)
     : orchTab === "agents" ? orchAgentsHTML(o)
-    : orchActivityHTML();
-  if (orchTab === "chat" || orchTab === "activity") $("orchBody").scrollTop = $("orchBody").scrollHeight;
+    : orchActivityHTML());
+}
+
+// The panel repaints on every poll and every event, so a repaint must be
+// invisible unless something changed -- and when something did, it must not
+// move the reader. Chat follows the newest line only while you are already
+// at the bottom; scrolled up, you keep your place and a pill says there is
+// more. Activity runs newest-first, so it is left where you put it.
+function paintOrchBody(markup) {
+  const body = $("orchBody");
+  if (body._markup === markup) return;
+  const follow = orchTab === "chat";
+  const atBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 48;
+  const keep = body.scrollTop, fresh = body._tab !== orchTab;
+  body._markup = markup; body._tab = orchTab;
+  body.innerHTML = markup;
+  if (fresh) {
+    body.scrollTop = follow ? body.scrollHeight : 0;
+    $("orchNewer").hidden = true;
+  } else if (follow && atBottom) {
+    body.scrollTop = body.scrollHeight;
+  } else {
+    body.scrollTop = keep;
+    if (follow) $("orchNewer").hidden = false;
+  }
+}
+
+// One line that answers "how is it going?" without anyone asking.
+function renderOrchStatus(o) {
+  const ago = o.lastChangeAt ? ` · last change ${ageStr(Math.max(0, Date.now() / 1000 - o.lastChangeAt))} ago` : "";
+  const agents = n => `${n} agent${n === 1 ? "" : "s"}`;
+  const [text, tone] =
+    o.pending ? ["Waiting for your approval", "needs"]
+    : o.phase === "thinking" ? ["Thinking…", "live"]
+    : o.phase === "acting" ? ["Working…", "live"]
+    : o.phase === "watching" ? [`Watching ${agents(o.busyAgents || 0)} — it will report when one changes${ago}`, "live"]
+    : o.status === "running" ? ["Working…", "live"]
+    : o.status === "waiting" ? ["Waiting for your reply", "needs"]
+    : o.status === "failed" ? [`Stopped: ${o.reason || "failed"}`, "needs"]
+    : o.status === "done" ? ["Finished", ""]
+    : o.status === "stopped" ? ["Stopped", ""]
+    : ["", ""];
+  const host = $("orchStatus");
+  const markup = text ? `<span class="odot" aria-hidden="true"></span><span>${esc(text)}</span>` : "";
+  if (host._markup !== markup) { host._markup = markup; host.innerHTML = markup; }
+  host.className = "op-status" + (tone ? " " + tone : "");
+}
+
+function orchChangeText(event) {
+  const labels = {done: "finished its turn", idle: "went idle", blocked: "is blocked — needs input",
+                  failed: "failed", stopped: "stopped", complete: "is done", gone: "left the board",
+                  working: "started working"};
+  return labels[event.to] || `is now ${event.to}`;
 }
 
 function renderOrchApproval(o) {
   const host = $("orchApproval");
-  if (!o.pending) { host.hidden = true; host.innerHTML = ""; return; }
+  if (!o.pending) { host.hidden = true; host.innerHTML = ""; host._pending = ""; return; }
+  // Built once per request: rebuilding it on every poll would wipe whatever
+  // you were typing into the task or the reason.
+  if (host._pending === o.pending.id) return;
+  host._pending = o.pending.id;
   const args = o.pending.args || {};
   const fixed = [args.project || o.cwd, args.mode || "background", args.engine || "claude",
                  args.ticketKey].filter(Boolean).join(" · ");
@@ -5149,6 +5231,7 @@ function orchLine(event) {
       `Asked for your approval: this ${event.reason || "starts a new agent"}.`, "mine");
     case "approval_resolved":   return said(event.approved ? "you approved" : "you declined",
       event.reason || (event.approved ? "Starting it now." : "It will choose something else."), "mine");
+    case "agent_update":        return said(event.name || "agent", orchChangeText(event), "sys");
     case "limit":               return said("limit reached", event.message || "", "mine");
     case "error":               return said("failed", event.message || "", "err");
     case "run_done":            return said(event.status === "done" ? "finished" : event.status,
@@ -5271,6 +5354,14 @@ function bindOrchestrators() {
     toast(e.target.value === "auto"
       ? "It will start agents without asking, inside its limits."
       : "It will ask before starting each agent.");
+  };
+  $("orchBody").addEventListener("scroll", () => {
+    const body = $("orchBody");
+    if (body.scrollHeight - body.scrollTop - body.clientHeight < 48) $("orchNewer").hidden = true;
+  });
+  $("orchNewer").onclick = () => {
+    $("orchBody").scrollTop = $("orchBody").scrollHeight;
+    $("orchNewer").hidden = true;
   };
   $("orchTabs").onclick = (e) => {
     const button = e.target.closest("[data-otab]");

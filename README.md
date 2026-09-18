@@ -423,6 +423,25 @@ create new ones. Click one to open its window:
 own checklist), **Agents** (what it started, with live status read off the
 board) and **Activity** (every decision, tool call, approval and dollar).
 
+### It reports without being asked
+
+While its agents work, Agent Grid watches them *for* the orchestrator — no
+model calls, so waiting costs nothing — and wakes it the moment one finishes,
+gets blocked or leaves the board, with the tail of that agent's output
+attached. The change also appears in its chat on its own ("parser-fix finished
+its turn"), and a status line under the chat says what it is doing right now:
+*Thinking…*, *Watching 2 agents — it will report when one changes*, *Waiting
+for your approval*. A progress note it writes while agents work is just that;
+only a run with nothing in flight pauses for your reply.
+
+A follow-up to an agent that is mid-turn is refused rather than sent: resuming
+a Claude session that is still running starts a *copy* of it, so the message
+would never reach the agent. The orchestrator is told why, and is woken when
+the agent finishes so it can send it then.
+
+The chat follows new lines only while you are at the bottom. Scroll up to read
+and it holds still; new lines show a *New below ↓* pill instead.
+
 ### Ask me, or Auto
 
 One setting decides how much rope it gets, and it can be switched while a run

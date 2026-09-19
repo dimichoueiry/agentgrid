@@ -7109,6 +7109,7 @@ const tkPref = (k, d) => {
 const tkSet = (k, v) => localStorage.setItem("agentgrid.tk." + k, JSON.stringify(v));
 
 let tkData = null, tkSig = "", tkOpen = null, tkPanelSig = "", tkDragging = false;
+let tkRaw = "";                    // the last board payload taken, as sent
 let tkEditingBody = false, tkPendingSpawnKey = "", tkDeleteArmed = null;
 let tkLayout = tkPref("layout", "board"), tkGroup = tkPref("group", "");
 let tkArea = tkPref("area", "");   // a work area id, "∅" for tickets in none, "" for all
@@ -7133,7 +7134,12 @@ function tkTake(board) {
   const keep = tkData || {};
   tkData = {...board, sessions: board.sessions || keep.sessions || [],
             knownProjects: board.knownProjects || keep.knownProjects || []};
-  tkSig = ""; tkPanelSig = "";
+  // The board is polled every 3s. Force a redraw only when what came back
+  // differs from the last payload: forcing one every poll rebuilt the whole
+  // board each time, for nothing. A real change still redraws, and the
+  // signatures in renderTickets and renderTicketPanel catch the rest.
+  const raw = JSON.stringify(board);
+  if (raw !== tkRaw) { tkRaw = raw; tkSig = ""; tkPanelSig = ""; }
   const n = tkData.tickets.filter(t => t.status === "review").length;
   $("reviewCount").textContent = n ? String(n) : "";
   $("reviewCount").title = n ? `${n} in review — waiting on you` : "";
@@ -7379,11 +7385,34 @@ function renderTickets() {
   if (sig === tkSig) return;
   tkSig = sig;
   const body = $("tkBody");
+  const scroll = tkScrollKeep(body);
   if (!tkData.tickets.length) body.innerHTML = tkEmptyHtml(false);
   else if (!list.length) body.innerHTML = tkEmptyHtml(true);
   else if (tkLayout === "list") body.innerHTML = tkListHtml(list);
   else if (!shown.length) body.innerHTML = `<div class="tk-empty"><h3>Every status is hidden.</h3>Turn one back on in the filters.</div>`;
   else body.innerHTML = tkBoardHtml(list, shown);
+  tkScrollRestore(body, scroll);
+}
+
+// A redraw swaps in new columns, and each new column starts scrolled to the
+// top, so a live update (an agent moving a ticket, a session going idle, the
+// minute tick on "2h ago") threw the reader back up whatever column they were
+// reading. Note where every column was, by status and lane, and put it back.
+function tkScrollKeep(body) {
+  const cols = {};
+  body.querySelectorAll(".tcol-body").forEach(el => {
+    if (el.scrollTop) cols[`${el.dataset.status}|${el.dataset.group ?? ""}`] = el.scrollTop;
+  });
+  return {cols, top: body.scrollTop, left: body.scrollLeft};
+}
+
+function tkScrollRestore(body, kept) {
+  body.querySelectorAll(".tcol-body").forEach(el => {
+    const top = kept.cols[`${el.dataset.status}|${el.dataset.group ?? ""}`];
+    if (top) el.scrollTop = top;
+  });
+  body.scrollTop = kept.top;
+  body.scrollLeft = kept.left;
 }
 
 /* ---- edits: apply locally first, then post; the server's board wins on reply */

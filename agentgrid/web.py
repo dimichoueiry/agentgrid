@@ -49,7 +49,7 @@ from datetime import date, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from agentgrid import (areas, chat, credentials, discovery, models, notes, openrouter,
+from agentgrid import (areas, chat, credentials, discovery, history, models, notes, openrouter,
                        orchestrator, orchestrator_run, personas, skills, sync, teams, terminal,
                        tickets, transcript, voice, workflows)
 
@@ -65,6 +65,11 @@ PROJECTS_TTL = 30.0
 UPLOADS_DIR = Path.home() / ".agentgrid" / "uploads"
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 MAX_BODY_BYTES = 16 * 1024 * 1024
+# How much of a transcript one read returns. The old code sent `blocks[-600:]`
+# and the rest was simply unreachable; the window is the same size, but now it
+# can be walked backwards (see `Handler._window`).
+TRANSCRIPT_WINDOW = 600
+TRANSCRIPT_WINDOW_MAX = 2000
 
 # Batches released from the web-review overlay for a "New agent" target (no
 # running session chosen) are parked here so nothing is lost before pickup.
@@ -1748,6 +1753,14 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(200, {"page": page,
                                   "entries": notes.page_history(page),
                                   "jiraBase": notes.jira_base()})
+        elif route == "/api/conversations":
+            self._get_conversations(query)
+        elif route == "/api/conversations/transcript":
+            self._get_conversation_transcript(query)
+        elif route == "/api/conversations/trash":
+            history.purge_expired()
+            self._send_json(200, {"trash": history.trashed(),
+                                  "ttlDays": history.TRASH_TTL // 86400})
         elif route == "/api/mentions":
             slug = self._one(query, "slug")
             self._send_json(200, {"slug": slug,
@@ -1887,8 +1900,119 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(200, {"blocks": []})
                 return
         blocks = transcript.render_blocks(path)
-        # The tail is the part you opened it to read.
-        self._send_json(200, {"blocks": blocks[-600:]})
+        # The tail is the part you opened it to read -- but the rest is no
+        # longer thrown away. `before` walks backwards a window at a time, so
+        # a long conversation is reachable to its first line instead of
+        # stopping dead at the cap.
+        self._send_json(200, self._window(blocks, query))
+
+    @staticmethod
+    def _window(blocks: list, query: dict) -> dict:
+        """One window of a transcript, newest-last, plus where it sits.
+
+        Sending a whole transcript is not an option -- the largest in a working
+        store is 180 MB -- so the answer is paged rather than truncated: the
+        default window is the tail, `before` asks for the window that ends
+        where the last one began, and `total` lets the client say how much
+        older material is still there.
+        """
+        try:
+            limit = int(Handler._one(query, "limit") or TRANSCRIPT_WINDOW)
+        except ValueError:
+            limit = TRANSCRIPT_WINDOW
+        limit = max(1, min(limit, TRANSCRIPT_WINDOW_MAX))
+        total = len(blocks)
+        raw_before = Handler._one(query, "before")
+        try:
+            end = total if raw_before in (None, "") else int(raw_before)
+        except ValueError:
+            end = total
+        end = max(0, min(end, total))
+        start = max(0, end - limit)
+        return {"blocks": blocks[start:end], "total": total,
+                "offset": start, "hasOlder": start > 0}
+
+    # -- chat history --------------------------------------------------------
+    # The board answers "what is running now". These answer "what have I
+    # worked on", which is a different question over a different source: the
+    # transcript store on disk, with no window on age and no requirement that
+    # anything still be alive.
+
+    def _get_conversations(self, query: dict) -> None:
+        history.purge_expired()
+        try:
+            offset = int(self._one(query, "offset") or 0)
+        except ValueError:
+            offset = 0
+        try:
+            limit = int(self._one(query, "limit") or history.PAGE_SIZE)
+        except ValueError:
+            limit = history.PAGE_SIZE
+        payload = history.page(offset=offset, limit=max(1, min(limit, 200)),
+                               search=self._one(query, "q"),
+                               project=self._one(query, "project"))
+        # Which of these are still running decides what the row may offer:
+        # a live conversation can be opened but never deleted.
+        for row in payload["conversations"]:
+            row["live"] = self._is_live(row["sessionId"])
+        payload["projects"] = history.projects()
+        self._send_json(200, payload)
+
+    def _is_live(self, session_id: str) -> bool:
+        """Whether something is actually running for this conversation.
+
+        Two sources, either of which is enough: a turn this server is driving,
+        and the fleet's own view of the session. A finished session still
+        listed by the CLI is not live -- it holds no process and deleting its
+        transcript takes nothing out from under anyone.
+        """
+        try:
+            if self.chat.state(session_id).get("running"):
+                return True
+        except Exception:  # noqa: BLE001 -- a chat store fault must not block the listing
+            pass
+        session = self._session_by_id(session_id)
+        return session is not None and session.status == "working"
+
+    def _get_conversation_transcript(self, query: dict) -> None:
+        """Read any conversation on disk, live or long finished.
+
+        The id is resolved through `history.find`, which matches it against
+        the store rather than joining it into a path -- the id comes from a
+        client and must never become a path component.
+        """
+        path = history.find(self._one(query, "id"))
+        if path is None:
+            self._send_json(404, {"error": "That conversation no longer exists."})
+            return
+        self._send_json(200, self._window(transcript.render_blocks(path), query))
+
+    def _conversation_action(self, action: str, body: dict) -> None:
+        session_id = history.safe_id(str(body.get("sessionId") or ""))
+        if not session_id:
+            self._send_json(400, {"error": "Unknown conversation."})
+            return
+        try:
+            if action == "delete":
+                if self._is_live(session_id):
+                    self._send_json(400, {"error": "That conversation is still running. "
+                                                   "Stop it first, then delete it."})
+                    return
+                manifest = history.delete(session_id)
+                self._send_json(200, {"ok": True, "deleted": manifest["sessionId"],
+                                      "size": manifest["size"],
+                                      "ttlDays": history.TRASH_TTL // 86400})
+            elif action == "restore":
+                if not history.restore(session_id):
+                    self._send_json(400, {"error": "That conversation is no longer in the trash."})
+                    return
+                self._send_json(200, {"ok": True})
+            elif action == "purge":
+                self._send_json(200, {"ok": history.purge_now(session_id)})
+            else:
+                self._send_json(404, {"error": "Unknown action."})
+        except ValueError as error:
+            self._send_json(400, {"error": str(error)})
 
     def _get_files(self, query: dict) -> None:
         """Fuzzy file-path search under a session's cwd, for @-mention complete.
@@ -2119,6 +2243,8 @@ class Handler(BaseHTTPRequestHandler):
             self._dismiss(body)
         elif route == "/api/override":
             self._override(body)
+        elif route.startswith("/api/conversations/"):
+            self._conversation_action(route[len("/api/conversations/"):], body)
         elif route == "/api/open":
             self._open(body)
         elif route == "/api/sync":
@@ -3490,6 +3616,15 @@ def prepare_personas() -> tuple[list[str], list[str]]:
     return converted, seeded
 
 
+def _warm_history() -> None:
+    """Parse the transcript store once at start-up, and empty the expired trash."""
+    try:
+        history.purge_expired()
+        history.warm()
+    except Exception:  # noqa: BLE001 -- history is a view, never a reason not to serve
+        pass
+
+
 def _resume_orchestrators(runs) -> None:
     """Continue runs the last stop interrupted, and say so on stdout."""
     try:
@@ -3564,6 +3699,10 @@ def serve(port: int = 8787, open_browser: bool = True,
     # board must be servable before that returns.
     threading.Thread(target=_resume_orchestrators, args=(runs,), daemon=True,
                      name="orchestrator-resume").start()
+    # Read the transcript store once so History opens instantly and its project
+    # filter is accurate. Off the main thread and never fatal: until it lands a
+    # listing still works, it just shows fewer titles.
+    threading.Thread(target=_warm_history, daemon=True, name="history-warm").start()
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

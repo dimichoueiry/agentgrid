@@ -7,7 +7,6 @@ never reached the CLI hands its message back instead of dropping it.
 """
 import io
 import json
-import tempfile
 import threading
 import time
 import unittest
@@ -16,16 +15,12 @@ from types import SimpleNamespace
 from unittest import mock
 
 from agentgrid import chat, web
+from support import isolate_chat_queue
 
 
 class QueueOnDiskTests(unittest.TestCase):
     def setUp(self):
-        folder = tempfile.TemporaryDirectory()
-        self.addCleanup(folder.cleanup)
-        self.dir = Path(folder.name)
-        patch = mock.patch.object(chat, "QUEUE_DIR", self.dir)
-        patch.start()
-        self.addCleanup(patch.stop)
+        self.dir = isolate_chat_queue(self)
         prompts = mock.patch.object(chat.discovery, "system_prompt_for", return_value="")
         prompts.start()
         self.addCleanup(prompts.stop)

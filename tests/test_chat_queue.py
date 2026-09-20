@@ -1,24 +1,19 @@
 """The chat queue: messages sent mid-turn wait, visible and editable, until they start."""
 import io
 import queue as queuelib
-import tempfile
 import threading
 import unittest
-from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
 from agentgrid import chat, web
+from support import isolate_chat_queue
 
 
 class QueueTests(unittest.TestCase):
     def setUp(self):
         # The queue is written through to disk; keep the real one out of it.
-        folder = tempfile.TemporaryDirectory()
-        self.addCleanup(folder.cleanup)
-        patch = mock.patch.object(chat, "QUEUE_DIR", Path(folder.name))
-        patch.start()
-        self.addCleanup(patch.stop)
+        isolate_chat_queue(self)
         self.room = chat.ChatSession("sid", "/repo", "claude")
         self.ran = []
         self.holding = threading.Event()

@@ -20,6 +20,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from agentgrid import chat, discovery, web
+from support import isolate_chat_queue
 
 
 # ---------------------------------------------------------------------------
@@ -117,6 +118,7 @@ class TurnInjectionTests(unittest.TestCase):
     """The stored prompt reaches the actual argv of the turn AgentGrid drives."""
 
     def setUp(self):
+        isolate_chat_queue(self)
         self._tmp = TemporaryDirectory()
         path = Path(self._tmp.name) / "system_prompts.json"
         p = mock.patch.object(discovery, "SYSTEM_PROMPTS_PATH", path)

@@ -5,6 +5,7 @@ import unittest
 from unittest import mock
 
 from agentgrid import chat, credentials, openrouter, teams, web
+from support import isolate_chat_queue
 from test_teams import _run
 
 
@@ -13,6 +14,9 @@ def stream(*chunks):
 
 
 class OpenRouterTests(unittest.TestCase):
+    def setUp(self):
+        isolate_chat_queue(self)
+
     def test_streamed_text_usage_and_history(self):
         room = chat.ChatSession(None, '/tmp', 'openrouter'); events = room.subscribe()
         response = stream({'choices': [{'delta': {'content': 'Hello '}}]},

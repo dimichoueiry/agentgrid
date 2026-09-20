@@ -19,6 +19,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from agentgrid import chat, web
+from support import isolate_chat_queue
 
 PNG = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk"
                        "+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==")
@@ -141,6 +142,9 @@ class UploadRouteTests(unittest.TestCase):
 
 
 class PromptTests(unittest.TestCase):
+    def setUp(self):
+        isolate_chat_queue(self)
+
     def test_images_keep_their_wording(self):
         self.assertEqual(chat.with_attachments("see", ["/u/a.png"]),
                          "see\n\nAttached image:\n- /u/a.png")

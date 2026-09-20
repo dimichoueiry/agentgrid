@@ -6,10 +6,12 @@ from types import SimpleNamespace
 from unittest import mock
 
 from agentgrid import chat, web
+from support import isolate_chat_queue
 
 
 class CodexChatTests(unittest.TestCase):
     def setUp(self):
+        isolate_chat_queue(self)
         patcher = mock.patch.object(chat, "codex_binary", return_value="codex")
         patcher.start()
         self.addCleanup(patcher.stop)

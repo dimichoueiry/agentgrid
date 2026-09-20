@@ -36,6 +36,7 @@ import secrets
 import signal
 import subprocess
 import threading
+from pathlib import Path
 
 CLAUDE_BIN = "claude"
 from agentgrid.executables import codex_binary
@@ -296,6 +297,20 @@ def _summarize(content: object) -> str:
 # its revision when the epoch changes.
 QUEUE_EPOCH = secrets.token_hex(4)
 
+# A waiting message exists nowhere else: the CLI has not seen it, the browser
+# stopped showing it the moment it was queued, and nothing writes it to the
+# transcript until its turn runs. So the queue is written through to disk on
+# every change and read back at startup -- a restart used to lose it silently.
+QUEUE_DIR = Path.home() / ".agentgrid" / "chat-queue"
+
+# Why a message is waiting for you rather than for the queue ahead of it.
+HELD_RESTART = "Kept from before the server restarted."
+
+
+def queue_path(session_id: str) -> Path:
+    """Where one session's queue is kept. Sanitised, like the uploads dir."""
+    return QUEUE_DIR / ((re.sub(r"[^A-Za-z0-9._-]+", "-", session_id) or "session") + ".json")
+
 
 class ChatSession:
     """Serial turns over one Claude Code or Codex session, streamed to N browser tabs.
@@ -314,9 +329,14 @@ class ChatSession:
         self._api_response = None
         self._cancel_generation = 0
         # Waiting turns, oldest first, each {id, message, posture, model,
-        # attachments, generation, waited}. Guarded by _lock. `_current` is the
-        # entry the worker holds from the moment it is taken until its turn ends.
+        # attachments, generation, waited, held, resume}. Guarded by _lock.
+        # `_current` is the entry the worker holds from the moment it is taken
+        # until its turn ends. A `held` entry waits for you, not for the queue
+        # ahead of it: the worker steps over it until it is released.
         self._pending: list[dict] = []
+        # The id this session's queue is filed under on disk. session_id is
+        # adopted from the CLI later, so it cannot name the file.
+        self.queue_key = session_id or ""
         self._current: dict | None = None
         self._queue_seq = 0
         # A monotonic revision stamped on every copy of the queue sent to the
@@ -385,6 +405,42 @@ class ChatSession:
         self._emit_locked({"type": "queue", "queue": snapshot, "rev": rev,
                            "epoch": QUEUE_EPOCH, "started": started})
 
+    def _queue_saved(self, started: dict | None = None) -> None:
+        """Write the queue through to disk and announce it. Caller holds _lock.
+
+        Both in the critical section that changed it, so the file and the tabs
+        always show the change that was actually made, in the order they were
+        made.
+        """
+        self._save_queue()
+        rev, snapshot = self._snapshot()
+        self._emit_queue(rev, snapshot, started)
+
+    def _save_queue(self) -> None:
+        """Keep the waiting messages on disk. Caller holds _lock.
+
+        Written through on every change and replaced atomically, so a crash or
+        a Ctrl-C can lose at most a change that was still being made -- never a
+        message that was sitting there. Failing to write must not fail a turn,
+        so this is quiet: the queue in memory stays the one that runs.
+        """
+        if not self.queue_key:
+            return
+        path = queue_path(self.queue_key)
+        try:
+            if not self._pending:
+                path.unlink(missing_ok=True)
+                return
+            path.parent.mkdir(parents=True, exist_ok=True)
+            body = json.dumps({"sessionId": self.queue_key, "cwd": self.cwd,
+                               "engine": self.engine, "seq": self._queue_seq,
+                               "entries": self._pending})
+            scratch = path.with_suffix(".writing")
+            scratch.write_text(body, encoding="utf-8")
+            scratch.replace(path)
+        except (OSError, TypeError, ValueError):
+            pass
+
     # -- turns --------------------------------------------------------------
 
     def send(self, message: str, posture: str, model: str = "",
@@ -399,13 +455,14 @@ class ChatSession:
             self._queue_seq += 1
             entry = {"id": f"q{self._queue_seq}", "message": message, "posture": posture,
                      "model": model, "attachments": list(attachments or []),
-                     "generation": self._cancel_generation,
+                     "generation": self._cancel_generation, "held": "", "resume": False,
                      "waited": self._current is not None or bool(self._pending)}
             self._pending.append(entry)
             self._ensure_worker()
             if entry["waited"]:
-                rev, snapshot = self._snapshot()
-                self._emit_queue(rev, snapshot)
+                self._queue_saved()
+            else:
+                self._save_queue()
         return {"id": entry["id"], "queued": entry["waited"]}
 
     def _ensure_worker(self) -> None:
@@ -418,10 +475,13 @@ class ChatSession:
         while True:
             with self._lock:
                 self._current = None
-                if not self._pending:
+                # A held message waits for you, so the queue runs on past it.
+                index = next((i for i, e in enumerate(self._pending) if not e.get("held")), -1)
+                if index < 0:
                     self._worker = None
                     return
-                entry = self._pending.pop(0)
+                entry = self._pending.pop(index)
+                self._save_queue()
                 if entry["generation"] != self._cancel_generation:
                     continue
                 self._current = entry
@@ -432,8 +492,28 @@ class ChatSession:
                 # empty queue, so drop the entry instead of announcing a start
                 # that would relight "Working…" with no turn behind it (AG-10).
                 continue
-            self._run_turn(entry["message"], entry["posture"], entry["model"],
-                           entry["attachments"])
+            never_ran = self._run_turn(entry["message"], entry["posture"], entry["model"],
+                                       entry["attachments"])
+            if never_ran:
+                self._hold_back(entry, never_ran)
+
+    def _hold_back(self, entry: dict, reason: str) -> None:
+        """Put a message whose turn never began back at the head of the queue.
+
+        The CLI never saw it and the browser is not showing it either, so
+        dropping it would lose the words for good -- the bug people hit when a
+        queued turn failed to launch. It comes back held rather than running
+        again, so the queue cannot spin retrying a CLI that keeps refusing, and
+        the reason is on the row.
+        """
+        with self._lock:
+            if entry["generation"] != self._cancel_generation:
+                return                      # a Stop cleared the queue meanwhile
+            entry["held"] = reason
+            entry["resume"] = False
+            entry["waited"] = True          # never shown as sent: announce it when it runs
+            self._pending.insert(0, entry)
+            self._queue_saved()
 
     def _announce_start(self, entry: dict) -> bool:
         """Tell every tab that a waited message's turn is beginning.
@@ -457,7 +537,9 @@ class ChatSession:
     def _public(entry: dict) -> dict:
         return {"id": entry["id"], "message": entry["message"],
                 "posture": entry["posture"], "model": entry["model"],
-                "files": [os.path.basename(p) for p in entry["attachments"]]}
+                "files": [os.path.basename(p) for p in entry["attachments"]],
+                # Empty unless the message is waiting for you: the row says why.
+                "held": entry.get("held", "")}
 
     def _queue_view(self) -> list[dict]:
         # Caller holds _lock. Only messages that waited are the queue: one sent
@@ -484,11 +566,10 @@ class ChatSession:
             if not message and not self._pending[index]["attachments"]:
                 raise ValueError("A queued message can't be empty. Remove it instead.")
             self._pending[index]["message"] = message
-            # Snapshot and announce in the same critical section as the change,
-            # so its revision orders it against any concurrent change and no
-            # older snapshot can overtake it on the way to a tab.
-            rev, snapshot = self._snapshot()
-            self._emit_queue(rev, snapshot)
+            # Save and announce in the same critical section as the change, so
+            # its revision orders it against any concurrent change and no older
+            # snapshot can overtake it on the way to a tab or to disk.
+            self._queue_saved()
         return True
 
     def remove_queued(self, entry_id: str) -> bool:
@@ -499,8 +580,7 @@ class ChatSession:
             self._removed[entry_id] = (index, self._pending.pop(index))
             while len(self._removed) > 20:
                 self._removed.pop(next(iter(self._removed)))
-            rev, snapshot = self._snapshot()
-            self._emit_queue(rev, snapshot)
+            self._queue_saved()
         return True
 
     def move_queued(self, entry_id: str, to: int) -> bool:
@@ -510,8 +590,7 @@ class ChatSession:
                 return False
             entry = self._pending.pop(index)
             self._pending.insert(max(0, min(int(to), len(self._pending))), entry)
-            rev, snapshot = self._snapshot()
-            self._emit_queue(rev, snapshot)
+            self._queue_saved()
         return True
 
     def restore_queued(self, entry_id: str) -> bool:
@@ -525,21 +604,57 @@ class ChatSession:
             entry["waited"] = True
             self._pending.insert(min(index, len(self._pending)), entry)
             self._ensure_worker()
-            rev, snapshot = self._snapshot()
-            self._emit_queue(rev, snapshot)
+            self._queue_saved()
+        return True
+
+    def release_queued(self, entry_id: str) -> bool:
+        """Send a held message now: clear what is holding it and start the worker."""
+        with self._lock:
+            index = self._find(entry_id)
+            if index < 0:
+                return False
+            self._pending[index]["held"] = ""
+            self._pending[index]["resume"] = False
+            self._ensure_worker()
+            self._queue_saved()
+        return True
+
+    def resume_ready(self) -> bool:
+        """Release the messages a restart held, now that the session is free.
+
+        Only entries marked `resume` -- the ones kept across a restart. One
+        held because its CLI refused it stays put: retrying that by itself
+        would spin.
+        """
+        with self._lock:
+            waiting = [e for e in self._pending if e.get("held") and e.get("resume")]
+            if not waiting:
+                return False
+            for entry in waiting:
+                entry["held"] = ""
+                entry["resume"] = False
+            self._ensure_worker()
+            self._queue_saved()
         return True
 
     def _run_turn(self, message: str, posture: str, model: str = "",
-                  attachments: list[str] | None = None) -> None:
+                  attachments: list[str] | None = None) -> str:
+        """Run one turn. Returns why the CLI never got the message, or "".
+
+        A reason means the words are still nobody's but ours -- the caller puts
+        them back in the queue rather than letting them evaporate. A turn that
+        reached the model and then failed returns "": the agent has the
+        message, so sending it again would say it twice.
+        """
         if self._api_cancel.is_set():
             # A Stop landed before this turn started. cancel() has already
             # emitted the cancelled turn_done, so drop the turn silently rather
             # than emit a second one.
-            return
+            return ""
         if self.engine == "openrouter":
             from agentgrid import openrouter
             openrouter.run_turn(self, message, model, attachments)
-            return
+            return ""
         # The session's standing system prompt, re-read every turn so an edit
         # made while it was running reaches this turn. Empty until a prompt is
         # set for this session (a brand-new chat has no id yet), so a plain turn
@@ -593,8 +708,9 @@ class ChatSession:
                 env={k: v for k, v in os.environ.items() if k != "OPENROUTER_API_KEY"},
             )
         except (OSError, ValueError) as error:
-            self._emit({"type": "error", "message": f"could not start {self.engine}: {error}"})
-            return
+            failed = f"could not start {self.engine}: {error}"
+            self._emit({"type": "error", "message": failed})
+            return failed
 
         with self._lock:
             # A Stop can land while Popen is running: cancel() then finds no
@@ -611,11 +727,15 @@ class ChatSession:
                     os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
                 except OSError:
                     pass
-            return
+            return ""
 
         last_noise = ""
         hard_error = ""
         finished = False
+        # Whether the CLI ever opened a turn. Until it does, the message has
+        # reached nothing: an exit before that is a message still owed to you.
+        started = False
+        never_ran = ""
         seen_errors = set()
         try:
             for line in proc.stdout:                # blocks in this worker thread only
@@ -649,6 +769,8 @@ class ChatSession:
                         if message_key in seen_errors:
                             continue
                         seen_errors.add(message_key)
+                    if event["type"] == "turn_started":
+                        started = True
                     if event["type"] in ("turn_done", "error"):
                         finished = True
                     self._emit(event)
@@ -664,10 +786,14 @@ class ChatSession:
                 self._proc = None
                 self._running = False
             if code not in (0, None) and not finished:
-                self._emit({"type": "error",
-                            "message": explain_exit(self.engine, hard_error or last_noise, code)})
+                trouble = explain_exit(self.engine, hard_error or last_noise, code)
+                self._emit({"type": "error", "message": trouble})
+                never_ran = "" if started else trouble
             elif not finished:
-                self._emit({"type": "error", "message": f"{self.engine.title()} exited without completing the turn."})
+                trouble = f"{self.engine.title()} exited without completing the turn."
+                self._emit({"type": "error", "message": trouble})
+                never_ran = "" if started else trouble
+        return never_ran
 
     def cancel(self) -> None:
         """Stop the current turn and drop anything queued behind it."""
@@ -685,6 +811,7 @@ class ChatSession:
             response = self._api_response
             self._pending.clear()
             self._removed.clear()
+            self._save_queue()
             rev, snapshot = self._snapshot()
             self._emit_locked({"type": "turn_done", "ok": False, "result": None,
                                "cancelled": True, "stats": {}})
@@ -697,6 +824,42 @@ class ChatSession:
                 os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
             except OSError:
                 pass
+
+    def adopt(self, entries: list[dict], seq: int = 0) -> int:
+        """Take in messages an earlier run left waiting. Returns how many.
+
+        They come back held. The turn they were queued behind died with the
+        process that ran it, and the CLI may still be finishing it as an
+        orphan -- resuming a Claude session that is still working starts a
+        *copy* of it, so nothing may fire on startup. They are visible in the
+        panel again, and resume_ready() releases them once the session is free.
+        """
+        taken = 0
+        with self._lock:
+            for saved in entries:
+                if not isinstance(saved, dict) or not saved.get("id"):
+                    continue
+                held = str(saved.get("held") or "")
+                self._pending.append({
+                    "id": str(saved["id"]),
+                    "message": str(saved.get("message") or ""),
+                    "posture": str(saved.get("posture") or DEFAULT_POSTURE),
+                    "model": str(saved.get("model") or ""),
+                    "attachments": [str(path) for path in saved.get("attachments") or []],
+                    "generation": self._cancel_generation,
+                    # Never shown as sent, so it is announced when it runs.
+                    "waited": True,
+                    "held": held or HELD_RESTART,
+                    # One that was merely waiting goes on by itself; one its CLI
+                    # already refused waits for you, so it cannot spin retrying.
+                    "resume": not held,
+                })
+                taken += 1
+            # Past the ids that came back, so a new message cannot reuse one.
+            self._queue_seq = max(int(seq or 0), self._queue_seq, len(self._pending))
+            if taken:
+                self._save_queue()
+        return taken
 
     def state(self) -> dict:
         # A read, so it reports the current revision rather than minting one: a
@@ -735,7 +898,7 @@ class ChatManager:
 
     def queue_action(self, session_id: str, action: str, entry_id: str,
                      message: object = None, index: object = None) -> bool:
-        """Edit, remove, move or restore one waiting message.
+        """Edit, remove, move, restore or release one waiting message.
 
         False means the entry is no longer waiting (it started, or Stop cleared
         it). ValueError means the request itself is wrong.
@@ -750,11 +913,49 @@ class ChatManager:
             return existing.remove_queued(entry_id)
         if action == "restore":
             return existing.restore_queued(entry_id)
+        if action == "release":
+            return existing.release_queued(entry_id)
         if action == "move":
             if isinstance(index, bool) or not isinstance(index, int):
                 raise ValueError("Say where to move it.")
             return existing.move_queued(entry_id, index)
         raise ValueError(f"Unknown queue action: {action}.")
+
+    def restore(self) -> int:
+        """Read back the queues an earlier run left on disk. Returns how many messages.
+
+        Called once at startup, before the board is servable, so a message that
+        was waiting when the server stopped is in the panel when it comes back
+        rather than gone without trace.
+        """
+        recovered = 0
+        try:
+            saved_files = sorted(QUEUE_DIR.glob("*.json"))
+        except OSError:
+            return 0
+        for path in saved_files:
+            try:
+                saved = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            entries = saved.get("entries") if isinstance(saved, dict) else None
+            session_id = str(saved.get("sessionId") or "") if isinstance(saved, dict) else ""
+            if not session_id or not isinstance(entries, list) or not entries:
+                try:
+                    path.unlink()        # nothing waiting in it: don't keep the file
+                except OSError:
+                    pass
+                continue
+            room = self.session(session_id, str(saved.get("cwd") or ""),
+                                str(saved.get("engine") or "claude"))
+            recovered += room.adopt(entries, saved.get("seq"))
+        return recovered
+
+    def resume_ready(self, session_id: str) -> bool:
+        """Let messages kept across a restart start, now this session is free."""
+        with self._lock:
+            existing = self._sessions.get(session_id)
+        return bool(existing) and existing.resume_ready()
 
     def cancel(self, session_id: str) -> None:
         with self._lock:

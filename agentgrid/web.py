@@ -357,6 +357,24 @@ def follow_up_block(session, chat_manager) -> str | None:
     return None
 
 
+def _resume_chat_queues(sessions: list, chat_manager) -> None:
+    """Start the messages a restart held, for every session now free to take one.
+
+    Held rather than sent on startup because the turn they were queued behind
+    died with the last run: the CLI may still be finishing it as an orphan, and
+    a message sent into that would be answered by a copy of the agent (see
+    follow_up_block) or refused outright by Codex. Once the fleet reports the
+    session is not working and nothing else holds its thread, the queue is its
+    own again and the message goes.
+    """
+    for session in sessions:
+        if getattr(session, "status", "") == "working":
+            continue
+        if codex_chat_block(session, chat_manager):
+            continue
+        chat_manager.resume_ready(session.session_id)
+
+
 def _overlay_chat(sessions: list[dict], chat_manager) -> list[dict]:
     """`claude agents` never reports a headless chat turn (`claude -p --resume`) as the
     session working, yet the panel is driving exactly that. The ChatManager knows, so a
@@ -392,6 +410,9 @@ class Fleet:
         # applies the chat's own live signal first so the events match /api/sessions.
         self.events = EventHub()
         self.overlay = None
+        # Set by serve() too: each good poll shows the fleet to the chat queues,
+        # so a message kept across a restart starts once its session is free.
+        self.on_poll = None
 
     def start(self) -> None:
         self._thread.start()
@@ -418,6 +439,11 @@ class Fleet:
             self._polled_at = time.time()
         if not error:
             self._announce(sessions)
+            if self.on_poll is not None:
+                try:
+                    self.on_poll(sessions)
+                except Exception:  # noqa: BLE001 -- the board must keep polling regardless
+                    pass
 
     def _announce(self, sessions: list) -> None:
         """Show this poll to the event hub. Never lets a fault there stop the polling."""
@@ -2492,7 +2518,10 @@ class Handler(BaseHTTPRequestHandler):
         if session is None:
             self._send_json(404, {"error": "Unknown session."})
             return
-        blocked = codex_chat_block(session, self.chat) if body.get("action") == "restore" else None
+        # Both put a message back on its way to the CLI, so both take the check
+        # a send takes.
+        starts_a_turn = body.get("action") in ("restore", "release")
+        blocked = codex_chat_block(session, self.chat) if starts_a_turn else None
         if blocked:
             self._send_json(409, {"error": blocked, "held": True,
                                   **self.chat.state(session.session_id)})
@@ -3523,6 +3552,13 @@ def serve(port: int = 8787, open_browser: bool = True,
           flush=True)
     if open_browser:
         threading.Timer(0.4, lambda: webbrowser.open(url)).start()
+    fleet.on_poll = lambda sessions: _resume_chat_queues(sessions, chat_manager)
+    # Messages that were still queued when the last run stopped. They come back
+    # held and are released by the poll above once their session is free, so
+    # one written at midnight is not silently gone by morning.
+    waiting = chat_manager.restore()
+    if waiting:
+        print(f"  {waiting} queued chat message{'s' if waiting > 1 else ''} kept from the last run")
     # An orchestrator interrupted by the last shutdown picks up where it
     # stopped. Off the main thread: its first step is a model call, and the
     # board must be servable before that returns.

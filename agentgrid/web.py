@@ -785,7 +785,8 @@ def set_project_pref(path: str, kind: str, on: bool) -> None:
 # everything on the board (attach, stop, transcripts) works on the result.
 
 AGENTS_PATH = Path.home() / ".agentgrid" / "agents.json"
-MAX_SYSTEM_PROMPT = 8000
+# A definition's system prompt is kept whole -- see the note by the constants
+# in discovery.py. Only the name is bounded, because it is a label, not prose.
 
 
 def load_saved_agents() -> list[dict]:
@@ -803,7 +804,7 @@ def load_saved_agents() -> list[dict]:
                 "name": str(entry["name"])[:60],
                 "engine": "codex" if entry.get("engine") == "codex" else "claude",
                 "model": str(entry.get("model") or ""),
-                "systemPrompt": str(entry.get("systemPrompt") or "")[:MAX_SYSTEM_PROMPT],
+                "systemPrompt": str(entry.get("systemPrompt") or ""),
             })
     return agents
 
@@ -823,7 +824,7 @@ def save_saved_agent(name: str, engine: str, model: str, system_prompt: str) -> 
         "name": name,
         "engine": "codex" if engine == "codex" else "claude",
         "model": model.strip(),
-        "systemPrompt": system_prompt.strip()[:MAX_SYSTEM_PROMPT],
+        "systemPrompt": system_prompt.strip(),
     })
     _write_saved_agents(agents)
     return agents
@@ -869,7 +870,7 @@ def add_saved_agent(name: str, engine: str, model: str, system_prompt: str) -> t
         "name": chosen,
         "engine": "codex" if engine == "codex" else "claude",
         "model": model.strip(),
-        "systemPrompt": system_prompt.strip()[:MAX_SYSTEM_PROMPT],
+        "systemPrompt": system_prompt.strip(),
     })
     _write_saved_agents(agents)
     return agents, chosen
@@ -904,7 +905,10 @@ PROMPTS_PATH = Path.home() / ".agentgrid" / "prompts.json"
 # The command file lives in Claude Code's own directory; this is the ONE place
 # under ~/.claude this feature ever touches, and only ever for files it manages.
 CLAUDE_COMMANDS_DIR = Path.home() / ".claude" / "commands"
-MAX_PROMPT_BODY = 20000
+# A saved prompt's body is prose a person wrote, and Insert drops it straight
+# into a system-prompt field, so it is kept whole for the same reason that
+# prompt is (see the note by the constants in discovery.py). Only the short
+# label fields stay bounded.
 MAX_PROMPT_DESC = 200
 
 
@@ -938,7 +942,7 @@ def load_saved_prompts(area_id: str | None = None) -> list[dict]:
         prompts.append({
             "name": slug,
             "description": str(entry.get("description") or "")[:MAX_PROMPT_DESC],
-            "body": str(entry.get("body") or "")[:MAX_PROMPT_BODY],
+            "body": str(entry.get("body") or ""),
             "areaId": str(entry.get("areaId") or ""),
         })
     if area_id is None or area_id == "*":
@@ -961,7 +965,7 @@ def save_saved_prompt(name: str, description: str, body: str, area_id: str = "")
     prompts.append({
         "name": slug,
         "description": description.strip()[:MAX_PROMPT_DESC],
-        "body": body.strip()[:MAX_PROMPT_BODY],
+        "body": body.strip(),
         "areaId": area_id,
     })
     _write_saved_prompts(prompts)
@@ -3288,18 +3292,17 @@ class Handler(BaseHTTPRequestHandler):
         self._send_json(200, {"tags": cleaned})
 
     def _system_prompt_get(self, query: dict) -> None:
-        """View a live session's standing system prompt, and its length cap.
+        """View a live session's standing system prompt.
 
         Answers for any session id -- there is nothing to validate against the
         current fleet, and an editor that opens on a card the poll has not yet
-        refreshed should still see what is stored. `maxLength` lets the editor
-        show the same cap the store enforces.
+        refreshed should still see what is stored. There is no length cap to
+        report: the prompt is kept whole (see discovery.save_system_prompt).
         """
         session_id = self._one(query, "session")
         self._send_json(200, {
             "sessionId": session_id,
             "systemPrompt": discovery.system_prompt_for(session_id),
-            "maxLength": discovery.MAX_SYSTEM_PROMPT,
         })
 
     def _system_prompt_set(self, body: dict) -> None:

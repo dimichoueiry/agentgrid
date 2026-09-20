@@ -49,7 +49,10 @@ _LOCK = threading.RLock()
 
 MAX_NAME = 60
 MAX_DESCRIPTION = 200
-MAX_GUIDELINES = 20_000
+# Guidelines carry the whole of who a persona is, so they are deliberately not
+# capped by a character count: a long, careful prompt must survive intact. The
+# only bound is the server's request-body limit (web.MAX_BODY_BYTES, 16 MB),
+# which is a transport safeguard, not an editing limit.
 MAX_LIST = 40
 MAX_MEMORY_TEXT = 500
 MEMORY_LIMIT = 100
@@ -159,9 +162,7 @@ def load(raw: object, *, existing_id: str = "") -> Persona:
     description = str(raw.get("description") or "").strip()
     if len(description) > MAX_DESCRIPTION:
         raise ValueError(f"Keep the description under {MAX_DESCRIPTION} characters.")
-    guidelines = str(raw.get("guidelines") or "")
-    if len(guidelines) > MAX_GUIDELINES:
-        raise ValueError(f"Guidelines must be under {MAX_GUIDELINES:,} characters.")
+    guidelines = str(raw.get("guidelines") or "")   # deliberately uncapped -- see the note by the constants above
     defaults = load_defaults(raw.get("agentDefaults"))
     allowed = [_model_id(m, "Allowed models") for m in _names(raw.get("allowedModels"), "Allowed models")]
     if allowed and not defaults.model:

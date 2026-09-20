@@ -1498,8 +1498,9 @@ body.area-overview .viewnav,body.area-overview #searchBox,body.area-overview #ne
     <input id="pModel" list="pModels" required autocomplete="off" spellcheck="false" placeholder="e.g. openai/gpt-5">
     <datalist id="pModels"></datalist></label>
   <label>Guidelines <span class="hint">its role, how it works, what good looks like</span>
-    <textarea id="pGuidelines" maxlength="20000"
-      placeholder="You are a product manager. You own the outcome, not the code…"></textarea></label>
+    <textarea id="pGuidelines"
+      placeholder="You are a product manager. You own the outcome, not the code…"></textarea>
+    <span class="hint" id="pGuidelinesCount" aria-live="polite"></span></label>
   <fieldset>
     <legend>Agents it starts</legend>
     <div class="pdefaults">
@@ -6081,6 +6082,7 @@ async function openPersonaEditor(id = "", then = null) {
   $("pDescription").value = persona?.description || "";
   $("pModel").value = persona?.model || used[0] || "";
   $("pGuidelines").value = persona?.guidelines || "";
+  updateGuidelinesCount();
   $("pEngine").value = defaults.engine || "claude";
   $("pAgentModel").value = defaults.model || "";
   $("pMode").value = defaults.mode || "either";
@@ -6103,6 +6105,13 @@ async function openPersonaEditor(id = "", then = null) {
   await loadOpenRouterModels();
   $("pModels").innerHTML = workflowModelOptions("openrouter");
   $("pAgentModels").innerHTML = workflowModelOptions($("pEngine").value);
+}
+
+// Guidelines have no character cap — the count is feedback, not a fence, so it
+// never shows a limit or turns red. Long, careful prompts are kept in full.
+function updateGuidelinesCount() {
+  const used = $("pGuidelines").value.length;
+  $("pGuidelinesCount").textContent = used ? `${used.toLocaleString()} characters` : "";
 }
 
 async function savePersona() {
@@ -6719,6 +6728,7 @@ function bindEvents() {
   $("sysLoad").addEventListener("click", sysInsertSaved);
   $("sysCopy").addEventListener("click", sysCopyPrompt);
   $("sysText").addEventListener("input", sysUpdateCount);
+  $("pGuidelines").addEventListener("input", updateGuidelinesCount);
   // Save writes the standing prompt against the session — the one action that
   // actually changes what future turns carry.
   $("sysApply").addEventListener("click", sysApplyPrompt);

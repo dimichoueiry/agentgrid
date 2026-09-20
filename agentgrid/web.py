@@ -2009,10 +2009,39 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(200, {"ok": True})
             elif action == "purge":
                 self._send_json(200, {"ok": history.purge_now(session_id)})
+            elif action == "resume":
+                self._conversation_resume(session_id, body)
             else:
                 self._send_json(404, {"error": "Unknown action."})
         except ValueError as error:
             self._send_json(400, {"error": str(error)})
+
+    def _conversation_resume(self, session_id: str, body: dict) -> None:
+        """Pick a finished conversation back up where it stopped.
+
+        The turn runs as `claude -p --resume <id>`, so the conversation is
+        rebuilt from the transcript -- nothing had to stay alive for this to
+        work, which is the whole point of the view. `cwd` is read from that
+        same transcript and never from the request, keeping the boundary
+        `_chat_send` draws: a client may name a conversation, never a
+        directory to run in.
+        """
+        cwd = history.cwd_for(session_id)
+        if not cwd:
+            self._send_json(404, {"error": "That conversation no longer exists."})
+            return
+        message = str(body.get("message") or "").strip()
+        if not message:
+            self._send_json(400, {"error": "Say something to send."})
+            return
+        if self._is_live(session_id):
+            self._send_json(409, {"error": "That conversation is already running. "
+                                           "Open it on the board."})
+            return
+        sent = self.chat.send(session_id, cwd, message,
+                              str(body.get("posture") or chat.DEFAULT_POSTURE),
+                              str(body.get("model") or ""), [], engine="claude")
+        self._send_json(200, {"ok": True, "sessionId": session_id, "cwd": cwd, **sent})
 
     def _get_files(self, query: dict) -> None:
         """Fuzzy file-path search under a session's cwd, for @-mention complete.

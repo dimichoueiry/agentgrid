@@ -235,6 +235,29 @@ def find(session_id: str) -> Path | None:
     return None
 
 
+def cwd_for(session_id: str) -> str:
+    """The directory a conversation ran in, read out of its own transcript.
+
+    This is what makes resuming a dead conversation safe. `/api/chat` takes
+    cwd from the tracked session and never from the client, which is the line
+    that stops it being "run claude anywhere"; a conversation off the board has
+    no tracked session, so the same guarantee has to come from the file. The
+    client supplies an id, the id is matched against the store, and the cwd is
+    whatever that transcript recorded.
+    """
+    path = find(session_id)
+    if path is None:
+        return ""
+    try:
+        state = _CACHE.parse(path)
+    except OSError:
+        return ""
+    recorded = str(state.get("cwd") or "")
+    if recorded:
+        _CWD[str(path)] = recorded
+    return recorded or cwd_from_slug(path.parent.name)
+
+
 def page(offset: int = 0, limit: int = PAGE_SIZE, search: str = "", project: str = "",
          cache: discovery.TranscriptCache | None = None) -> dict:
     """One page of history, filtered and described.

@@ -66,7 +66,7 @@ summary{cursor:pointer}
    every such element needs this companion or [hidden] silently does nothing */
 .board[hidden],.notes[hidden],.col[hidden],.pmenu[hidden],.modal[hidden],
 .rail[hidden],.toast[hidden],.panel[hidden],.pages[hidden],
-.tickets[hidden],.tcol[hidden],.tboard[hidden]{display:none!important}
+.tickets[hidden],.tcol[hidden],.tboard[hidden],.history[hidden]{display:none!important}
 
 /* ---------- top bar ---------- */
 /* Nothing in the bar shrinks or wraps its label except the search box, which
@@ -867,10 +867,43 @@ details.cthink[open]>summary::before{transform:rotate(90deg)}
    The one accent marks In review — the column that is waiting on a human —
    and the working tint marks an assignee that is running right now. */
 .tickets{flex:1 1 auto;min-height:0;display:flex;flex-direction:column}
+.history{flex:1 1 auto;min-height:0;display:flex;flex-direction:column}
+.hx-bar{position:relative;z-index:5;display:flex;align-items:center;gap:8px;padding:8px 14px;flex:0 0 auto;border-bottom:1px solid var(--line)}
+.hx-search{min-width:240px;flex:0 1 340px}
+.hx-count{font-size:12px;color:var(--text-2)}
+.hx-body{flex:1 1 auto;min-height:0;overflow:auto}
+.hx-table{width:100%;border-collapse:collapse;font-size:13px}
+.hx-table td{padding:7px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+.hx-table tr.hrow{cursor:pointer}
+.hx-table tr.hrow:hover td{background:var(--card-hover)}
+.hx-table tr.hrow.sel td{background:var(--card)}
+.hx-table td.htitle{font-weight:550;color:var(--text);width:32%}
+.hx-table td.hprev{width:40%}
+.hx-table td.hprev{color:var(--text-2);max-width:420px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.hx-table td.hnum{text-align:right;font-variant-numeric:tabular-nums;color:var(--text-2);white-space:nowrap}
+.hx-proj{font-size:11.5px;color:var(--text-2)}
+.hx-live{font-size:10.5px;font-weight:600;color:var(--ok,#3fb950);border:1px solid currentColor;border-radius:99px;padding:0 6px;margin-left:6px}
+.hx-empty{padding:34px 20px;color:var(--text-2);text-align:center}
+.hx-empty h3{margin:0 0 6px;color:var(--text);font-size:15px}
+.hxpanel{width:min(760px,96vw)}
+.hx-meta{padding:6px 14px;font-size:11.5px;color:var(--text-2);border-bottom:1px solid var(--line);flex:0 0 auto}
+.hx-composer{flex:0 0 auto}
+.hx-older{display:block;width:100%;padding:6px;font-size:12px;color:var(--text-2);background:none;border:1px dashed var(--line-2);border-radius:6px;cursor:pointer}
+.hx-older:hover{background:var(--card-hover);color:var(--text)}
+.hx-trashrow td{opacity:.72}
+/* Narrow: the preview is the first thing to go -- a row is still recognisable
+   from its title and project -- then the size, then the bar stops being a row. */
+@media(max-width:900px){.hx-table td.hprev{display:none}.hx-table td.htitle{width:auto}}
+@media(max-width:620px){
+  .hx-table td.hnum:nth-last-child(2){display:none}
+  .hx-bar{flex-wrap:wrap}
+  .hx-search{min-width:0;flex:1 1 100%}
+  .hxpanel{width:100vw}
+}
 .tickets[hidden],.tpanel[hidden]{display:none!important}
 /* the session filters mean nothing to tickets or the notes pad */
-body.tickets-view #filters,body.notes-view #filters,
-body.tickets-view #filtersBtn,body.notes-view #filtersBtn{display:none}
+body.tickets-view #filters,body.notes-view #filters,body.history-view #filters,
+body.tickets-view #filtersBtn,body.notes-view #filtersBtn,body.history-view #filtersBtn{display:none}
 .tk-bar{
   position:relative;z-index:5;display:flex;align-items:center;gap:8px;padding:8px 14px;
   flex:0 0 auto;border-bottom:1px solid var(--line);
@@ -1348,6 +1381,7 @@ body.area-overview .viewnav,body.area-overview #searchBox,body.area-overview #ne
     <button data-view="split" aria-pressed="false">Split</button>
     <button data-view="notes" aria-pressed="false">Notes<span class="ncount" id="openCount"></span></button>
     <button data-view="tickets" aria-pressed="false" title="The fleet's tickets  (t creates one)">Tickets<span class="ncount" id="reviewCount"></span></button>
+    <button data-view="history" aria-pressed="false" title="Every conversation on disk — find one, read it, resume it">History</button>
   </div>
   </div>
   <div class="spacer"></div>
@@ -1601,6 +1635,32 @@ body.area-overview .viewnav,body.area-overview #searchBox,body.area-overview #ne
   </div>
   <div class="tk-body" id="tkBody"></div>
 </section>
+<section class="history" id="history" hidden>
+  <div class="hx-bar">
+    <input id="hxSearch" class="ctl hx-search" placeholder="Search conversations…" autocomplete="off" spellcheck="false">
+    <select id="hxProject" class="ctl"><option value="">Every project</option></select>
+    <span class="hx-count" id="hxCount"></span>
+    <div class="spacer"></div>
+    <button class="btn" id="hxTrashBtn" aria-pressed="false" title="Deleted conversations, still recoverable">Trash<span class="ncount" id="hxTrashCount"></span></button>
+  </div>
+  <div class="hx-body" id="hxBody"></div>
+</section>
+<div class="scrim" id="hxScrim"></div>
+<aside class="panel hxpanel" id="hxPanel" aria-label="Conversation">
+  <div class="phead">
+    <span class="ptitle" id="hxTitle"></span>
+    <button class="btn sm" id="hxNewAgent" title="Start a fresh agent in this project">New agent here</button>
+    <button class="btn sm danger" id="hxDelete" title="Move this conversation to the trash">Delete</button>
+    <button class="x" id="hxClose" title="Close  (Esc)">&times;</button>
+  </div>
+  <div class="hx-meta" id="hxMeta"></div>
+  <div class="plabel" id="hxOlderRow"></div>
+  <div class="tscroll" id="hxScroll"></div>
+  <form class="op-composer hx-composer" id="hxComposer">
+    <textarea id="hxInput" rows="2" placeholder="Pick this conversation back up…"></textarea>
+    <button class="btn key" id="hxSend">Resume</button>
+  </form>
+</aside>
 
 <div class="scrim" id="tscrim"></div>
 <aside class="panel tpanel" id="tpanel" aria-label="Ticket">
@@ -5721,19 +5781,21 @@ async function doSync() {
 
 function setView(v) {
   if (view === "notes" || view === "split") flushSave();
-  if (!["areas", "board", "split", "notes", "tickets"].includes(v)) v = "areas";
+  if (!["areas", "board", "split", "notes", "tickets", "history"].includes(v)) v = "areas";
   view = v;
-  if (v === "areas" || v === "tickets") closePanel();
+  if (v === "areas" || v === "tickets" || v === "history") closePanel();
   $("areas").hidden = v !== "areas";
   $("areaTrail").hidden = v === "areas";
   document.body.classList.toggle("area-overview", v === "areas");
   document.body.classList.toggle("tickets-view", v === "tickets");
+  document.body.classList.toggle("history-view", v === "history");
   document.body.classList.toggle("notes-view", v === "notes");
   localStorage.setItem("agentgrid.view", v);
   document.body.classList.toggle("split", v === "split");
-  $("board").hidden = v === "notes" || v === "areas" || v === "tickets";
-  $("notes").hidden = v === "board" || v === "areas" || v === "tickets";
+  $("board").hidden = v === "notes" || v === "areas" || v === "tickets" || v === "history";
+  $("notes").hidden = v === "board" || v === "areas" || v === "tickets" || v === "history";
   $("tickets").hidden = v !== "tickets";
+  $("history").hidden = v !== "history";
   $("views").querySelectorAll("button").forEach(b => {
     b.setAttribute("aria-pressed", String(b.dataset.view === v));
     if (b.dataset.view === v) $("viewName").textContent = b.firstChild.textContent;
@@ -5741,6 +5803,7 @@ function setView(v) {
   closeFilters();
   renderOrchestrators();
   if (v === "tickets") loadTickets(true);
+  else if (v === "history") loadHistory(true);
   else if (v === "notes" || v === "split") loadNotes(true);
 }
 
@@ -7377,6 +7440,7 @@ function bindEvents() {
       if (!$("promptModal").hidden) { closePrompts(); return; }
       if (!$("modal").hidden) { closeNewAgent(); return; }
       if ($("managePanel").classList.contains("on")) { closeManage(); return; }
+      if ($("hxPanel").classList.contains("on")) { closeConversation(); return; }
       if ($("tpanel").classList.contains("on")) { closeTicket(); return; }
       if ($("panel").classList.contains("on")) { closePanel(); return; }
       return;
@@ -7972,6 +8036,250 @@ async function openNewAgentForTicket(t) {
   $("naTask").focus();
 }
 
+/* ------------------------------------------------------------------ history */
+/* Every conversation on disk, not just the ones still running. The board is
+   fed by the live fleet plus a 24-hour window of ended sessions, so the day
+   after a conversation ended its card was gone and nothing could reach it
+   again -- even though the transcript was still there and --resume would have
+   worked on it. This view reads the store itself: no age window, and no
+   requirement that anything still be alive.
+
+   Reading is free and never touches a process. The two things that do change
+   something -- Resume and Delete -- are explicit, and Delete is reversible
+   until the trash expires. */
+
+let hxData = null, hxSig = "", hxOpen = null, hxTrashOn = false;
+let hxQuery = "", hxProject = "", hxSearchTimer = null;
+let hxBlocks = [], hxOffset = 0, hxTotal = 0, hxHasOlder = false, hxLoadingOlder = false;
+
+const hxSize = (n) => n >= 1048576 ? (n / 1048576).toFixed(1) + " MB"
+                    : n >= 1024 ? Math.round(n / 1024) + " KB" : (n || 0) + " B";
+
+async function loadHistory(force) {
+  let data;
+  try {
+    data = await api(`/api/conversations?limit=200` +
+      (hxQuery ? `&q=${encodeURIComponent(hxQuery)}` : "") +
+      (hxProject ? `&project=${encodeURIComponent(hxProject)}` : ""));
+  } catch (e) { return; }
+  if (data.error) {
+    $("hxBody").innerHTML = `<div class="hx-empty"><h3>History unreadable</h3>${esc(data.error)}</div>`;
+    return;
+  }
+  hxData = Object.assign({}, data, {trash: (hxData && hxData.trash) || []});
+  if (view === "history" || force) renderHistory();
+}
+
+async function hxLoadTrash() {
+  let data;
+  try { data = await api("/api/conversations/trash"); } catch (e) { return; }
+  hxData = Object.assign({}, hxData || {}, {trash: data.trash || [], ttlDays: data.ttlDays});
+  $("hxTrashCount").textContent = (data.trash || []).length || "";
+  hxSig = ""; if (view === "history") renderHistory();
+}
+
+function hxFillProjects() {
+  const sel = $("hxProject"), want = hxProject;
+  const list = (hxData && hxData.projects) || [];
+  sel.innerHTML = `<option value="">Every project</option>` +
+    list.map(p => `<option value="${esc(p.cwd)}">${esc(p.name || p.cwd)} (${p.count})</option>`).join("");
+  sel.value = list.some(p => p.cwd === want) ? want : "";
+}
+
+function renderHistory() {
+  if (!hxData) return;
+  const rows = hxTrashOn ? (hxData.trash || []) : (hxData.conversations || []);
+  const sig = JSON.stringify([hxTrashOn, hxOpen, hxQuery, hxProject,
+                              rows.map(r => r.sessionId + (r.modified || r.deletedAt) + r.live).join("|"),
+                              Math.floor(Date.now() / 60000)]);
+  if (sig === hxSig) return;
+  hxSig = sig;
+  hxFillProjects();
+  $("hxCount").textContent = hxTrashOn
+    ? `${rows.length} in the trash`
+    : `${hxData.total || 0} conversation${(hxData.total || 0) === 1 ? "" : "s"}`;
+  $("hxBody").innerHTML = hxTrashOn ? hxTrashHtml(rows) : hxRowsHtml(rows);
+}
+
+function hxRowsHtml(rows) {
+  if (!rows.length) {
+    return `<div class="hx-empty"><h3>${hxQuery || hxProject ? "Nothing matches." : "No conversations yet."}</h3>` +
+      (hxQuery || hxProject ? "Try a different search, or clear the project filter."
+                            : "Every chat you have shows up here.") + `</div>`;
+  }
+  const now = Date.now() / 1000;
+  return `<table class="hx-table"><tbody>` + rows.map(c => {
+    const title = c.title || c.preview || "(untitled)";
+    return `<tr class="hrow${c.sessionId === hxOpen ? " sel" : ""}" data-hx="${esc(c.sessionId)}">` +
+      `<td class="htitle">${esc(title)}` +
+        (c.live ? `<span class="hx-live">live</span>` : "") +
+        `<div class="hx-proj">${esc(c.project || c.cwd || "")}</div></td>` +
+      `<td class="hprev">${esc(c.preview || "")}</td>` +
+      `<td class="hnum">${c.turns || 0} msgs</td>` +
+      `<td class="hnum">${hxSize(c.size)}</td>` +
+      `<td class="hnum">${esc(ageStr(now - (c.modified || 0)))}</td></tr>`;
+  }).join("") + `</tbody></table>`;
+}
+
+function hxTrashHtml(rows) {
+  if (!rows.length) {
+    return `<div class="hx-empty"><h3>The trash is empty.</h3>` +
+      `Deleted conversations wait here ${(hxData && hxData.ttlDays) || 7} days before they go for good.</div>`;
+  }
+  const now = Date.now() / 1000;
+  return `<table class="hx-table"><tbody>` + rows.map(t =>
+    `<tr class="hx-trashrow" data-hxtrash="${esc(t.sessionId)}">` +
+    `<td class="htitle">${esc((t.origin || "").split("/").pop() || t.sessionId)}` +
+      `<div class="hx-proj">deleted ${esc(ageStr(now - (t.deletedAt || 0)))}</div></td>` +
+    `<td class="hnum">${hxSize(t.size)}</td>` +
+    `<td class="hnum">${Math.ceil((t.expiresIn || 0) / 86400)}d left</td>` +
+    `<td class="hnum"><button class="btn sm" data-hxrestore="${esc(t.sessionId)}">Restore</button> ` +
+    `<button class="btn sm danger" data-hxpurge="${esc(t.sessionId)}">Delete now</button></td></tr>`).join("") +
+    `</tbody></table>`;
+}
+
+/* ---- one conversation */
+
+async function openConversation(id) {
+  hxOpen = id; hxBlocks = []; hxOffset = 0; hxTotal = 0; hxHasOlder = false;
+  const row = ((hxData && hxData.conversations) || []).find(c => c.sessionId === id);
+  $("hxTitle").textContent = row ? (row.title || row.preview || id.slice(0, 8)) : id.slice(0, 8);
+  $("hxMeta").textContent = row
+    ? `${row.cwd || ""} · ${row.turns || 0} messages · ${hxSize(row.size)} · ${ageStr(Date.now() / 1000 - (row.modified || 0))}`
+    : "";
+  // A live conversation is the board's to drive; deleting it would pull the
+  // transcript out from under a running turn.
+  $("hxDelete").disabled = !!(row && row.live);
+  $("hxDelete").title = row && row.live
+    ? "This conversation is running — stop it on the board first." : "Move this conversation to the trash";
+  $("hxScroll").innerHTML = `<div class="mvnote">Reading…</div>`;
+  $("hxOlderRow").innerHTML = "";
+  $("hxPanel").classList.add("on"); $("hxScrim").classList.add("on");
+  hxSig = ""; renderHistory();
+  await hxFetchWindow(null);
+  $("hxScroll").scrollTop = $("hxScroll").scrollHeight;   // land on the newest turn
+}
+
+async function hxFetchWindow(before) {
+  if (!hxOpen) return;
+  const id = hxOpen;
+  let data;
+  try {
+    data = await api(`/api/conversations/transcript?id=${encodeURIComponent(id)}` +
+      (before === null ? "" : `&before=${before}`));
+  } catch (e) { return; }
+  if (id !== hxOpen) return;                 // switched away mid-request
+  if (data.error) { $("hxScroll").innerHTML = `<div class="mvnote">${esc(data.error)}</div>`; return; }
+  const older = data.blocks || [];
+  hxBlocks = before === null ? older : older.concat(hxBlocks);
+  hxOffset = data.offset || 0;
+  hxTotal = data.total || hxBlocks.length;
+  hxHasOlder = !!data.hasOlder;
+  hxRenderTranscript(before !== null);
+}
+
+function hxRenderTranscript(keepPlace) {
+  const host = $("hxScroll");
+  const before = host.scrollHeight - host.scrollTop;
+  host.innerHTML = blocksHtml(hxBlocks) || `<div class="mvnote">Nothing here yet.</div>`;
+  $("hxOlderRow").innerHTML = hxHasOlder
+    ? `<button class="hx-older" id="hxOlder">Load earlier turns — ${hxOffset} of ${hxTotal} still above</button>`
+    : (hxTotal ? `<span class="hint">The whole conversation — ${hxTotal} messages.</span>` : "");
+  // Loading older turns must not move the reader: restore the distance from
+  // the bottom, which is the part that did not change.
+  if (keepPlace) host.scrollTop = host.scrollHeight - before;
+}
+
+async function hxResume(event) {
+  if (event) event.preventDefault();
+  const id = hxOpen, message = $("hxInput").value.trim();
+  if (!id || !message) return;
+  $("hxSend").disabled = true;
+  const r = await post("/api/conversations/resume", {sessionId: id, message});
+  $("hxSend").disabled = false;
+  if (!r || r.error) { toast((r && r.error) || "Could not resume that conversation."); return; }
+  $("hxInput").value = "";
+  toast("Resumed — it is on the board now.");
+  closeConversation();
+  await poll();
+  setView("board");
+  openSession(id);
+}
+
+function closeConversation() {
+  hxOpen = null;
+  $("hxPanel").classList.remove("on"); $("hxScrim").classList.remove("on");
+  hxSig = ""; if (view === "history") renderHistory();
+}
+
+async function hxDeleteOpen() {
+  const id = hxOpen;
+  if (!id) return;
+  const label = $("hxTitle").textContent || id.slice(0, 8);
+  const r = await post("/api/conversations/delete", {sessionId: id});
+  if (!r || r.error) { toast((r && r.error) || "Could not delete that conversation."); return; }
+  closeConversation();
+  await loadHistory(true);
+  toastUndo(`Deleted “${label}” — ${r.ttlDays} days to change your mind`, async () => {
+    const back = await post("/api/conversations/restore", {sessionId: id});
+    if (!back || back.error) { toast((back && back.error) || "Could not restore it."); return; }
+    await loadHistory(true);
+    toast(`Restored “${label}”.`);
+  });
+}
+
+async function hxNewAgentHere() {
+  const row = ((hxData && hxData.conversations) || []).find(c => c.sessionId === hxOpen);
+  const cwd = row && row.cwd;
+  closeConversation();
+  await openNewAgent();
+  if (cwd && $("naProject").querySelector(`option[value="${CSS.escape(cwd)}"]`)) $("naProject").value = cwd;
+}
+
+function bindHistory() {
+  $("hxSearch").addEventListener("input", () => {
+    clearTimeout(hxSearchTimer);
+    hxSearchTimer = setTimeout(() => { hxQuery = $("hxSearch").value.trim(); loadHistory(true); }, 220);
+  });
+  $("hxProject").addEventListener("change", () => { hxProject = $("hxProject").value; loadHistory(true); });
+  $("hxTrashBtn").addEventListener("click", () => {
+    hxTrashOn = !hxTrashOn;
+    $("hxTrashBtn").setAttribute("aria-pressed", String(hxTrashOn));
+    hxSig = "";
+    if (hxTrashOn) hxLoadTrash(); else renderHistory();
+  });
+  $("hxBody").addEventListener("click", async e => {
+    const restore = e.target.closest("[data-hxrestore]");
+    if (restore) {
+      const r = await post("/api/conversations/restore", {sessionId: restore.dataset.hxrestore});
+      if (!r || r.error) { toast((r && r.error) || "Could not restore it."); return; }
+      await loadHistory(true); await hxLoadTrash(); toast("Restored.");
+      return;
+    }
+    const purge = e.target.closest("[data-hxpurge]");
+    if (purge) {
+      await post("/api/conversations/purge", {sessionId: purge.dataset.hxpurge});
+      await hxLoadTrash(); toast("Gone for good.");
+      return;
+    }
+    const row = e.target.closest("[data-hx]");
+    if (row) openConversation(row.dataset.hx);
+  });
+  $("hxOlderRow").addEventListener("click", () => {
+    if (hxLoadingOlder || !hxHasOlder) return;
+    hxLoadingOlder = true;
+    hxFetchWindow(hxOffset).finally(() => { hxLoadingOlder = false; });
+  });
+  $("hxClose").addEventListener("click", closeConversation);
+  $("hxScrim").addEventListener("click", closeConversation);
+  $("hxDelete").addEventListener("click", hxDeleteOpen);
+  $("hxNewAgent").addEventListener("click", hxNewAgentHere);
+  $("hxComposer").addEventListener("submit", hxResume);
+  $("hxInput").addEventListener("keydown", e => {
+    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); hxResume(); }
+  });
+}
+
 /* ---- wiring */
 
 function bindTickets() {
@@ -8176,6 +8484,7 @@ async function tkPostComment() {
 buildColumns();
 bindEvents();
 bindTickets();
+bindHistory();
 wireCodeViewer();
 applyVisibility();
 applyRail();

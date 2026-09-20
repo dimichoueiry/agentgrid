@@ -1906,24 +1906,29 @@ Every command takes --as NAME and --json. Without --as, the name is $AGENTGRID_A
   <div class="sheet wide">
     <div class="stitle">System prompt</div>
     <p class="hint" id="sysScope" role="status" style="margin:0 0 10px"></p>
-    <div class="prow" id="sysLiveRow" hidden>
-      <div class="plabel">Running with <span class="hint">the instructions this agent was launched with — a live agent can't be re-instructed in place</span></div>
-      <pre class="syslive" id="sysLive" tabindex="0"></pre>
-    </div>
-    <label for="sysText">Edit <span class="hint">change it, then save it to the library or duplicate this agent with it</span>
-      <textarea id="sysText" rows="8" placeholder="You are a…"></textarea></label>
+    <label for="sysText">Standing prompt <span class="hint">saved against this session — every turn you send from the board re-applies it</span>
+      <textarea id="sysText" rows="8" placeholder="You are a…"></textarea>
+      <span class="hint" id="sysCount" aria-live="polite"></span></label>
     <label for="sysPick">Insert a saved prompt <span class="hint">from your prompt library — replaces the text above</span>
       <div class="librow">
         <select id="sysPick"><option value="">— pick a saved prompt —</option></select>
         <button class="btn sm" id="sysLoad">Insert</button>
       </div></label>
+    <!-- Context, not the source of truth: the turn-1 preamble a spawn baked in.
+         It is already in the transcript and can never be edited away. -->
+    <details class="prow" id="sysLaunchRow" hidden>
+      <summary class="plabel">Launched with <span class="hint">the preamble baked into its first turn — already sent, so it can't be changed</span></summary>
+      <pre class="syslive" id="sysLaunch" tabindex="0"></pre>
+    </details>
     <div class="srow">
       <span class="hint err" id="sysErr" role="alert"></span>
+      <span class="hint" id="sysStatus" role="status"></span>
       <span class="spacer"></span>
       <button class="btn sm" id="sysCopy">Copy</button>
-      <button class="btn sm" id="sysSave" title="Save this text to your prompt library so /name reuses it">Save to library</button>
-      <button class="btn key" id="sysDup" title="Open the New agent sheet pre-filled with this prompt — starts a fresh session, never touches this one">Duplicate agent…</button>
+      <button class="btn sm" id="sysSaveLib" title="Also save this text to your prompt library so /name reuses it">Save to library</button>
+      <button class="btn sm" id="sysDup" title="Capture this agent's engine, model and standing prompt as a new reusable definition">Duplicate agent…</button>
       <button class="btn" id="sysClose">Close</button>
+      <button class="btn key" id="sysApply" title="Save this prompt against the session — it applies to every turn you send from here on">Save prompt</button>
     </div>
   </div>
 </div>
@@ -3969,10 +3974,11 @@ function renderPanel() {
     const deleteBtn = working
       ? ""
       : `<button class="btn sm danger" id="deleteBtn" title="Clear this card off the board. A closed session stays gone; a live one returns only if it speaks again.">Delete</button>`;
-    // Both stay available while the agent runs: viewing the prompt is read-only,
-    // and Duplicate spawns a fresh session without touching the live one.
-    const sysBtn = `<button class="btn sm" id="sysBtn" title="View or edit the system prompt this agent was launched with">System prompt</button>`;
-    const dupBtn = `<button class="btn sm" id="dupBtn" title="Open the New agent sheet pre-filled from this agent to launch a copy">Duplicate</button>`;
+    // Both stay available while the agent runs: the standing prompt is meant to
+    // be edited live (it governs future turns), and Duplicate only captures a
+    // new library definition — neither signals the running session.
+    const sysBtn = `<button class="btn sm" id="sysBtn" title="View or edit the standing system prompt this session runs future turns under">System prompt</button>`;
+    const dupBtn = `<button class="btn sm" id="dupBtn" title="Capture this agent's engine, model and standing prompt as a reusable definition, ready to launch">Duplicate</button>`;
     $("pMeta").innerHTML =
       `<div class="prow"><label class="plabel" for="agentAreaSel">Work area</label><select id="agentAreaSel">${areaOptions(areaData.members[s.sessionId])}</select></div>` +
       `<div class="prow"><div class="plabel">Name</div>` +
@@ -4781,19 +4787,43 @@ function openPromptsWith(body) {
 }
 
 /* ------------------------------------------------ system prompt view / edit */
-// A sheet over the open agent's system prompt. It reads the prompt the agent
-// was launched with (out of the transcript — the backend keeps no separate
-// field), and from there you can save it to the prompt library or duplicate
-// the agent with an edited version. It deliberately does NOT push a new prompt
-// into a live process: a running CLI's instructions are fixed for its run, and
-// pretending otherwise would be the unsafe move. Reachable from the panel's
-// "System prompt" button and by typing /system in the composer.
+// A sheet over a session's STANDING system prompt — the durable one the server
+// keeps per session (~/.agentgrid/system_prompts.json) and re-applies to every
+// turn the board drives, via claude's --append-system-prompt or a framed
+// preamble for codex. That store is the source of truth here: the sheet reads
+// it with GET /api/system-prompt and writes it with POST, so an edit really
+// does take effect — on the NEXT turn sent from the board. Turns already in
+// the transcript are untouched, because the model has already seen them.
+//
+// The turn-1 preamble a spawn baked in is shown too, but only as context under
+// "Launched with": it is already in the transcript and can never be edited
+// away. Reachable from the panel's "System prompt" button and by /system.
 let sysSessionId = null;
+// The server states its own cap; this is only the value assumed before the
+// first successful read.
+const SYS_PROMPT_CAP = 8000;
+let sysMaxLength = SYS_PROMPT_CAP;
 
 function fillSysPickSelect() {
   $("sysPick").innerHTML = `<option value="">— pick a saved prompt —</option>` +
     promptLibrary.map(p =>
       `<option value="${esc(p.name)}">/${esc(p.name)}${p.description ? " · " + esc(p.description) : ""}</option>`).join("");
+}
+
+// The stored standing prompt, or a flagged failure. Never throws: a store the
+// server cannot answer for must not leave the sheet looking like "no prompt",
+// so the caller says so instead of showing a misleading blank.
+async function loadStoredSystemPrompt(id) {
+  try {
+    const r = await api(`/api/system-prompt?session=${encodeURIComponent(id)}`);
+    return {systemPrompt: (r && r.systemPrompt) || "",
+            maxLength: (r && r.maxLength) || SYS_PROMPT_CAP};
+  } catch (e) { return {systemPrompt: "", maxLength: SYS_PROMPT_CAP, failed: true}; }
+}
+
+function sysUpdateCount() {
+  const used = $("sysText").value.length;
+  $("sysCount").textContent = used ? `${used} / ${sysMaxLength}` : "";
 }
 
 async function openSysPrompt(id) {
@@ -4804,24 +4834,58 @@ async function openSysPrompt(id) {
   const label = s ? (s.customName || s.title || id.slice(0, 8)) : id.slice(0, 8);
   const running = !!s && s.status === "working";
   $("sysErr").textContent = "";
+  $("sysStatus").textContent = "";
   $("sysScope").textContent = running
-    ? `${label} is running — it keeps the prompt it launched with. Edit below to save it for reuse, or to duplicate the agent with a new one.`
-    : `${label} — edit below to save this prompt for reuse, or to duplicate the agent with it.`;
+    ? `${label} is running. Saving applies to every turn you send it from the board from now on — the turns already in its transcript stay as they were sent.`
+    : `${label}. Saving applies to every turn the board drives for this session from now on.`;
   fillSysPickSelect();
   $("sysPick").value = "";
-  // Show the sheet before the fetch so a slow transcript never leaves a blank
-  // modal; the read-only block says it is still reading.
-  $("sysLiveRow").hidden = false;
-  $("sysLive").textContent = "Reading the transcript…";
   $("sysText").value = "";
+  $("sysCount").textContent = "";
+  $("sysLaunchRow").hidden = true;
   $("sysModal").hidden = false;
-  const info = await sessionFirstTurn(id);
+  const stored = await loadStoredSystemPrompt(id);
   if (sysSessionId !== id || $("sysModal").hidden) return;   // switched away
-  const eff = info.system || "";
-  $("sysLive").textContent = eff || "No system prompt was set for this agent.";
-  $("sysText").value = eff;
+  sysMaxLength = stored.maxLength;
+  $("sysText").setAttribute("maxlength", String(sysMaxLength));
+  if (stored.failed) $("sysErr").textContent = "Could not read the stored prompt — saving would overwrite it, so check the server first.";
+  $("sysText").value = stored.systemPrompt;
+  sysUpdateCount();
   $("sysText").focus();
+  // Context only, and second because it can never be acted on: the preamble
+  // the spawn baked into turn one.
+  const info = await sessionFirstTurn(id);
+  if (sysSessionId !== id || $("sysModal").hidden) return;
+  const launched = info.system || "";
+  $("sysLaunchRow").hidden = !launched;
+  if (launched) $("sysLaunch").textContent = launched;
 }
+
+// Write the standing prompt back. The server trims and caps, and echoes what it
+// kept, so the field is refilled from the response rather than from what was
+// typed — the sheet then shows exactly what future turns will carry.
+async function sysApplyPrompt() {
+  const id = sysSessionId;
+  if (!id) { toast("Open an agent first."); return; }
+  $("sysErr").textContent = "";
+  $("sysStatus").textContent = "";
+  $("sysApply").disabled = true;
+  let r;
+  try { r = await post("/api/system-prompt", {sessionId: id, systemPrompt: $("sysText").value}); }
+  catch (e) { r = {error: "Could not reach the server."}; }
+  finally { $("sysApply").disabled = false; }
+  if (r && r.error) { $("sysErr").textContent = r.error; return; }
+  const kept = (r && r.systemPrompt) || "";
+  if (sysSessionId === id) {
+    $("sysText").value = kept;
+    sysUpdateCount();
+    $("sysStatus").textContent = kept
+      ? "Saved — it rides on every turn you send from here on."
+      : "Cleared — future turns carry no standing prompt.";
+  }
+  toast(kept ? "System prompt saved." : "System prompt cleared.");
+}
+
 function closeSysPrompt() { $("sysModal").hidden = true; sysSessionId = null; }
 
 function sysInsertSaved() {
@@ -4845,26 +4909,28 @@ async function sysCopyPrompt() {
   }
 }
 
-// Open the New agent sheet pre-filled from an existing session. Safe on a
-// running agent: it starts a brand-new session and never signals the original.
-// `systemOverride` (when given, including "") wins over the launched prompt, so
-// the system-prompt sheet can duplicate with the edited text.
-async function duplicateSession(id, systemOverride) {
+// Capture a session as a reusable library definition, then open the New agent
+// sheet on it so it can be launched. The server owns the capture (engine, model
+// and the session's standing prompt) and the "(copy)" naming; it deliberately
+// leaves cwd out, because where to run is a launch-time choice — so the source
+// session's folder is offered here as a starting point, not baked in.
+// Nothing is sent to the original session.
+async function duplicateSession(id) {
   id = id || openId;
   const s = sessions.find(x => x.sessionId === id);
   if (!s) { toast("No session to duplicate."); return; }
-  const info = await sessionFirstTurn(id);
+  let r;
+  try { r = await post("/api/agents/duplicate", {sessionId: id}); }
+  catch (e) { r = {error: "Could not reach the server."}; }
+  if (r && r.error) { toast(r.error); return; }
+  agentLibrary = (r && r.agents) || agentLibrary;
+  const name = (r && r.name) || "";
   await openNewAgent();
-  const engine = s.engine === "codex" ? "codex" : "claude";
-  $("naEngine").value = engine;
-  syncEngineModels();
-  fillModels("naModel", engine, s.model || "");
+  fillLibrarySelect(name);
+  applyLibraryDefinition(name);
   if (s.cwd && projectsCache.some(p => p.path === s.cwd)) fillProjectSelect(s.cwd);
-  $("naSys").value = systemOverride != null ? systemOverride : (info.system || "");
-  $("naTask").value = info.task || "";
-  const base = (s.customName || s.title || "agent").trim() || "agent";
-  $("naName").value = (base + " copy").slice(0, 60);
-  $("naName").focus();
+  $("naTask").focus();
+  toast(`Duplicated as "${name}".`);
 }
 
 /* --------------------------------------------------- composer /slash palette */
@@ -4881,7 +4947,7 @@ function checkSlashMenu() {
   slashFrom = el.selectionStart - m[1].length - 1;   // index of the "/"
   const q = m[1].toLowerCase();
   slashHits = [{name: "model", description: "Choose the model for your next turn", builtin: true},
-    {name: "system", description: "View or edit this agent's system prompt", builtin: true},
+    {name: "system", description: "View or edit this agent's standing system prompt", builtin: true},
     ...promptLibrary.filter(p => p.name !== "model" && p.name !== "system")]
     .filter(p => !q || p.name.includes(q)).slice(0, 8);
   if (!slashHits.length) { hideSlash(); return; }
@@ -5176,6 +5242,20 @@ async function openNewAgent() {
   fillLibrarySelect("");
   fillNaSysLib();
   $("naName").focus();
+}
+// Fill the New agent sheet from a library definition. Shared by the Library
+// picker and by Duplicate, so a captured agent lands in the sheet exactly the
+// way a hand-picked one does. Returns false when there is no such definition.
+function applyLibraryDefinition(name) {
+  const def = agentLibrary.find(a => a.name === name);
+  $("naLibDel").hidden = !def;
+  if (!def) return false;
+  $("naEngine").value = def.engine;
+  syncEngineModels();
+  fillModels("naModel", def.engine, def.model || "");
+  $("naSys").value = def.systemPrompt || "";
+  $("naName").value = def.name;
+  return true;
 }
 // The saved-prompt picker under the system-prompt field: the same reusable
 // prompts as the composer's /name, offered as a starting point for the prompt
@@ -6619,10 +6699,17 @@ function bindEvents() {
   $("sysModal").addEventListener("click", e => { if (e.target === $("sysModal")) closeSysPrompt(); });
   $("sysLoad").addEventListener("click", sysInsertSaved);
   $("sysCopy").addEventListener("click", sysCopyPrompt);
-  // save goes through the prompt manager so it gets a name, area and export;
-  // duplicate carries the (possibly edited) text into a fresh agent
-  $("sysSave").addEventListener("click", () => { const t = $("sysText").value; closeSysPrompt(); openPromptsWith(t); });
-  $("sysDup").addEventListener("click", () => { const id = sysSessionId; const t = $("sysText").value; closeSysPrompt(); duplicateSession(id, t); });
+  $("sysText").addEventListener("input", sysUpdateCount);
+  // Save writes the standing prompt against the session — the one action that
+  // actually changes what future turns carry.
+  $("sysApply").addEventListener("click", sysApplyPrompt);
+  $("sysText").addEventListener("keydown", e => {
+    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); sysApplyPrompt(); }
+  });
+  // Saving to the library is a different intent (reuse elsewhere), so it stays
+  // separate and goes through the prompt manager for a name, area and export.
+  $("sysSaveLib").addEventListener("click", () => { const t = $("sysText").value; closeSysPrompt(); openPromptsWith(t); });
+  $("sysDup").addEventListener("click", () => { const id = sysSessionId; closeSysPrompt(); duplicateSession(id); });
   ["syncRemote", "syncBranch"].forEach(id => $(id).addEventListener("keydown", e => {
     if (e.key === "Enter") { e.preventDefault(); doSync(); }
     else if (e.key === "Escape") closeSync();
@@ -7182,15 +7269,7 @@ function bindEvents() {
   // the library: picking a saved agent fills the sheet; Save stores the
   // sheet under the Name; a definition is just a saved way of launching
   $("naLib").addEventListener("change", () => {
-    const def = agentLibrary.find(a => a.name === $("naLib").value);
-    $("naLibDel").hidden = !def;
-    if (!def) return;
-    $("naEngine").value = def.engine;
-    syncEngineModels();
-    fillModels("naModel", def.engine, def.model || "");
-    $("naSys").value = def.systemPrompt || "";
-    $("naName").value = def.name;
-    $("naTask").focus();
+    if (applyLibraryDefinition($("naLib").value)) $("naTask").focus();
   });
   $("naLibSave").addEventListener("click", async () => {
     if ($("naModel").value === CUSTOM_MODEL && !selectedModel("naModel")) {

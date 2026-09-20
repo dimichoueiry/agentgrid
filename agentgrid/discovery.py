@@ -51,10 +51,19 @@ OVERRIDES_PATH = Path.home() / ".agentgrid" / "overrides.json"
 TAGS_PATH = Path.home() / ".agentgrid" / "tags.json"
 READ_PATH = Path.home() / ".agentgrid" / "read.json"
 DISMISSED_PATH = Path.home() / ".agentgrid" / "dismissed.json"
+# The standing system prompt a live session runs its FUTURE turns under, keyed
+# by session id. Same shape and atomic-write discipline as every other side
+# file here; see save_system_prompt for the runtime semantics.
+SYSTEM_PROMPTS_PATH = Path.home() / ".agentgrid" / "system_prompts.json"
 
 MAX_TAGS_PER_SESSION = 6
 MAX_TAG_LENGTH = 24
 MAX_NAME_LENGTH = 60
+# The cap on a session's standing system prompt. Deliberately the same 8000 as
+# the reusable agent library uses (web.MAX_SYSTEM_PROMPT): the two are the same
+# kind of instruction, one saved against a definition and one against a live
+# session, and a duplicate copies freely between them.
+MAX_SYSTEM_PROMPT = 8000
 
 # `complete` exists only in agentgrid, never in the CLI. It is the terminal
 # state that only a human can set — the CLI's `done` means "the turn ended",
@@ -1181,6 +1190,56 @@ def save_tags(session_id: str, tags: object) -> list[str]:
     else:
         store.pop(session_id, None)
     _write_json(TAGS_PATH, store)
+    return cleaned
+
+
+# ---------------------------------------------------------------------------
+# Standing system prompts.
+#
+# A session's system prompt is durable, viewable and editable while the session
+# is alive, but it can only ever govern turns that have NOT happened yet. The
+# model has already seen every turn in the transcript exactly as it was sent,
+# so an edit rewrites nothing behind it -- it changes what the session is told
+# on its next turn onward. AgentGrid drives those turns only through the chat
+# engine (chat._run_turn); a background or interactive CLI it merely observes
+# will keep whatever prompt it launched with until it is next chatted with from
+# the board. This store is that single source of truth for "the standing
+# instructions this session runs under going forward".
+
+
+def load_system_prompts() -> dict:
+    return _read_json(SYSTEM_PROMPTS_PATH)
+
+
+def system_prompt_for(session_id: str) -> str:
+    """The standing system prompt a session runs future turns under, or "".
+
+    Empty for an unknown session and for the instant a brand-new chat has no id
+    yet -- there is nothing to have set a prompt against, so a turn simply runs
+    without one, which is the correct answer, not a missing one.
+    """
+    if not session_id:
+        return ""
+    value = load_system_prompts().get(session_id)
+    return value if isinstance(value, str) else ""
+
+
+def save_system_prompt(session_id: str, text: str) -> str:
+    """Store (or clear) a session's standing system prompt; return what was kept.
+
+    Empty text removes the entry rather than storing a blank, so a cleared
+    prompt is indistinguishable from one never set -- the session's next turn
+    runs with no extra instructions either way. The change takes effect on the
+    next turn AgentGrid drives for the session, never on the turns already in
+    its transcript.
+    """
+    store = load_system_prompts()
+    cleaned = (text or "").strip()[:MAX_SYSTEM_PROMPT]
+    if cleaned:
+        store[session_id] = cleaned
+    else:
+        store.pop(session_id, None)
+    _write_json(SYSTEM_PROMPTS_PATH, store)
     return cleaned
 
 

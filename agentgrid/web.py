@@ -773,6 +773,62 @@ def delete_saved_agent(name: str) -> list[dict]:
     return agents
 
 
+def _unique_agent_name(base: str, taken: set[str]) -> str:
+    """A library name not already in `taken` (compared case-insensitively).
+
+    "Builder" becomes "Builder (copy)", then "Builder (copy 2)", ... always
+    trimmed to the 60-char name cap so a long base cannot produce a name the
+    loader would silently truncate into a collision.
+    """
+    base = base.strip()[:60] or "Agent"
+    if base.lower() not in taken:
+        return base
+    suffix = " (copy)"
+    candidate = (base[:60 - len(suffix)] + suffix)
+    number = 2
+    while candidate.lower() in taken:
+        tail = f" (copy {number})"
+        candidate = base[:60 - len(tail)] + tail
+        number += 1
+    return candidate
+
+
+def add_saved_agent(name: str, engine: str, model: str, system_prompt: str) -> tuple[list[dict], str]:
+    """Add a definition under a fresh, non-colliding name; return it and the name.
+
+    Unlike save_saved_agent, which upserts by name, this never overwrites an
+    existing definition -- it is how a duplicate lands beside its source rather
+    than on top of it. The name actually used is returned, since it may have
+    gained a "(copy)" suffix.
+    """
+    agents = load_saved_agents()
+    chosen = _unique_agent_name(name, {a["name"].lower() for a in agents})
+    agents.append({
+        "name": chosen,
+        "engine": "codex" if engine == "codex" else "claude",
+        "model": model.strip(),
+        "systemPrompt": system_prompt.strip()[:MAX_SYSTEM_PROMPT],
+    })
+    _write_saved_agents(agents)
+    return agents, chosen
+
+
+def duplicate_saved_agent(name: str) -> tuple[list[dict], str | None]:
+    """Copy one library definition, preserving its whole reusable configuration.
+
+    The engine, model and system prompt are carried over verbatim -- a
+    duplicate is a starting point you can edit without disturbing the original.
+    Returns the new library and the copy's name, or the unchanged library and
+    None when there is nothing by that name to copy.
+    """
+    source = next((a for a in load_saved_agents()
+                   if a["name"].lower() == name.strip().lower()), None)
+    if source is None:
+        return load_saved_agents(), None
+    return add_saved_agent(source["name"], source["engine"],
+                           source["model"], source["systemPrompt"])
+
+
 # --- the prompt / skills library --------------------------------------------
 #
 # Reusable prompts ("skills"): a slug name, a one-line description and a body,
@@ -1683,6 +1739,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(200, {"projects": discover_projects(self.fleet.raw())})
         elif route == "/api/agents":
             self._send_json(200, {"agents": load_saved_agents()})
+        elif route == "/api/system-prompt":
+            self._system_prompt_get(query)
         elif route == "/api/prompts":
             self._send_json(200, {"prompts": load_saved_prompts(self._one(query, "areaId"))})
         elif route == "/api/sync":
@@ -2001,6 +2059,10 @@ class Handler(BaseHTTPRequestHandler):
                     str(body.get("systemPrompt") or ""))})
         elif route == "/api/agents/delete":
             self._send_json(200, {"agents": delete_saved_agent(str(body.get("name") or ""))})
+        elif route == "/api/agents/duplicate":
+            self._agents_duplicate(body)
+        elif route == "/api/system-prompt":
+            self._system_prompt_set(body)
         elif route == "/api/prompts/save":
             name = str(body.get("name") or "").strip()
             if not _prompt_slug(name):
@@ -3001,6 +3063,68 @@ class Handler(BaseHTTPRequestHandler):
         discovery.save_tags(session.session_id, cleaned)
         session.tags = cleaned
         self._send_json(200, {"tags": cleaned})
+
+    def _system_prompt_get(self, query: dict) -> None:
+        """View a live session's standing system prompt, and its length cap.
+
+        Answers for any session id -- there is nothing to validate against the
+        current fleet, and an editor that opens on a card the poll has not yet
+        refreshed should still see what is stored. `maxLength` lets the editor
+        show the same cap the store enforces.
+        """
+        session_id = self._one(query, "session")
+        self._send_json(200, {
+            "sessionId": session_id,
+            "systemPrompt": discovery.system_prompt_for(session_id),
+            "maxLength": discovery.MAX_SYSTEM_PROMPT,
+        })
+
+    def _system_prompt_set(self, body: dict) -> None:
+        """Set or clear a live session's standing system prompt.
+
+        Requires a session id but not that the session be on the board right
+        now: the prompt is durable and governs the session's future turns
+        whenever it is next driven, so refusing to set one on a momentarily
+        unlisted session would only lose an edit. An empty prompt clears the
+        entry. The stored (trimmed, capped) text is echoed back.
+        """
+        session_id = str(body.get("sessionId") or "").strip()
+        if not session_id:
+            self._send_json(400, {"error": "Which session? A session id is required."})
+            return
+        stored = discovery.save_system_prompt(session_id, str(body.get("systemPrompt") or ""))
+        self._send_json(200, {"sessionId": session_id, "systemPrompt": stored})
+
+    def _agents_duplicate(self, body: dict) -> None:
+        """Duplicate an agent into a new library definition, config and all.
+
+        Two sources, one result -- a reusable definition beside its original:
+          * `sessionId`: capture a live session's reusable configuration --
+            engine, model and its standing system prompt -- under its own name.
+            cwd is a launch-time choice, not part of a definition, so it is left
+            for the next spawn to supply.
+          * `name`: copy an existing library definition.
+        Returns the whole library and the copy's (possibly "(copy)"-suffixed)
+        name so the client can select it.
+        """
+        session_id = str(body.get("sessionId") or "").strip()
+        if session_id:
+            session = self._session_by_id(session_id)
+            if session is None:
+                self._send_json(404, {"error": "Unknown session."})
+                return
+            agents, name = add_saved_agent(
+                str(body.get("name") or "").strip() or session.display_title,
+                getattr(session, "engine", "claude"),
+                session.model or "",
+                discovery.system_prompt_for(session_id))
+            self._send_json(200, {"agents": agents, "name": name})
+            return
+        agents, name = duplicate_saved_agent(str(body.get("name") or ""))
+        if name is None:
+            self._send_json(404, {"error": "No saved agent by that name to duplicate."})
+            return
+        self._send_json(200, {"agents": agents, "name": name})
 
     def _read(self, body: dict) -> None:
         # One route, both directions: the client says what it wants the

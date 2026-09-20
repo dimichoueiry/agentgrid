@@ -39,6 +39,7 @@ import threading
 
 CLAUDE_BIN = "claude"
 from agentgrid.executables import codex_binary
+from agentgrid import discovery
 
 # The permission postures the UI offers, mapped to the CLI's --permission-mode.
 # "auto" runs every tool without asking (the Stop button is the guard);
@@ -53,6 +54,34 @@ DEFAULT_POSTURE = "auto"
 
 def permission_mode(posture: str) -> str:
     return POSTURES.get(posture, POSTURES[DEFAULT_POSTURE])
+
+
+def append_system_prompt_flags(text: str) -> list[str]:
+    """The flags that append a session's standing prompt to one claude turn.
+
+    `--append-system-prompt` keeps Claude Code's own identity, tools and safety
+    guidance and only adds the board's instructions -- the right choice for a
+    coding session, and, unlike a framed preamble, it never lands in the
+    transcript as a message. It governs this invocation only, which is exactly
+    the per-turn re-application "applies to future turns" asks for: every
+    resumed turn passes the current stored prompt afresh.
+    """
+    text = (text or "").strip()
+    return ["--append-system-prompt", text] if text else []
+
+
+def frame_system_prompt(message: str, text: str) -> str:
+    """A session's standing prompt folded into one codex turn's message.
+
+    codex exec has no system-prompt flag that is stable across versions, so the
+    instructions ride inside the turn as a framed preamble -- the same shape
+    spawn uses at launch. Re-sent each turn so an edit reaches the model on the
+    next turn; empty text leaves the message untouched.
+    """
+    text = (text or "").strip()
+    if not text:
+        return message
+    return f"<system instructions>\n{text}\n</system instructions>\n\n{message}"
 
 
 # Terminal colour and cursor codes, as codex's tracing lines carry them.
@@ -511,6 +540,11 @@ class ChatSession:
             from agentgrid import openrouter
             openrouter.run_turn(self, message, model, attachments)
             return
+        # The session's standing system prompt, re-read every turn so an edit
+        # made while it was running reaches this turn. Empty until a prompt is
+        # set for this session (a brand-new chat has no id yet), so a plain turn
+        # simply carries nothing extra. See discovery.save_system_prompt.
+        standing = discovery.system_prompt_for(self.session_id)
         if self.engine == "codex":
             argv = [codex_binary(), "exec", "-s",
                     "read-only" if posture == "read-only" else "workspace-write",
@@ -529,7 +563,8 @@ class ChatSession:
             argv += ["--"]
             if self.session_id:
                 argv += [self.session_id]
-            argv += [with_attachments(message, files) or "Please look at the attached image(s)."]
+            turn = with_attachments(message, files) or "Please look at the attached image(s)."
+            argv += [frame_system_prompt(turn, standing)]
         else:
             prompt = with_attachments(message, attachments)
             argv = [CLAUDE_BIN, "-p", prompt,
@@ -544,6 +579,7 @@ class ChatSession:
                 argv += ["--model", model]
             if self.session_id:
                 argv += ["--resume", self.session_id]
+            argv += append_system_prompt_flags(standing)
         try:
             proc = subprocess.Popen(
                 argv,

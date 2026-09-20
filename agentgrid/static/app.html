@@ -519,6 +519,11 @@ details.tools .tfail{color:var(--failed)}
 .cqtext{font-size:12.5px;line-height:1.5;color:var(--text);white-space:pre-wrap;overflow-wrap:anywhere;
   display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:4;overflow:hidden}
 .cqtext .none{color:var(--text-3);font-style:italic}
+/* a message waiting on you, not on the queue: the reason sits under it */
+.cqheld{display:flex;flex-wrap:wrap;align-items:center;gap:6px 8px;margin-top:6px;
+  font-size:11.5px;line-height:1.45;color:var(--text-2)}
+.cqheld .btn{margin-left:auto}
+.cqitem.held .cqn::after{content:"⏸";display:block;font-size:9px;color:var(--text-3)}
 .cqmain .fpills{margin-top:4px}
 .cqacts{display:flex;align-items:center;gap:4px;margin-left:auto}
 .cqacts .x{font-size:13px;padding:1px 7px}
@@ -3053,8 +3058,14 @@ function cqRowHtml(q, i) {
       `<div class="cqbar"><span class="chint"><span class="kc">⌘⏎</span> save &nbsp;·&nbsp; <span class="kc">esc</span> cancel</span>` +
       `<button type="button" class="btn sm" data-qact="cancel">Cancel</button>` +
       `<button type="button" class="btn sm key" data-qact="save">Save</button></div></div></li>`;
-  return `<li class="cqitem" data-qid="${id}"><span class="cqn">${n}</span>` +
-    `<div class="cqmain"><div class="cqtext">${q.message ? esc(q.message) : `<span class="none">Files only</span>`}</div>${files}</div>` +
+  // A held message is not waiting its turn -- it is waiting for you. Say why
+  // on the row, and offer the one thing that answers it.
+  const held = q.held
+    ? `<div class="cqheld">${esc(q.held)}` +
+      `<button type="button" class="btn sm key" data-qact="send" aria-label="Send queued message ${n} now">Send now</button></div>`
+    : "";
+  return `<li class="cqitem${q.held ? " held" : ""}" data-qid="${id}"><span class="cqn">${n}</span>` +
+    `<div class="cqmain"><div class="cqtext">${q.message ? esc(q.message) : `<span class="none">Files only</span>`}</div>${files}${held}</div>` +
     `<div class="cqacts">` +
     (i ? `<button type="button" class="x" data-qact="up" title="Move up — send it sooner" aria-label="Move queued message ${n} up">↑</button>` : "") +
     `<button type="button" class="btn sm" data-qact="edit" aria-label="Edit queued message ${n}">Edit</button>` +
@@ -3161,6 +3172,13 @@ async function cqRestore(sid, qid) {
   cqReply(sid, r);
 }
 
+// Send a held message now: the server clears what was holding it and runs it.
+async function cqRelease(qid) {
+  const sid = openId;
+  const r = await post("/api/chat/queue", {sessionId: sid, action: "release", id: qid});
+  cqReply(sid, r);
+}
+
 async function cqMoveUp(qid) {
   const i = chatQueue.findIndex(x => x.id === qid); if (i < 1) return;
   const sid = openId;
@@ -3207,6 +3225,7 @@ function cqClick(e) {
   else if (act === "cancel") cqCancelEdit();
   else if (act === "remove") cqRemove(qid);
   else if (act === "up") cqMoveUp(qid);
+  else if (act === "send") cqRelease(qid);
 }
 
 // the editor's text lives in cqEdit too, so a redraw or a lost race keeps it

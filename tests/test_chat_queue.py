@@ -1,8 +1,10 @@
 """The chat queue: messages sent mid-turn wait, visible and editable, until they start."""
 import io
 import queue as queuelib
+import tempfile
 import threading
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
@@ -11,6 +13,12 @@ from agentgrid import chat, web
 
 class QueueTests(unittest.TestCase):
     def setUp(self):
+        # The queue is written through to disk; keep the real one out of it.
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        patch = mock.patch.object(chat, "QUEUE_DIR", Path(folder.name))
+        patch.start()
+        self.addCleanup(patch.stop)
         self.room = chat.ChatSession("sid", "/repo", "claude")
         self.ran = []
         self.holding = threading.Event()
@@ -50,7 +58,7 @@ class QueueTests(unittest.TestCase):
         self.assertEqual(state["queued"], 1)
         self.assertEqual(state["queue"], [{
             "id": second["id"], "message": "second", "posture": "read-only", "model": "opus",
-            "files": ["20260918-101010-abc123-shot.png"]}])
+            "files": ["20260918-101010-abc123-shot.png"], "held": ""}])
 
     def test_an_edit_changes_the_message_that_is_sent(self):
         self.busy()

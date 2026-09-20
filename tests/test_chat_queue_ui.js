@@ -78,6 +78,12 @@ async function post(path, body) {
     server.queue.splice(at, 0, q);
     return {ok: true, ...state()};
   }
+  if (body.action === 'release') {
+    if (i < 0) return {error: 'That message already started, or Stop cleared it.', gone: true, ...state()};
+    if (server.held) return {error: server.held, held: true, ...state()};
+    server.queue[i].held = '';
+    return {ok: true, ...state()};
+  }
   if (i < 0) return {error: 'That message already started, or Stop cleared it.', gone: true, ...state()};
   if (body.action === 'edit') server.queue[i].message = body.message;
   if (body.action === 'remove') server.removed.set(body.id, [i, server.queue.splice(i, 1)[0]]);
@@ -102,7 +108,7 @@ const section = script.slice(script.indexOf('let chatSrc = null'), script.indexO
 vm.runInContext(section, ctx);
 vm.runInContext(['fileBadge', 'filePills', 'chatAppend', 'chatOnEvent', 'chatSetStatus', 'chatSyncState',
   'chatQueueReset', 'chatQueueAccept', 'chatSetQueue', 'chatToggleQueue', 'uploadName', 'cqRowHtml', 'chatRenderQueue',
-  'chatQueueIndexOfRow', 'cqRefocus', 'cqStartEdit', 'cqCancelEdit', 'cqSave', 'cqRemove', 'cqRestore',
+  'chatQueueIndexOfRow', 'cqRefocus', 'cqStartEdit', 'cqCancelEdit', 'cqSave', 'cqRemove', 'cqRestore', 'cqRelease',
   'cqMoveUp', 'cqReply', 'cqRescue', 'chatEchoStarted', 'cqClick', 'cqInput', 'cqKeydown',
   'chatSend', 'refreshTranscript'].map(extract).join('\n'), ctx);
 vm.runInContext('openId = "s1"; chatPosture = "auto"; chatModel = ""; chatAtt = []; chatRefs = [];', ctx);
@@ -333,5 +339,34 @@ const count = () => elements.cQueueBtn.hidden ? 0 : Number(/^(\d+) queued/.exec(
   land({blocks: []}); await refresh;
   assert.ok(elements.tScroll.innerHTML.includes('Nothing here yet'));
 
-  console.log('Chat queue UI: open, show, edit, cancel, remove, undo, move, start, race and in-flight refresh checks passed');
+  // --- a message held for you says why, and Send now runs it ---------------
+  // A queue kept across a server restart comes back held: it must be readable
+  // and sendable, not a silent row that never goes.
+  server.queue = [{id: 'qh', message: 'ship the release notes', files: [],
+                   held: 'Kept from before the server restarted.'}];
+  run('chatQueueReset()');
+  run('chatOnEvent')({type: 'queue', queue: state().queue, started: null});
+  run('chatToggleQueue(true)');
+  assert.equal(count(), 1, 'a held message still counts as queued');
+  assert.ok(list().includes('Kept from before the server restarted.'), 'the row says why it waits');
+  assert.ok(list().includes('data-qact="send"'), 'and offers to send it now');
+  assert.ok(list().includes('aria-label="Send queued message 1 now"'));
+
+  // refused while a terminal holds the thread: the reason is shown, the message stays
+  server.held = 'This Codex session is open in a terminal, which holds its thread.';
+  click('qh', 'send'); await settle();
+  assert.deepEqual(server.calls.at(-1), ['/api/chat/queue',
+    {sessionId: 's1', action: 'release', id: 'qh'}]);
+  assert.equal(toasts.at(-1), server.held);
+  assert.equal(count(), 1, 'a refused Send leaves the message where it was');
+  assert.ok(list().includes('data-qact="send"'), 'and keeps the way to try again');
+
+  // with the terminal closed it goes: the hold is gone and the row is ordinary
+  server.held = null;
+  click('qh', 'send'); await settle();
+  assert.ok(!list().includes('data-qact="send"'), 'no hold left to answer');
+  assert.ok(!list().includes('Kept from before'));
+  assert.equal(count(), 1, 'it is a normal queued message now');
+
+  console.log('Chat queue UI: open, show, edit, cancel, remove, undo, move, start, held/send-now, race and in-flight refresh checks passed');
 })().catch(e => { console.error(e); process.exitCode = 1; });

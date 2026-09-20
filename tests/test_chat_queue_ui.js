@@ -92,6 +92,7 @@ const ctx = vm.createContext({
   toast: m => toasts.push(m), toastUndo: (m, fn) => undos.push([m, fn]),
   chatGrow() {}, hideSlash() {}, hideAtFiles() {}, saveChatModel() {}, chatRenderAtt() {},
   chatClearRefs() {}, selectedModel: () => '', CUSTOM_MODEL: '__custom__',
+  rememberFirstTurn() {},   // refreshTranscript records the opening turn; irrelevant here
   URL: {revokeObjectURL() {}}, setTimeout,
   workflowExportButton: () => '', chatToolGist: name => ({verb: name, obj: ''}),
   // the disk transcript, as refreshTranscript renders it

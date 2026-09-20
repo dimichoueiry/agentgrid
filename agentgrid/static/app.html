@@ -4873,12 +4873,15 @@ async function openSysPrompt(id) {
   sysUpdateCount();
   $("sysText").focus();
   // Context only, and second because it can never be acted on: the preamble
-  // the spawn baked into turn one.
+  // the spawn baked into turn one. A freshly created agent now persists that
+  // same text as its standing prompt (shown above), so only surface this when
+  // it differs — otherwise the sheet would show the identical prompt twice.
   const info = await sessionFirstTurn(id);
   if (sysSessionId !== id || $("sysModal").hidden) return;
   const launched = info.system || "";
-  $("sysLaunchRow").hidden = !launched;
-  if (launched) $("sysLaunch").textContent = launched;
+  const show = launched && launched.trim() !== $("sysText").value.trim();
+  $("sysLaunchRow").hidden = !show;
+  if (show) $("sysLaunch").textContent = launched;
 }
 
 // Write the standing prompt back. The server trims and caps, and echoes what it

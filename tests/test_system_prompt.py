@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.request
@@ -311,6 +312,115 @@ class RouteTests(unittest.TestCase):
         port = _serve([]).server_address[1]
         status, _ = _call(port, "POST", "/api/agents/duplicate", {"sessionId": "gone"})
         self.assertEqual(status, 404)
+
+
+# ---------------------------------------------------------------------------
+# AG-19: the prompt chosen when creating an agent must become the session's
+# standing prompt, not merely ride into turn 1. spawn_agent still bakes it into
+# the first message, but launch_agent now also files it against the session so
+# chat.py re-applies it on every later turn and the details sheet shows it.
+# The session id is minted by the daemon, so -- exactly like the custom name --
+# the prompt waits on the "session appeared" signal (_apply_pending_names).
+
+
+class SpawnPersistsSystemPromptTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp = TemporaryDirectory()
+        self.path = Path(self._tmp.name) / "system_prompts.json"
+        patcher = mock.patch.object(discovery, "SYSTEM_PROMPTS_PATH", self.path)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.addCleanup(self._tmp.cleanup)
+
+    def _launch(self, fleet, job_id, request):
+        # spawn_agent runs a subprocess; stub it to report the launch outcome a
+        # real spawn would, and keep the project boundary happy without a disk
+        # scan. job_id=None mirrors codex/interactive, which print no id.
+        with mock.patch.object(web, "spawn_agent",
+                               lambda *a, **k: (True, "Started.", job_id)), \
+                mock.patch.object(web, "discover_projects",
+                                  lambda s: [{"path": "/repo"}]):
+            return web.launch_agent(fleet, {"cwd": "/repo", "prompt": "do it", **request})
+
+    @staticmethod
+    def _codex_session(session_id, cwd="/repo", kind="exec"):
+        return SimpleNamespace(session_id=session_id, job_id=None, engine="codex",
+                               kind=kind, cwd=cwd, custom_name="",
+                               started_at=int(time.time() * 1000))
+
+    def test_a_claude_spawn_persists_its_prompt_when_the_session_appears(self):
+        fleet = web.Fleet()
+        self._launch(fleet, "job-1", {"systemPrompt": "  Be a security auditor.  "})
+        # Nothing is written until the daemon mints the session id -- the prompt
+        # waits on the job id claude --bg printed.
+        self.assertEqual(discovery.load_system_prompts(), {})
+        # launch_agent trims before filing it, so the pending value is clean.
+        self.assertEqual(fleet._pending_prompts, {"job-1": "Be a security auditor."})
+        # The first poll that sees the job id writes the (trimmed) prompt against
+        # the real session id and consumes the pending entry.
+        session = SimpleNamespace(session_id="sess-1", job_id="job-1", custom_name="")
+        fleet._apply_pending_names([session])
+        self.assertEqual(discovery.system_prompt_for("sess-1"), "Be a security auditor.")
+        self.assertEqual(fleet._pending_prompts, {})
+        # A later poll must not re-save it or leak it onto a different session.
+        fleet._apply_pending_names([SimpleNamespace(session_id="sess-2", job_id="job-1",
+                                                     custom_name="")])
+        self.assertEqual(discovery.system_prompt_for("sess-2"), "")
+
+    def test_no_prompt_registers_nothing(self):
+        fleet = web.Fleet()
+        self._launch(fleet, "job-1", {"systemPrompt": "   "})
+        self.assertEqual(fleet._pending_prompts, {})
+        fleet._apply_pending_names([SimpleNamespace(session_id="sess-1", job_id="job-1",
+                                                    custom_name="")])
+        self.assertEqual(discovery.load_system_prompts(), {})
+
+    def test_a_named_claude_spawn_still_persists_the_prompt_too(self):
+        fleet = web.Fleet()
+        self._launch(fleet, "job-1", {"name": "Auditor",
+                                      "systemPrompt": "Be a security auditor."})
+        self.assertEqual(fleet._pending_names, {"job-1": "Auditor"})
+        self.assertEqual(fleet._pending_prompts, {"job-1": "Be a security auditor."})
+        saved_names = {}
+        with mock.patch.object(discovery, "save_custom_name",
+                               lambda sid, n: saved_names.__setitem__(sid, n)):
+            fleet._apply_pending_names([SimpleNamespace(session_id="sess-1", job_id="job-1",
+                                                        custom_name="")])
+        self.assertEqual(saved_names, {"sess-1": "Auditor"})
+        self.assertEqual(discovery.system_prompt_for("sess-1"), "Be a security auditor.")
+
+    def test_a_codex_spawn_persists_name_and_prompt_by_cwd(self):
+        fleet = web.Fleet()
+        self._launch(fleet, None, {"engine": "codex", "name": "Auditor",
+                                   "systemPrompt": "Be a security auditor."})
+        self.assertEqual(len(fleet._pending_codex), 1)
+        saved_names = {}
+        with mock.patch.object(discovery, "save_custom_name",
+                               lambda sid, n: saved_names.__setitem__(sid, n)):
+            fleet._apply_pending_names([self._codex_session("cx-1")])
+        self.assertEqual(saved_names, {"cx-1": "Auditor"})
+        self.assertEqual(discovery.system_prompt_for("cx-1"), "Be a security auditor.")
+        self.assertEqual(fleet._pending_codex, [])
+
+    def test_a_codex_prompt_without_a_name_persists_and_saves_no_blank_name(self):
+        fleet = web.Fleet()
+        self._launch(fleet, None, {"engine": "codex",
+                                   "systemPrompt": "Be a security auditor."})
+        self.assertEqual(len(fleet._pending_codex), 1)
+        with mock.patch.object(discovery, "save_custom_name") as save_name:
+            fleet._apply_pending_names([self._codex_session("cx-1")])
+        save_name.assert_not_called()   # a prompt-only spawn must not store a blank name
+        self.assertEqual(discovery.system_prompt_for("cx-1"), "Be a security auditor.")
+
+    def test_an_interactive_spawn_persists_its_prompt_by_cwd(self):
+        fleet = web.Fleet()
+        self._launch(fleet, None, {"interactive": True,
+                                   "systemPrompt": "Be a security auditor."})
+        session = SimpleNamespace(session_id="int-1", job_id=None, engine="claude",
+                                  kind="interactive", cwd="/repo", custom_name="",
+                                  started_at=int(time.time() * 1000))
+        fleet._apply_pending_names([session])
+        self.assertEqual(discovery.system_prompt_for("int-1"), "Be a security auditor.")
 
 
 if __name__ == "__main__":

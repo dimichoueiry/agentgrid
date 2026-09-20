@@ -40,7 +40,7 @@ function element(id) {
 const $ = id => elements[id] ||= element(id);
 
 // --- a fake server with discovery.py's rules --------------------------------
-const MAX = 8000;
+const LONG = 'You are a careful reviewer. '.repeat(4000);   // ~112k chars
 const server = { prompts: {}, agents: [], transcript: [], failGet: false, failPost: false };
 const calls = [];
 async function api(path) {
@@ -48,7 +48,7 @@ async function api(path) {
   if (path.startsWith('/api/system-prompt')) {
     if (server.failGet) throw new Error('unreachable');
     const id = decodeURIComponent(new RegExp('session=([^&]*)').exec(path)[1]);
-    return { sessionId: id, systemPrompt: server.prompts[id] || '', maxLength: MAX };
+    return { sessionId: id, systemPrompt: server.prompts[id] || '' };
   }
   if (path.startsWith('/api/transcript')) return { blocks: server.transcript };
   return {};
@@ -58,7 +58,7 @@ async function post(path, body) {
   if (path === '/api/system-prompt') {
     if (server.failPost) return { error: 'Could not save.' };
     if (!body.sessionId) return { error: 'Which session? A session id is required.' };
-    const kept = String(body.systemPrompt || '').trim().slice(0, MAX);   // as discovery.save_system_prompt
+    const kept = String(body.systemPrompt || '').trim();   // as discovery.save_system_prompt — no cap
     if (kept) server.prompts[body.sessionId] = kept; else delete server.prompts[body.sessionId];
     return { sessionId: body.sessionId, systemPrompt: kept };
   }
@@ -98,7 +98,7 @@ const ctx = {
   $, api, post, toast, esc, openNewAgent, fillLibrarySelect, fillProjectSelect,
   fillModels, syncEngineModels, openModelPicker, hideSlash, openPrompts, clearPromptForm,
   sessions: [], promptLibrary: [], projectsCache: [], agentLibrary: [], openId: null,
-  sysFirstTurn: {}, sysSessionId: null, sysMaxLength: MAX, SYS_PROMPT_CAP: MAX,
+  sysFirstTurn: {}, sysSessionId: null,
   slashHits: [], slashFrom: 0, chatRefs: [], chatRefSeq: 0,
   navigator: { clipboard: { writeText: async () => { throw new Error('blocked'); } } },
   console,
@@ -118,7 +118,7 @@ function reset() {
   Object.assign(spies, { openNewAgent: 0, fillLibrarySelect: [], fillProjectSelect: [],
     fillModels: [], syncEngineModels: 0, openModelPicker: 0, hideSlash: 0, openSysPromptArgs: [] });
   ctx.sessions = []; ctx.promptLibrary = []; ctx.projectsCache = []; ctx.agentLibrary = [];
-  ctx.openId = null; ctx.sysFirstTurn = {}; ctx.sysSessionId = null; ctx.sysMaxLength = MAX;
+  ctx.openId = null; ctx.sysFirstTurn = {}; ctx.sysSessionId = null;
   ctx.slashHits = []; ctx.slashFrom = 0;
   Object.keys(elements).forEach(k => delete elements[k]);
 }
@@ -181,12 +181,28 @@ function test(name, fn) {
     assert.match($('sysScope').textContent, /from now on/, 'promises future turns, not in-place');
     assert.ok(!/can't be re-instructed/.test($('sysScope').textContent), 'the old false claim is gone');
   });
-  await test('the cap comes from the server and drives the field + counter', async () => {
+  await test('the editor sets no maxlength and counts without showing a limit', async () => {
     server.prompts.s1 = 'abc';
     ctx.sessions = [{ sessionId: 's1', title: 'A', status: 'idle' }];
     await ctx.openSysPrompt('s1');
-    assert.strictEqual($('sysText').getAttribute('maxlength'), String(MAX));
-    assert.strictEqual($('sysCount').textContent, `3 / ${MAX}`);
+    // No fence: the browser must never silently drop typed or pasted text.
+    assert.strictEqual($('sysText').getAttribute('maxlength'), undefined);
+    assert.strictEqual($('sysCount').textContent, '3 characters');
+  });
+  await test('a very long stored prompt opens in full', async () => {
+    server.prompts.s1 = LONG;
+    ctx.sessions = [{ sessionId: 's1', title: 'A', status: 'idle' }];
+    await ctx.openSysPrompt('s1');
+    assert.strictEqual($('sysText').value, LONG, 'nothing was cut off');
+    assert.ok($('sysText').value.length > 100000);
+  });
+  await test('saving a very long prompt keeps every character', async () => {
+    ctx.sessions = [{ sessionId: 's1', title: 'A', status: 'idle' }];
+    await ctx.openSysPrompt('s1');
+    $('sysText').value = LONG;
+    await ctx.sysApplyPrompt();
+    assert.strictEqual(server.prompts.s1, LONG.trim(), 'the server kept it whole');
+    assert.strictEqual($('sysText').value, LONG.trim());
   });
   await test('an unreadable store warns instead of showing a misleading blank', async () => {
     server.failGet = true;
@@ -220,7 +236,7 @@ function test(name, fn) {
     $('sysText').value = '   padded with space   ';
     await ctx.sysApplyPrompt();
     assert.strictEqual($('sysText').value, 'padded with space', 'shows the trimmed text the server kept');
-    assert.strictEqual($('sysCount').textContent, `17 / ${MAX}`);
+    assert.strictEqual($('sysCount').textContent, '17 characters');
   });
   await test('saving an empty prompt clears the entry and says so', async () => {
     server.prompts.s1 = 'old prompt';

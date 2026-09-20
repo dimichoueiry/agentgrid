@@ -4879,10 +4879,6 @@ function openPromptsWith(body) {
 // "Launched with": it is already in the transcript and can never be edited
 // away. Reachable from the panel's "System prompt" button and by /system.
 let sysSessionId = null;
-// The server states its own cap; this is only the value assumed before the
-// first successful read.
-const SYS_PROMPT_CAP = 8000;
-let sysMaxLength = SYS_PROMPT_CAP;
 
 function fillSysPickSelect() {
   $("sysPick").innerHTML = `<option value="">— pick a saved prompt —</option>` +
@@ -4896,14 +4892,15 @@ function fillSysPickSelect() {
 async function loadStoredSystemPrompt(id) {
   try {
     const r = await api(`/api/system-prompt?session=${encodeURIComponent(id)}`);
-    return {systemPrompt: (r && r.systemPrompt) || "",
-            maxLength: (r && r.maxLength) || SYS_PROMPT_CAP};
-  } catch (e) { return {systemPrompt: "", maxLength: SYS_PROMPT_CAP, failed: true}; }
+    return {systemPrompt: (r && r.systemPrompt) || ""};
+  } catch (e) { return {systemPrompt: "", failed: true}; }
 }
 
+// The standing prompt has no character cap — the count is feedback, not a
+// fence, so it never shows a limit or turns red. Long prompts are kept in full.
 function sysUpdateCount() {
   const used = $("sysText").value.length;
-  $("sysCount").textContent = used ? `${used} / ${sysMaxLength}` : "";
+  $("sysCount").textContent = used ? `${used.toLocaleString()} characters` : "";
 }
 
 async function openSysPrompt(id) {
@@ -4926,8 +4923,6 @@ async function openSysPrompt(id) {
   $("sysModal").hidden = false;
   const stored = await loadStoredSystemPrompt(id);
   if (sysSessionId !== id || $("sysModal").hidden) return;   // switched away
-  sysMaxLength = stored.maxLength;
-  $("sysText").setAttribute("maxlength", String(sysMaxLength));
   if (stored.failed) $("sysErr").textContent = "Could not read the stored prompt — saving would overwrite it, so check the server first.";
   $("sysText").value = stored.systemPrompt;
   sysUpdateCount();

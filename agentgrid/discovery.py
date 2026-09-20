@@ -59,11 +59,13 @@ SYSTEM_PROMPTS_PATH = Path.home() / ".agentgrid" / "system_prompts.json"
 MAX_TAGS_PER_SESSION = 6
 MAX_TAG_LENGTH = 24
 MAX_NAME_LENGTH = 60
-# The cap on a session's standing system prompt. Deliberately the same 8000 as
-# the reusable agent library uses (web.MAX_SYSTEM_PROMPT): the two are the same
-# kind of instruction, one saved against a definition and one against a live
-# session, and a duplicate copies freely between them.
-MAX_SYSTEM_PROMPT = 8000
+# A session's standing system prompt is deliberately NOT capped by a character
+# count: it carries the whole of how an agent is told to work, and a long,
+# careful prompt must survive intact -- silently cutting one is worse than
+# having none. The reusable agent library keeps its copy whole for the same
+# reason, so a duplicate still copies freely between them. The only bound is
+# the server's request-body limit (web.MAX_BODY_BYTES, 16 MB), which is a
+# transport safeguard, not an editing limit.
 
 # `complete` exists only in agentgrid, never in the CLI. It is the terminal
 # state that only a human can set — the CLI's `done` means "the turn ended",
@@ -1234,7 +1236,7 @@ def save_system_prompt(session_id: str, text: str) -> str:
     its transcript.
     """
     store = load_system_prompts()
-    cleaned = (text or "").strip()[:MAX_SYSTEM_PROMPT]
+    cleaned = (text or "").strip()   # deliberately uncapped -- see the note by the constants above
     if cleaned:
         store[session_id] = cleaned
     else:

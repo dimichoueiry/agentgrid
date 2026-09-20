@@ -49,10 +49,17 @@ class SystemPromptStoreTests(unittest.TestCase):
         # A cleared prompt leaves no key behind -- indistinguishable from unset.
         self.assertNotIn("s1", discovery.load_system_prompts())
 
-    def test_prompt_is_capped(self):
-        kept = discovery.save_system_prompt("s1", "x" * (discovery.MAX_SYSTEM_PROMPT + 500))
-        self.assertEqual(len(kept), discovery.MAX_SYSTEM_PROMPT)
-        self.assertEqual(len(discovery.system_prompt_for("s1")), discovery.MAX_SYSTEM_PROMPT)
+    def test_a_long_prompt_is_kept_whole_not_truncated(self):
+        # No character cap: a long, careful prompt must survive intact rather
+        # than be silently cut. The old 8,000-char limit lost the tail.
+        long_prompt = "You are a careful reviewer. " * 4000   # ~112k chars
+        kept = discovery.save_system_prompt("s1", long_prompt)
+        self.assertEqual(kept, long_prompt.strip())
+        self.assertEqual(discovery.system_prompt_for("s1"), long_prompt.strip())
+        self.assertGreater(len(discovery.system_prompt_for("s1")), 100_000)
+
+    def test_the_store_exposes_no_length_cap_constant(self):
+        self.assertFalse(hasattr(discovery, "MAX_SYSTEM_PROMPT"))
 
     def test_unknown_and_empty_ids_read_as_empty(self):
         self.assertEqual(discovery.system_prompt_for("nope"), "")
@@ -185,6 +192,18 @@ class LibraryDuplicateTests(unittest.TestCase):
         self.addCleanup(p.stop)
         self.addCleanup(self._tmp.cleanup)
 
+    def test_a_long_system_prompt_is_kept_whole_in_the_library(self):
+        # The definition's prompt is prose, so it is never truncated -- a
+        # duplicate must be able to carry a full prompt between sessions.
+        long_prompt = "You are a careful reviewer. " * 4000   # ~112k chars
+        web.save_saved_agent("Reviewer", "claude", "opus", long_prompt)
+        (saved,) = web.load_saved_agents()
+        self.assertEqual(saved["systemPrompt"], long_prompt.strip())
+        self.assertGreater(len(saved["systemPrompt"]), 100_000)
+
+    def test_the_library_exposes_no_system_prompt_cap_constant(self):
+        self.assertFalse(hasattr(web, "MAX_SYSTEM_PROMPT"))
+
     def test_unique_name_suffixes_and_caps(self):
         self.assertEqual(web._unique_agent_name("Builder", set()), "Builder")
         self.assertEqual(web._unique_agent_name("Builder", {"builder"}), "Builder (copy)")
@@ -265,7 +284,7 @@ class RouteTests(unittest.TestCase):
         status, body = _call(port, "GET", "/api/system-prompt?session=s1")
         self.assertEqual(status, 200)
         self.assertEqual(body["systemPrompt"], "")
-        self.assertEqual(body["maxLength"], discovery.MAX_SYSTEM_PROMPT)
+        self.assertNotIn("maxLength", body)   # nothing to cap, nothing to report
 
     def test_set_then_view_round_trips_through_the_store(self):
         port = _serve([_session("s1")]).server_address[1]
@@ -312,6 +331,27 @@ class RouteTests(unittest.TestCase):
         port = _serve([]).server_address[1]
         status, _ = _call(port, "POST", "/api/agents/duplicate", {"sessionId": "gone"})
         self.assertEqual(status, 404)
+
+    def test_a_long_prompt_survives_the_round_trip_through_the_routes(self):
+        # End to end over HTTP: a ~112k prompt is saved and read back whole.
+        long_prompt = "You are a careful reviewer. " * 4000
+        port = _serve([_session("s1")]).server_address[1]
+        status, body = _call(port, "POST", "/api/system-prompt",
+                             {"sessionId": "s1", "systemPrompt": long_prompt})
+        self.assertEqual(status, 200)
+        self.assertEqual(body["systemPrompt"], long_prompt.strip())
+        status, body = _call(port, "GET", "/api/system-prompt?session=s1")
+        self.assertEqual(body["systemPrompt"], long_prompt.strip())
+        self.assertGreater(len(body["systemPrompt"]), 100_000)
+
+    def test_a_long_prompt_survives_capture_into_the_agent_library(self):
+        long_prompt = "You are a careful reviewer. " * 4000
+        discovery.save_system_prompt("s1", long_prompt)
+        port = _serve([_session("s1", name="Reviewer")]).server_address[1]
+        status, body = _call(port, "POST", "/api/agents/duplicate", {"sessionId": "s1"})
+        self.assertEqual(status, 200)
+        saved = next(a for a in body["agents"] if a["name"] == "Reviewer")
+        self.assertEqual(saved["systemPrompt"], long_prompt.strip())
 
 
 # ---------------------------------------------------------------------------

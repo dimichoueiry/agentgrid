@@ -405,9 +405,14 @@ class Fleet:
         self._error: str | None = None
         self._polled_at: float = 0.0
         self._pending_names: dict[str, str] = {}
-        # Codex prints no job id to wait on, so a name is held against the
-        # (cwd, spawn time) instead and applied to the first codex session
-        # that appears there afterwards.
+        # The prompt a spawn baked into turn 1 is also the session's standing
+        # prompt (chat.py re-reads discovery.system_prompt_for every turn), so
+        # it is held against the same job id as the name and written on first
+        # sighting -- the session id it keys does not exist until then.
+        self._pending_prompts: dict[str, str] = {}
+        # Codex prints no job id to wait on, so a name (and any launch prompt)
+        # is held against the (cwd, spawn time) instead and applied to the first
+        # codex session that appears there afterwards.
         self._pending_codex: list[dict] = []
         self._halt = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True)
@@ -470,41 +475,64 @@ class Fleet:
         with self._lock:
             self._pending_names[job_id] = name
 
-    def name_codex_when_seen(self, cwd: str, name: str) -> None:
-        """Hold a name for the next codex session to appear in a directory."""
-        self._name_by_cwd_when_seen(cwd, name, "codex", None)
+    def remember_prompt_when_seen(self, job_id: str, system_prompt: str) -> None:
+        """Persist a claude session's launch prompt as its standing prompt.
 
-    def name_interactive_when_seen(self, cwd: str, name: str) -> None:
-        """Hold a name for the next interactive claude session in a directory.
+        spawn_agent bakes the prompt into turn 1, but the board drives later
+        turns through chat.py, which re-reads discovery.system_prompt_for on
+        every one; without this the selected prompt silently stops applying
+        after turn 1 and never shows in the details sheet. Like the name, it
+        waits on the job id `claude --bg` prints, because the session id it must
+        key does not exist until the daemon mints it. An empty prompt is a no-op.
+        """
+        if not system_prompt.strip():
+            return
+        with self._lock:
+            self._pending_prompts[job_id] = system_prompt
+
+    def name_codex_when_seen(self, cwd: str, name: str, system_prompt: str = "") -> None:
+        """Hold a name (and any launch prompt) for the next codex session here."""
+        self._name_by_cwd_when_seen(cwd, name, "codex", None, system_prompt)
+
+    def name_interactive_when_seen(self, cwd: str, name: str, system_prompt: str = "") -> None:
+        """Hold a name (and any launch prompt) for the next interactive claude here.
 
         An interactive spawn prints no job id either -- the session id is minted
-        inside the terminal, never handed back -- so, exactly like codex, the
-        name waits on (cwd, spawn time) and lands on the first matching session.
+        inside the terminal, never handed back -- so, exactly like codex, this
+        waits on (cwd, spawn time) and lands on the first matching session.
         """
-        self._name_by_cwd_when_seen(cwd, name, "claude", "interactive")
+        self._name_by_cwd_when_seen(cwd, name, "claude", "interactive", system_prompt)
 
     def _name_by_cwd_when_seen(
-        self, cwd: str, name: str, engine: str, kind: str | None
+        self, cwd: str, name: str, engine: str, kind: str | None, system_prompt: str = ""
     ) -> None:
+        # Nothing to hold if neither a name nor a prompt was given.
+        if not name and not system_prompt.strip():
+            return
         with self._lock:
             self._pending_codex.append(
                 {"cwd": cwd, "name": name, "at": time.time(),
-                 "engine": engine, "kind": kind}
+                 "engine": engine, "kind": kind, "prompt": system_prompt}
             )
 
     def _apply_pending_names(self, sessions: list) -> None:
-        # Called with the lock held, after a successful collect.
+        # Called with the lock held, after a successful collect. Names and
+        # launch prompts ride the same "session appeared" signal.
         for session in sessions:
             wanted = self._pending_names.get(session.job_id or "")
             if wanted:
                 discovery.save_custom_name(session.session_id, wanted)
                 session.custom_name = wanted
                 self._pending_names.pop(session.job_id, None)
+            prompt = self._pending_prompts.get(session.job_id or "")
+            if prompt:
+                discovery.save_system_prompt(session.session_id, prompt)
+                self._pending_prompts.pop(session.job_id, None)
         if not self._pending_codex:
             return
         for pending in list(self._pending_codex):
             if time.time() - pending["at"] > 300:
-                # The session never appeared; a five-minute-old pending name
+                # The session never appeared; a five-minute-old pending entry
                 # matching some future session would mislabel it.
                 self._pending_codex.remove(pending)
                 continue
@@ -518,8 +546,11 @@ class Fleet:
                     and not session.custom_name
                     and session.started_at / 1000 >= pending["at"] - 5
                 ):
-                    discovery.save_custom_name(session.session_id, pending["name"])
-                    session.custom_name = pending["name"]
+                    if pending.get("name"):
+                        discovery.save_custom_name(session.session_id, pending["name"])
+                        session.custom_name = pending["name"]
+                    if pending.get("prompt", "").strip():
+                        discovery.save_system_prompt(session.session_id, pending["prompt"])
                     self._pending_codex.remove(pending)
                     break
 
@@ -1380,18 +1411,26 @@ def launch_agent(fleet, request: dict) -> dict:
             message += f" {ticket['id']} is in progress."
         except ValueError as error:
             message += f" Could not assign {ticket['id']}: {error}"
-    if name:
-        if job_id:
+    # The system prompt rode into turn 1 (spawn_agent); persist it as the
+    # session's standing prompt so the board re-applies it on every later turn
+    # and the details sheet shows what the agent runs under. Like the name, it
+    # waits for the daemon to mint the session id, and rides the same signal --
+    # so it is registered even when no name was given.
+    system_prompt = str(request.get("systemPrompt") or "").strip()
+    if job_id:
+        if name:
             fleet.name_when_seen(job_id, name)
-        elif engine == "codex":
-            # A codex session (exec or interactive) is found in the rollout
-            # files by cwd + time, never a job id.
-            fleet.name_codex_when_seen(cwd, name)
-        elif interactive:
-            fleet.name_interactive_when_seen(cwd, name)
-        else:
-            # Say the name was not applied rather than dropping it silently.
-            message += " Could not read its id, so the name was not applied."
+        if system_prompt:
+            fleet.remember_prompt_when_seen(job_id, system_prompt)
+    elif engine == "codex":
+        # A codex session (exec or interactive) is found in the rollout
+        # files by cwd + time, never a job id.
+        fleet.name_codex_when_seen(cwd, name, system_prompt)
+    elif interactive:
+        fleet.name_interactive_when_seen(cwd, name, system_prompt)
+    elif name:
+        # Say the name was not applied rather than dropping it silently.
+        message += " Could not read its id, so the name was not applied."
     return {"message": message, "jobId": job_id or "", "cwd": cwd,
             "name": agent_label or name, "engine": engine,
             "interactive": interactive, "ticket": ticket["id"] if ticket else ""}

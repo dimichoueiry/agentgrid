@@ -157,6 +157,17 @@ function test(name, fn) {
     await ctx.openSysPrompt('s1');
     assert.strictEqual($('sysLaunchRow').hidden, true);
   });
+  await test('AG-19: a launch preamble equal to the standing prompt is not shown twice', async () => {
+    // A freshly created agent now persists the prompt it launched with as its
+    // standing prompt, so the editor and the "Launched with" scrape hold the
+    // same text — the redundant context row is suppressed.
+    server.prompts.s1 = 'You are a security auditor.';
+    server.transcript = [{ kind: 'user', text: WRAP('You are a security auditor.') }];
+    ctx.sessions = [{ sessionId: 's1', title: 'A', status: 'idle' }];
+    await ctx.openSysPrompt('s1');
+    assert.strictEqual($('sysText').value, 'You are a security auditor.', 'editor shows the prompt once');
+    assert.strictEqual($('sysLaunchRow').hidden, true, 'no duplicate context row');
+  });
   await test('an empty store opens an empty editor, not an error', async () => {
     ctx.sessions = [{ sessionId: 's1', title: 'A', status: 'idle' }];
     await ctx.openSysPrompt('s1');

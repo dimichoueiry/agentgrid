@@ -745,6 +745,10 @@ details.cthink[open]>summary::before{transform:rotate(90deg)}
    library scrolls rather than pushing the form off-screen */
 .plist{max-height:42vh;overflow-y:auto;margin:8px 0 4px;border-top:1px solid var(--line)}
 .plist .mvnote{font-size:12px;color:var(--text-3);padding:12px 2px}
+/* the read-only "running with" block in the system-prompt sheet */
+.syslive{white-space:pre-wrap;word-break:break-word;font-family:var(--mono);font-size:12px;
+  line-height:1.6;color:var(--text-2);background:var(--card);border:1px solid var(--line);
+  border-radius:8px;padding:9px 11px;margin:4px 0 0;max-height:26vh;overflow:auto}
 
 /* ---------- toast ---------- */
 .toast{
@@ -1827,7 +1831,11 @@ Every command takes --as NAME and --json. Without --as, the name is $AGENTGRID_A
       <input id="naModelCustom" hidden aria-label="Exact model ID" placeholder="Exact model ID" autocomplete="off">
       <span class="hint">Suggestions come from your local CLI history/cache. You can also enter an exact model ID.</span></label>
     <label>System prompt <span class="hint">optional — rides along with every run</span>
-      <textarea id="naSys" rows="3" placeholder="You are a…"></textarea></label>
+      <textarea id="naSys" rows="3" placeholder="You are a…"></textarea>
+      <div class="librow" id="naSysLibRow" hidden>
+        <select id="naSysLib" aria-label="Insert a saved prompt as the system prompt"><option value="">— insert a saved prompt —</option></select>
+        <button class="btn sm" id="naSysLibGo" type="button">Insert</button>
+      </div></label>
     <label>Task
       <textarea id="naTask" rows="5" placeholder="What should it do?"></textarea></label>
     <div class="srow">
@@ -1886,6 +1894,36 @@ Every command takes --as NAME and --json. Without --as, the name is $AGENTGRID_A
     <div class="srow">
       <span class="spacer"></span>
       <button class="btn" id="plClose">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- View / edit an agent's system prompt. Reached from the panel or by typing
+     /system in the composer. A running agent keeps the instructions it was
+     launched with — this never re-instructs a live process; it lets you read
+     that prompt, save it for reuse, or duplicate the agent to run a variant. -->
+<div class="modal" id="sysModal" hidden>
+  <div class="sheet wide">
+    <div class="stitle">System prompt</div>
+    <p class="hint" id="sysScope" role="status" style="margin:0 0 10px"></p>
+    <div class="prow" id="sysLiveRow" hidden>
+      <div class="plabel">Running with <span class="hint">the instructions this agent was launched with — a live agent can't be re-instructed in place</span></div>
+      <pre class="syslive" id="sysLive" tabindex="0"></pre>
+    </div>
+    <label for="sysText">Edit <span class="hint">change it, then save it to the library or duplicate this agent with it</span>
+      <textarea id="sysText" rows="8" placeholder="You are a…"></textarea></label>
+    <label for="sysPick">Insert a saved prompt <span class="hint">from your prompt library — replaces the text above</span>
+      <div class="librow">
+        <select id="sysPick"><option value="">— pick a saved prompt —</option></select>
+        <button class="btn sm" id="sysLoad">Insert</button>
+      </div></label>
+    <div class="srow">
+      <span class="hint err" id="sysErr" role="alert"></span>
+      <span class="spacer"></span>
+      <button class="btn sm" id="sysCopy">Copy</button>
+      <button class="btn sm" id="sysSave" title="Save this text to your prompt library so /name reuses it">Save to library</button>
+      <button class="btn key" id="sysDup" title="Open the New agent sheet pre-filled with this prompt — starts a fresh session, never touches this one">Duplicate agent…</button>
+      <button class="btn" id="sysClose">Close</button>
     </div>
   </div>
 </div>
@@ -3931,11 +3969,15 @@ function renderPanel() {
     const deleteBtn = working
       ? ""
       : `<button class="btn sm danger" id="deleteBtn" title="Clear this card off the board. A closed session stays gone; a live one returns only if it speaks again.">Delete</button>`;
+    // Both stay available while the agent runs: viewing the prompt is read-only,
+    // and Duplicate spawns a fresh session without touching the live one.
+    const sysBtn = `<button class="btn sm" id="sysBtn" title="View or edit the system prompt this agent was launched with">System prompt</button>`;
+    const dupBtn = `<button class="btn sm" id="dupBtn" title="Open the New agent sheet pre-filled from this agent to launch a copy">Duplicate</button>`;
     $("pMeta").innerHTML =
       `<div class="prow"><label class="plabel" for="agentAreaSel">Work area</label><select id="agentAreaSel">${areaOptions(areaData.members[s.sessionId])}</select></div>` +
       `<div class="prow"><div class="plabel">Name</div>` +
       `<input id="renameIn" value="${esc(s.customName || "")}" placeholder="${esc(s.title || "")}" maxlength="60"></div>` +
-      `<div class="prow"><div class="mvrow">${openBtn}${unreadBtn}${deleteBtn}</div></div>` +
+      `<div class="prow"><div class="mvrow">${openBtn}${unreadBtn}${sysBtn}${dupBtn}${deleteBtn}</div></div>` +
       (working ? `<div class="prow"><div class="mvnote">Running — stop it before re-filing.</div></div>` : "") +
       `<div class="prow"><div class="plabel">Tags</div><div class="tagrow" id="tagRow">` +
         (s.tags || []).map(t =>
@@ -3995,6 +4037,40 @@ function renderRoster(s, subs) {
   }
 }
 
+// --- an agent's system prompt ------------------------------------------------
+// spawn_agent wraps a system prompt at the very front of the first turn as
+// <system instructions>…</system instructions> (see web.py). That tag is the
+// only handle back to it, so the sheet reads it out of the transcript rather
+// than a dedicated field the backend doesn't keep. Anchored at the start so a
+// later message that merely quotes the tag can never be mistaken for it.
+const SYS_INSTR_RE = /^\s*<system instructions>\n([\s\S]*?)\n<\/system instructions>\s*/;
+// sessionId -> {system, task} parsed from the opening turn.
+let sysFirstTurn = {};
+function extractSystemPrompt(firstUserText) {
+  const m = SYS_INSTR_RE.exec(String(firstUserText ?? ""));
+  return m ? m[1] : "";
+}
+// The opening turn with the system wrapper peeled off — the task a duplicate
+// should start from.
+function stripSystemPrompt(firstUserText) {
+  return String(firstUserText ?? "").replace(SYS_INSTR_RE, "");
+}
+function rememberFirstTurn(id, blocks) {
+  const first = (blocks || []).find(b => b.kind === "user");
+  if (!first) return;
+  sysFirstTurn[id] = {system: extractSystemPrompt(first.text), task: stripSystemPrompt(first.text)};
+}
+// The opening turn, from cache or a single fetch. Never throws: a transcript
+// that can't be read yields an empty prompt, and the sheet says so.
+async function sessionFirstTurn(id) {
+  if (sysFirstTurn[id]) return sysFirstTurn[id];
+  try {
+    const data = await api(`/api/transcript?id=${encodeURIComponent(id)}`);
+    rememberFirstTurn(id, data.blocks || []);
+  } catch (e) { /* fall through to the empty default */ }
+  return sysFirstTurn[id] || {system: "", task: ""};
+}
+
 async function refreshTranscript() {
   if (!openId) return;
   const id = openId, agent = openAgent;
@@ -4009,6 +4085,10 @@ async function refreshTranscript() {
   // you can switch rows while a request is in flight — re-check both
   if (id !== openId || agent !== openAgent) return;
   const blocks = data.blocks || [];
+  // Remember this session's opening turn so the system-prompt sheet can show
+  // what it was launched with without a second fetch. Only the main
+  // conversation carries the spawn prompt; a sub-agent's first turn is its own.
+  if (!agent) rememberFirstTurn(id, blocks);
   const sig = blocks.length + ":" + JSON.stringify(blocks[blocks.length - 1] || 0);
   if (sig === transSig) return;
   transSig = sig;
@@ -4690,6 +4770,103 @@ async function exportPrompt(name) {
   toast(`Exported → ${r.path}`);
 }
 
+// Open the prompt manager with its form pre-filled from a body — the one save
+// path for a system prompt, so it goes through the same name/area/export flow
+// as every other saved prompt rather than a second, half-featured saver.
+function openPromptsWith(body) {
+  openPrompts();
+  clearPromptForm();
+  $("plBody").value = String(body || "");
+  $("plName").focus();
+}
+
+/* ------------------------------------------------ system prompt view / edit */
+// A sheet over the open agent's system prompt. It reads the prompt the agent
+// was launched with (out of the transcript — the backend keeps no separate
+// field), and from there you can save it to the prompt library or duplicate
+// the agent with an edited version. It deliberately does NOT push a new prompt
+// into a live process: a running CLI's instructions are fixed for its run, and
+// pretending otherwise would be the unsafe move. Reachable from the panel's
+// "System prompt" button and by typing /system in the composer.
+let sysSessionId = null;
+
+function fillSysPickSelect() {
+  $("sysPick").innerHTML = `<option value="">— pick a saved prompt —</option>` +
+    promptLibrary.map(p =>
+      `<option value="${esc(p.name)}">/${esc(p.name)}${p.description ? " · " + esc(p.description) : ""}</option>`).join("");
+}
+
+async function openSysPrompt(id) {
+  id = id || openId;
+  if (!id) { toast("Open an agent first."); return; }
+  sysSessionId = id;
+  const s = sessions.find(x => x.sessionId === id);
+  const label = s ? (s.customName || s.title || id.slice(0, 8)) : id.slice(0, 8);
+  const running = !!s && s.status === "working";
+  $("sysErr").textContent = "";
+  $("sysScope").textContent = running
+    ? `${label} is running — it keeps the prompt it launched with. Edit below to save it for reuse, or to duplicate the agent with a new one.`
+    : `${label} — edit below to save this prompt for reuse, or to duplicate the agent with it.`;
+  fillSysPickSelect();
+  $("sysPick").value = "";
+  // Show the sheet before the fetch so a slow transcript never leaves a blank
+  // modal; the read-only block says it is still reading.
+  $("sysLiveRow").hidden = false;
+  $("sysLive").textContent = "Reading the transcript…";
+  $("sysText").value = "";
+  $("sysModal").hidden = false;
+  const info = await sessionFirstTurn(id);
+  if (sysSessionId !== id || $("sysModal").hidden) return;   // switched away
+  const eff = info.system || "";
+  $("sysLive").textContent = eff || "No system prompt was set for this agent.";
+  $("sysText").value = eff;
+  $("sysText").focus();
+}
+function closeSysPrompt() { $("sysModal").hidden = true; sysSessionId = null; }
+
+function sysInsertSaved() {
+  const p = promptLibrary.find(x => x.name === $("sysPick").value);
+  if (!p) { $("sysErr").textContent = "Pick a saved prompt to insert."; return; }
+  $("sysText").value = p.body || "";
+  $("sysErr").textContent = "";
+  $("sysText").focus();
+}
+
+async function sysCopyPrompt() {
+  const text = $("sysText").value;
+  try {
+    await navigator.clipboard.writeText(text);
+    toast("Copied the system prompt.");
+  } catch (e) {
+    // Clipboard API is blocked outside a secure context or without focus;
+    // select the text so the keyboard copy still works.
+    $("sysText").focus(); $("sysText").select();
+    toast("Press ⌘/Ctrl-C to copy.");
+  }
+}
+
+// Open the New agent sheet pre-filled from an existing session. Safe on a
+// running agent: it starts a brand-new session and never signals the original.
+// `systemOverride` (when given, including "") wins over the launched prompt, so
+// the system-prompt sheet can duplicate with the edited text.
+async function duplicateSession(id, systemOverride) {
+  id = id || openId;
+  const s = sessions.find(x => x.sessionId === id);
+  if (!s) { toast("No session to duplicate."); return; }
+  const info = await sessionFirstTurn(id);
+  await openNewAgent();
+  const engine = s.engine === "codex" ? "codex" : "claude";
+  $("naEngine").value = engine;
+  syncEngineModels();
+  fillModels("naModel", engine, s.model || "");
+  if (s.cwd && projectsCache.some(p => p.path === s.cwd)) fillProjectSelect(s.cwd);
+  $("naSys").value = systemOverride != null ? systemOverride : (info.system || "");
+  $("naTask").value = info.task || "";
+  const base = (s.customName || s.title || "agent").trim() || "agent";
+  $("naName").value = (base + " copy").slice(0, 60);
+  $("naName").focus();
+}
+
 /* --------------------------------------------------- composer /slash palette */
 // The @ menu's twin, over the prompt library: type /name in the composer to
 // filter, arrow/enter to accept. Accepting swaps the /token for the prompt's
@@ -4704,7 +4881,9 @@ function checkSlashMenu() {
   slashFrom = el.selectionStart - m[1].length - 1;   // index of the "/"
   const q = m[1].toLowerCase();
   slashHits = [{name: "model", description: "Choose the model for your next turn", builtin: true},
-    ...promptLibrary.filter(p => p.name !== "model")].filter(p => !q || p.name.includes(q)).slice(0, 8);
+    {name: "system", description: "View or edit this agent's system prompt", builtin: true},
+    ...promptLibrary.filter(p => p.name !== "model" && p.name !== "system")]
+    .filter(p => !q || p.name.includes(q)).slice(0, 8);
   if (!slashHits.length) { hideSlash(); return; }
   slashSel = 0;
   const menu = $("slashMenu");
@@ -4730,7 +4909,7 @@ function insertSlash(i) {
   const end = el.selectionStart;
   el.setRangeText("", slashFrom, end, "end");   // drop the /query token; the body is NOT pasted
   hideSlash();
-  if (p.builtin) { openModelPicker(); return; }
+  if (p.builtin) { if (p.name === "system") openSysPrompt(openId); else openModelPicker(); return; }
   // a compact reference chip instead of a wall of text; the body rides along
   // on send and stays editable for this one message
   chatRefs.push({id: ++chatRefSeq, name: p.name, body: p.body || "", orig: p.body || ""});
@@ -4995,7 +5174,18 @@ async function openNewAgent() {
     agentLibrary = (await api("/api/agents")).agents || [];
   } catch (e) { agentLibrary = agentLibrary || []; }
   fillLibrarySelect("");
+  fillNaSysLib();
   $("naName").focus();
+}
+// The saved-prompt picker under the system-prompt field: the same reusable
+// prompts as the composer's /name, offered as a starting point for the prompt
+// a new agent runs with. Insert replaces the field; it never sends anything.
+function fillNaSysLib() {
+  const row = $("naSysLibRow"); if (!row) return;
+  row.hidden = promptLibrary.length === 0;
+  $("naSysLib").innerHTML = `<option value="">— insert a saved prompt —</option>` +
+    promptLibrary.map(p =>
+      `<option value="${esc(p.name)}">/${esc(p.name)}${p.description ? " · " + esc(p.description) : ""}</option>`).join("");
 }
 // each engine has its own model vocabulary; Default always means "let the
 // CLI's own config decide", which is the only never-wrong choice
@@ -6424,6 +6614,15 @@ function bindEvents() {
     else if (act === "export") exportPrompt(name);
     else if (act === "delete") deletePrompt(name);
   });
+  // the system-prompt sheet
+  $("sysClose").addEventListener("click", closeSysPrompt);
+  $("sysModal").addEventListener("click", e => { if (e.target === $("sysModal")) closeSysPrompt(); });
+  $("sysLoad").addEventListener("click", sysInsertSaved);
+  $("sysCopy").addEventListener("click", sysCopyPrompt);
+  // save goes through the prompt manager so it gets a name, area and export;
+  // duplicate carries the (possibly edited) text into a fresh agent
+  $("sysSave").addEventListener("click", () => { const t = $("sysText").value; closeSysPrompt(); openPromptsWith(t); });
+  $("sysDup").addEventListener("click", () => { const id = sysSessionId; const t = $("sysText").value; closeSysPrompt(); duplicateSession(id, t); });
   ["syncRemote", "syncBranch"].forEach(id => $(id).addEventListener("keydown", e => {
     if (e.key === "Enter") { e.preventDefault(); doSync(); }
     else if (e.key === "Escape") closeSync();
@@ -6629,6 +6828,8 @@ function bindEvents() {
       deleteSession(openId);
       return;
     }
+    if (e.target.closest("#sysBtn")) { openSysPrompt(openId); return; }
+    if (e.target.closest("#dupBtn")) { duplicateSession(openId); return; }
     const rr = e.target.closest(".rrow");
     if (rr) {
       openAgent = rr.dataset.agent || null;
@@ -6927,6 +7128,11 @@ function bindEvents() {
   $("naCancel").addEventListener("click", closeNewAgent);
   $("modal").addEventListener("click", e => { if (e.target === $("modal")) closeNewAgent(); });
   $("naStart").addEventListener("click", startAgent);
+  $("naSysLibGo").addEventListener("click", () => {
+    const p = promptLibrary.find(x => x.name === $("naSysLib").value);
+    if (!p) { $("naErr").textContent = "Pick a saved prompt to insert."; return; }
+    $("naSys").value = p.body || ""; $("naErr").textContent = ""; $("naSys").focus();
+  });
   $("naEngine").addEventListener("change", syncEngineModels);
   // project picker preferences: favourite, hide, and add-by-hand — the scan
   // is one level deep on purpose, so ~/Desktop/anything needs a way in
@@ -7059,6 +7265,7 @@ function bindEvents() {
       if (!$("ticketModal").hidden) { closeNewTicket(); return; }
       if (!$("tkHelpModal").hidden) { $("tkHelpModal").hidden = true; return; }
       if (!$("tkPrefixModal").hidden) { $("tkPrefixModal").hidden = true; return; }
+      if (!$("sysModal").hidden) { closeSysPrompt(); return; }
       if (!$("promptModal").hidden) { closePrompts(); return; }
       if (!$("modal").hidden) { closeNewAgent(); return; }
       if ($("managePanel").classList.contains("on")) { closeManage(); return; }

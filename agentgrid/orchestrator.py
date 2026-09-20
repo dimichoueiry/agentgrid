@@ -54,7 +54,10 @@ STATUSES = ("idle", "running", "waiting", "done", "failed", "stopped")
 ACTIVE_STATUSES = ("running", "waiting")
 
 MAX_NAME = 60
-MAX_INSTRUCTIONS = 20_000
+# Legacy "instructions" are read only so an old orchestrator can be converted
+# into a persona, where they become its guidelines. Like persona guidelines,
+# they are kept whole -- the request body limit is the only bound -- so a long
+# pre-personas prompt is never lost on conversion.
 MAX_BRIEF = 20_000
 MAX_GOAL = 20_000
 MAX_MEMORY_TEXT = 500
@@ -158,8 +161,6 @@ def load(raw: object, *, existing_id: str = "") -> Orchestrator:
     if model and (len(model) > 200 or any(c.isspace() for c in model)):
         raise ValueError("That is not an OpenRouter model ID.")
     instructions = str(raw.get("instructions") or "") if not persona_id else ""
-    if len(instructions) > MAX_INSTRUCTIONS:
-        raise ValueError(f"Instructions must be under {MAX_INSTRUCTIONS:,} characters.")
     brief = str(raw.get("brief") or "")
     if len(brief) > MAX_BRIEF:
         raise ValueError(f"Keep the product brief under {MAX_BRIEF:,} characters.")

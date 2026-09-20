@@ -25,6 +25,11 @@ def persona_body(**overrides) -> dict:
             **overrides}
 
 
+# A guideline far longer than the old 20,000-character cap, with markers on the
+# first and last lines so a truncation at either end is caught. ~108k chars.
+LONG_GUIDELINES = "HEAD-MARKER\n" + ("Follow the plan precisely.\n" * 4000) + "TAIL-MARKER"
+
+
 # --- the persona record -------------------------------------------------------
 
 class PersonaTests(OrchestratorCase):
@@ -83,6 +88,27 @@ class PersonaTests(OrchestratorCase):
                          {"engine": "claude", "model": "claude-opus-5", "mode": "interactive"})
         personas.delete(lead.id)
         self.assertEqual(personas.seed_starters({"worktree-task"}), [], "a deleted starter stays deleted")
+
+    def test_long_guidelines_survive_create_edit_save_and_load(self):
+        # Well past the old 20k cap: a long, careful prompt must not be capped
+        # or truncated on the way in or back out.
+        self.assertGreater(len(LONG_GUIDELINES), 20_000)
+        created = personas.save(personas.load(persona_body(guidelines=LONG_GUIDELINES)))
+        self.assertEqual(created.guidelines, LONG_GUIDELINES)
+        reloaded = personas.get(created.id)
+        self.assertEqual(reloaded.guidelines, LONG_GUIDELINES)
+        # editing to an even longer prompt is kept whole too
+        longer = LONG_GUIDELINES + ("\nAnd one more rule." * 1000)
+        personas.save(personas.load({**reloaded.to_dict(), "guidelines": longer}))
+        self.assertEqual(personas.get(created.id).guidelines, longer)
+
+    def test_the_editor_page_no_longer_caps_the_guidelines_field(self):
+        # The browser used to silently drop anything typed or pasted past the
+        # cap; the <textarea> must carry no maxlength now.
+        html = (web.STATIC / "app.html").read_text(encoding="utf-8")
+        start = html.index('id="pGuidelines"')
+        tag = html[start:html.index(">", start)]
+        self.assertNotIn("maxlength", tag.lower())
 
     def test_a_starter_never_duplicates_a_persona_you_already_have(self):
         # setUp made "Tester"; add a Product Manager of your own first
@@ -144,6 +170,19 @@ class PostingTests(OrchestratorCase):
         orchestrator.remember(posting.id, "fact")
         orchestrator.delete(posting.id)
         self.assertFalse((orchestrator.DIR / posting.id).exists())
+
+    def test_a_long_legacy_orchestrator_keeps_its_instructions_as_guidelines(self):
+        # A pre-personas orchestrator whose instructions run past the old cap
+        # must convert without losing any of them -- they become the guidelines.
+        legacy_id = "abcdef0123456789"
+        home = orchestrator.DIR / legacy_id
+        home.mkdir(parents=True)
+        (home / "definition.json").write_text(json.dumps({
+            "id": legacy_id, "name": "Verbose Lead", "model": "openai/gpt-5.6",
+            "instructions": LONG_GUIDELINES, "mode": "auto", "scope": "eng"}))
+        self.assertEqual(orchestrator.migrate_legacy(), ["Verbose Lead"])
+        persona = personas.get(orchestrator.get(legacy_id).persona_id)
+        self.assertEqual(persona.guidelines, LONG_GUIDELINES)
 
     def test_an_older_orchestrator_becomes_a_persona_and_a_posting(self):
         legacy_id = "0123456789abcdef"
@@ -333,6 +372,11 @@ class PersonaRunTests(OrchestratorCase):
         self.assertIn("read_skill", tools)
         self.assertIn("read_prompt", tools)
 
+    def test_long_guidelines_reach_the_run_prompt_intact(self):
+        self.use(guidelines=LONG_GUIDELINES)
+        brief = orchestrator_brief.system_prompt(self.context(orchestrator.load(self.body())))
+        self.assertIn(LONG_GUIDELINES, brief)             # whole, not just a head or tail
+
     def test_an_edit_in_the_bank_reaches_a_run_already_in_flight(self):
         model = Model(turn("Which repo?"), turn("", [("finish", {"summary": "ok"})]))
         run = self.run_with(model, mode="auto")
@@ -417,6 +461,14 @@ class PersonaRouteTests(OrchestratorCase):
         self.assertEqual(payload["catalog"]["agents"][0]["summary"], "Design.")
         self.assertEqual(payload["catalog"]["prompts"][0]["name"], "plan-tickets")
         self.assertEqual(payload["catalog"]["skills"][0]["name"], "worktree-task")
+
+    def test_the_save_route_keeps_a_long_guideline_whole(self):
+        handler = self.handler()
+        handler._persona_action("save", persona_body(guidelines=LONG_GUIDELINES))
+        code, payload = self.last()
+        self.assertEqual(code, 200)
+        self.assertEqual(payload["persona"]["guidelines"], LONG_GUIDELINES)
+        self.assertEqual(personas.get(payload["persona"]["id"]).guidelines, LONG_GUIDELINES)
 
     def test_a_persona_cannot_be_deleted_while_it_is_posted(self):
         handler = self.handler()

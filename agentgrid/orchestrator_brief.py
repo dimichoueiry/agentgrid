@@ -187,11 +187,13 @@ def _bullets(items: list[dict], render) -> list[str]:
 def system_prompt(context: Context) -> str:
     posting, persona, capabilities = context.posting, context.persona, context.capabilities
     limits = posting.limits
-    approval = ("Starting an agent needs the user's approval every time: your request appears on "
-                "their board and the run pauses until they answer, which may take hours. Ask for "
-                "one agent at a time and say clearly what it is for."
+    approval = ("Starting an agent, and sending a follow-up to one with send_to_agent, both need "
+                "the user's approval every time: your request appears on their board as a proposed "
+                "next step and the run pauses until they answer, which may take hours. They may "
+                "approve it, edit it first, or decline with a reason you should re-plan around. Ask "
+                "for one thing at a time and say clearly what it is for."
                 if posting.mode == "ask" else
-                "You may start agents without asking, inside the limits below.")
+                "You may start agents and send follow-ups without asking, inside the limits below.")
     interactive = ("You may open interactive Terminal sessions."
                    if capabilities.get("interactive") else
                    "This host cannot open interactive Terminal sessions; every agent you start "

@@ -1192,6 +1192,10 @@ body.area-overview .viewnav,body.area-overview #searchBox,body.area-overview #ne
 .op-approval textarea{resize:vertical;min-height:52px}
 .op-approval .oa-fixed{font-size:11.5px;color:var(--text-2);margin:0 0 8px;word-break:break-all}
 .op-approval .oa-acts{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.op-approval .oa-eyebrow{font-size:9.5px;letter-spacing:.09em;text-transform:uppercase;color:var(--accent);font-weight:600;margin:0 0 3px}
+.op-approval .oa-to{font-size:11.5px;color:var(--text-2);margin:0 0 8px}
+.op-approval .oa-to b{color:var(--text);font-weight:600}
+.op-approval[aria-busy=true]{opacity:.6;pointer-events:none}
 .oline{font-size:12.5px;line-height:1.5;margin:0 0 8px;white-space:pre-wrap;word-wrap:break-word}
 .oline .owho{font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--text-3);display:block}
 .oline.said{background:var(--card);border:1px solid var(--line);border-radius:6px;padding:7px 10px}
@@ -1451,7 +1455,7 @@ body.area-overview .viewnav,body.area-overview #searchBox,body.area-overview #ne
     <button class="btn sm" id="orchStop" hidden title="Stop this run">Stop</button>
     <button class="btn sm" id="orchClose" title="Close (Esc)">Close</button>
   </div>
-  <div class="op-approval" id="orchApproval" hidden></div>
+  <div class="op-approval" id="orchApproval" role="region" aria-label="Proposed next step" hidden></div>
   <div class="op-tabs" id="orchTabs">
     <button type="button" data-otab="chat" aria-pressed="true">Chat</button>
     <button type="button" data-otab="plan">Plan</button>
@@ -6337,31 +6341,60 @@ function orchChangeText(event) {
 
 function renderOrchApproval(o) {
   const host = $("orchApproval");
-  if (!o.pending) { host.hidden = true; host.innerHTML = ""; host._pending = ""; return; }
+  if (!o.pending) { host.hidden = true; host.innerHTML = ""; host._pending = ""; host.removeAttribute("aria-busy"); return; }
   // Built once per request: rebuilding it on every poll would wipe whatever
-  // you were typing into the task or the reason.
+  // you were typing into the task, the message, or the reason.
   if (host._pending === o.pending.id) return;
   host._pending = o.pending.id;
+  host.removeAttribute("aria-busy");
   const args = o.pending.args || {};
-  // Already filled in from the persona's defaults, so this is what will run.
-  const fixed = [args.savedAgent ? `saved agent ${args.savedAgent}` : "", args.project || o.cwd,
-                 args.engine || "claude", args.model || "CLI default model", args.mode || "background",
-                 args.ticketKey].filter(Boolean).join(" · ");
-  host.hidden = false;
-  host.innerHTML =
-    `<h3>It wants to start an agent — your call</h3>
-     <p class="oa-why">Because this ${esc(o.pending.reason || "needs approval")}. Nothing runs until you answer, and this waits as long as you need.</p>
-     <p class="oa-fixed">${esc(fixed)}</p>
-     <label>Name<input id="oaName" value="${esc(args.name || "")}" maxlength="60"></label>
-     <label>Task — edit it before approving if it is not quite right
-       <textarea id="oaTask" rows="4">${esc(args.task || "")}</textarea></label>
-     <label>If you decline, why? It reads this and picks something else
-       <input id="oaReason" placeholder="e.g. wrong project — use the worktree"></label>
-     <div class="oa-acts">
-       <button class="btn key" type="button" data-oapp>Approve &amp; start</button>
-       <button class="btn" type="button" data-oapp-auto>Approve, stop asking</button>
-       <button class="btn" type="button" data-odecline>Decline</button>
+  const tool = o.pending.tool || "";
+  const why = `Because this ${esc(o.pending.reason || "needs approval")}. Nothing runs until you approve, and this waits as long as you need.`;
+  // The decline reason and an optional note are offered whatever the proposal
+  // is; the editable body in the middle is what differs per tool.
+  const tail =
+    `<label>If you decline, why? It reads this and picks something else
+       <input id="oaReason" placeholder="e.g. not yet — finish the tests first"></label>
+     <label>Add a note (optional) — kept in the activity log
+       <input id="oaComment" placeholder="e.g. approved, but keep it read-only"></label>
+     <div class="oa-acts" role="group" aria-label="Decide on this proposal">
+       <button class="btn key" type="button" data-oapp aria-label="Approve and run this proposed next step">${tool === "send_to_agent" ? "Approve &amp; send" : "Approve &amp; start"}</button>
+       <button class="btn" type="button" data-oapp-auto aria-label="Approve and stop asking (switch to Auto)">Approve, stop asking</button>
+       <button class="btn" type="button" data-odecline aria-label="Decline this proposed next step">Decline</button>
      </div>`;
+  let body;
+  if (tool === "send_to_agent") {
+    body =
+      `<p class="oa-eyebrow">Proposed next step</p>
+       <h3>It wants to send a follow-up — your call</h3>
+       <p class="oa-why">${why}</p>
+       <p class="oa-to">To <b>${esc(args.agent || "an agent")}</b></p>
+       <label>Message — edit it before approving if it is not quite right
+         <textarea id="oaMessage" rows="4">${esc(args.message || "")}</textarea></label>`;
+  } else if (tool === "start_agent") {
+    // Already filled in from the persona's defaults, so this is what will run.
+    const fixed = [args.savedAgent ? `saved agent ${args.savedAgent}` : "", args.project || o.cwd,
+                   args.engine || "claude", args.model || "CLI default model", args.mode || "background",
+                   args.ticketKey].filter(Boolean).join(" · ");
+    body =
+      `<p class="oa-eyebrow">Proposed next step</p>
+       <h3>It wants to start an agent — your call</h3>
+       <p class="oa-why">${why}</p>
+       <p class="oa-fixed">${esc(fixed)}</p>
+       <label>Name<input id="oaName" value="${esc(args.name || "")}" maxlength="60"></label>
+       <label>Task — edit it before approving if it is not quite right
+         <textarea id="oaTask" rows="4">${esc(args.task || "")}</textarea></label>`;
+  } else {
+    // A tool with no editor of its own: show what it is and let the user decide.
+    const shown = Object.entries(args).map(([k, v]) => `${k}: ${v}`).join(" · ");
+    body =
+      `<p class="oa-eyebrow">Proposed next step</p>
+       <h3>It wants to run ${esc(tool || "a tool")} — your call</h3>
+       <p class="oa-why">${why}</p>
+       <p class="oa-fixed">${esc(shown)}</p>`;
+  }
+  host.hidden = false;
+  host.innerHTML = body + tail;
 }
 
 function orchLine(event, liveMemory = new Set()) {
@@ -6609,17 +6642,34 @@ function bindOrchestrators() {
     if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); $("orchSend").click(); }
   };
   $("orchApproval").onclick = async (e) => {
+    const host = $("orchApproval");
     const o = orchOpen();
     if (!o || !o.pending) return;
-    const edits = {name: $("oaName")?.value || "", task: $("oaTask")?.value || ""};
-    if (e.target.closest("[data-oapp]") || e.target.closest("[data-oapp-auto]")) {
-      if (e.target.closest("[data-oapp-auto]")) {
-        await post("/api/orchestrators/save", {...o, mode: "auto"});
+    const hit = e.target.closest("[data-oapp],[data-oapp-auto],[data-odecline]");
+    if (!hit || host.getAttribute("aria-busy") === "true") return;
+    // Send only the edits this proposal actually renders: the message for a
+    // send-to-agent one, name+task for a start-agent one, and nothing for a
+    // tool with no editor -- injecting empty fields would blank real arguments.
+    let edits = {};
+    if (o.pending.tool === "send_to_agent") edits = {message: $("oaMessage")?.value || ""};
+    else if (o.pending.tool === "start_agent") edits = {name: $("oaName")?.value || "", task: $("oaTask")?.value || ""};
+    // Acknowledge the click at once so a slow round-trip can't be double-sent.
+    host.setAttribute("aria-busy", "true");
+    try {
+      if (hit.matches("[data-oapp],[data-oapp-auto]")) {
+        if (hit.matches("[data-oapp-auto]")) {
+          await post("/api/orchestrators/save", {...o, mode: "auto"});
+        }
+        await orchAction("approve", {approvalId: o.pending.id, edits,
+                                     comment: $("oaComment")?.value || ""}, "Could not approve that.");
+      } else {
+        await orchAction("decline", {approvalId: o.pending.id, reason: $("oaReason")?.value || ""},
+                         "Could not decline that.");
       }
-      await orchAction("approve", {approvalId: o.pending.id, edits}, "Could not approve that.");
-    } else if (e.target.closest("[data-odecline]")) {
-      await orchAction("decline", {approvalId: o.pending.id, reason: $("oaReason")?.value || ""},
-                       "Could not decline that.");
+    } finally {
+      // On success the banner is rebuilt (or removed) by the refreshed snapshot;
+      // clear the flag anyway so a failed request leaves the buttons usable.
+      if (host._pending === o.pending.id) host.removeAttribute("aria-busy");
     }
   };
 }

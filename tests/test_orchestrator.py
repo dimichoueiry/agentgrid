@@ -500,6 +500,98 @@ class ApprovalTests(OrchestratorCase):
         self.assertEqual(reloaded.state["status"], "done")
 
 
+class ProposalTests(OrchestratorCase):
+    """Sending a follow-up to an agent is a real action taken in the user's
+    name, so in Ask mode it is proposed as the next step and reuses the same
+    approve / edit / decline gate as starting one. Auto mode was already
+    authorised, so it just sends."""
+
+    def setUp(self):
+        super().setUp()
+        # A follow-up needs an agent to reach; seed one the run can resolve by name.
+        self.host.sessions = [{"sessionId": "s1", "title": "worker", "customName": "worker",
+                               "status": "idle", "engine": "claude", "cwd": "/tmp/project",
+                               "kind": "background", "idleSeconds": 5}]
+
+    def script(self):
+        return Model(
+            turn("Following up.", [("send_to_agent", {"agent": "worker",
+                                                      "message": "Run the tests"})]),
+            turn("", [("finish", {"summary": "Done."})]),
+        )
+
+    def test_ask_mode_proposes_before_sending_a_follow_up(self):
+        model = self.script()
+        run = self.run_with(model)
+        self.assertEqual(run.state["status"], "waiting")
+        self.assertEqual(self.host.sent, [])
+        pending = run.snapshot()["pending"]
+        self.assertEqual(pending["tool"], "send_to_agent")
+        self.assertIn("worker", pending["reason"])
+        self.assertEqual(pending["args"]["message"], "Run the tests")
+        self.assertEqual(len(model.requests), 1)          # no further spend while it waits
+
+    def test_approving_sends_the_follow_up_and_the_run_continues(self):
+        model = self.script()
+        run = self.run_with(model)
+        with mock.patch.object(openrouter, "tool_turn", model):
+            run.approve(run.snapshot()["pending"]["id"])
+            self.settle(run)
+        self.assertEqual(self.host.sent, [("s1", "Run the tests")])
+        self.assertEqual(run.state["status"], "done")
+        self.assertIsNone(run.state["pending"])
+        kinds = [event["type"] for event in orchestrator.journal(run.definition.id)]
+        self.assertIn("approval_requested", kinds)
+        self.assertIn("approval_resolved", kinds)
+
+    def test_editing_the_message_before_approving_changes_what_is_sent(self):
+        model = self.script()
+        run = self.run_with(model)
+        with mock.patch.object(openrouter, "tool_turn", model):
+            run.approve(run.snapshot()["pending"]["id"], {"message": "Run the tests, carefully"})
+            self.settle(run)
+        self.assertEqual(self.host.sent, [("s1", "Run the tests, carefully")])
+
+    def test_declining_tells_the_model_why_and_sends_nothing(self):
+        model = self.script()
+        run = self.run_with(model)
+        with mock.patch.object(openrouter, "tool_turn", model):
+            run.decline(run.snapshot()["pending"]["id"], "not yet")
+            self.settle(run)
+        self.assertEqual(self.host.sent, [])
+        declined = [m for m in run.state["messages"] if m.get("role") == "tool"][0]["content"]
+        self.assertIn("declined", declined)
+        self.assertIn("not yet", declined)
+        self.assertEqual(run.state["status"], "done")
+
+    def test_auto_mode_sends_without_asking(self):
+        model = self.script()
+        run = self.run_with(model, mode="auto")
+        self.assertEqual(run.state["status"], "done")
+        self.assertEqual(self.host.sent, [("s1", "Run the tests")])
+
+    def test_a_proposal_outlives_the_process(self):
+        """A pending follow-up is read back from disk, then answered."""
+        model = self.script()
+        first = self.run_with(model)
+        reloaded = orchestrator_run.Run(orchestrator.get(first.definition.id), self.host)
+        self.assertEqual(reloaded.state["status"], "waiting")
+        with mock.patch.object(openrouter, "tool_turn", model):
+            reloaded.approve(reloaded.snapshot()["pending"]["id"])
+            self.settle(reloaded)
+        self.assertEqual(self.host.sent, [("s1", "Run the tests")])
+
+    def test_approving_with_a_comment_records_it_in_the_journal(self):
+        model = self.script()
+        run = self.run_with(model)
+        with mock.patch.object(openrouter, "tool_turn", model):
+            run.approve(run.snapshot()["pending"]["id"], comment="approved, keep it read-only")
+            self.settle(run)
+        resolved = next(event for event in orchestrator.journal(run.definition.id)
+                        if event["type"] == "approval_resolved")
+        self.assertEqual(resolved.get("comment"), "approved, keep it read-only")
+
+
 # --- talking to the user -----------------------------------------------------
 
 class ConversationTests(OrchestratorCase):
@@ -988,6 +1080,28 @@ class RouteTests(OrchestratorCase):
         self.assertEqual(len(self.host.started), 1)
         # The POST answers as soon as the run is unblocked, so the finished
         # status is read from the run rather than from that reply.
+        self.assertEqual(run.state["status"], "done")
+
+    def test_propose_and_approve_a_follow_up_over_the_api(self):
+        handler = self.handler()
+        definition = self.make()
+        self.host.sessions = [{"sessionId": "s1", "title": "worker", "customName": "worker",
+                               "status": "idle", "engine": "claude", "cwd": "/tmp/project",
+                               "kind": "background", "idleSeconds": 5}]
+        model = Model(turn("", [("send_to_agent", {"agent": "worker", "message": "Run the tests"})]),
+                      turn("", [("finish", {"summary": "ok"})]))
+        with mock.patch.object(credentials, "get_key", return_value="key"), \
+                mock.patch.object(openrouter, "tool_turn", model):
+            handler._orchestrator_action("start", {"id": definition.id, "goal": "Ship"})
+            run = handler.runs.get(definition.id)
+            self.settle(run)
+            pending = run.snapshot()["pending"]
+            self.assertEqual(pending["tool"], "send_to_agent")
+            handler._orchestrator_action("approve", {"id": definition.id, "approvalId": pending["id"],
+                                                     "edits": {"message": "Run the tests now"},
+                                                     "comment": "ok by me"})
+            self.settle(run)
+        self.assertEqual(self.host.sent, [("s1", "Run the tests now")])
         self.assertEqual(run.state["status"], "done")
 
     def test_the_journal_route_replays_what_happened(self):

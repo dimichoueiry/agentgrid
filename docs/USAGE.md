@@ -364,8 +364,10 @@ also records *why* the session is waiting, and clears the wait the instant
 you reply rather than on the next poll. Skip this section unless you want
 that.
 
-Merge this into `~/.claude/settings.json` (create it if absent), with the
-real path to your clone:
+Run `ag hook install`. It merges the block below into
+`~/.claude/settings.json`, keeps everything else in that file, and is safe to
+run twice. `ag doctor` then shows `hook installed`. To do it by hand instead,
+merge this in with the real path to your clone:
 
 ```json
 {

@@ -19,6 +19,8 @@ FILTERS = ("all", "active", "needs you", "recent")
 # matched before the parser is built and handed off whole -- which also keeps
 # the ticket CLI's own --help from being tangled with the grid's flags.
 TICKET_VERBS = ("ticket", "tickets")
+# Setup commands dispatch the same way, for the same reasons.
+SETUP_VERBS = ("doctor", "hook")
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -29,6 +31,10 @@ def main(argv: list[str] | None = None) -> None:
         # a front end it is not showing.
         from agentgrid import ticket_cli
         raise SystemExit(ticket_cli.main(argv[1:]))
+    if argv and argv[0] in SETUP_VERBS:
+        from agentgrid import setup_cli
+        run = setup_cli.doctor_main if argv[0] == "doctor" else setup_cli.hook_main
+        raise SystemExit(run(argv[1:]))
 
     parser = argparse.ArgumentParser(
         prog="ag",
@@ -51,7 +57,9 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--root", action="append", default=None, metavar="DIR",
                         help="scan DIR for projects instead of the defaults (repeatable)")
     parser.epilog = ("Tickets: `ag tickets` lists the board; "
-                     "`ag ticket --help` shows the rest.")
+                     "`ag ticket --help` shows the rest. "
+                     "Setup: `ag doctor` checks this machine; "
+                     "`ag hook install` adds the Claude Code hook.")
     args = parser.parse_args(argv)
 
     # Accept both spellings of the two-word filter; the grid sees one.

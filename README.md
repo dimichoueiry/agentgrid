@@ -83,6 +83,20 @@ No symlink at all also works:
 python3 -m agentgrid          # from the repo root
 ```
 
+Then check the machine:
+
+```bash
+ag doctor
+```
+
+It reports Python, whether `claude` and `codex` are installed (and which
+version), whether `~/.agentgrid` is writable, whether a web board is running or
+the port is free, and whether the hook below is installed — each with the fix
+when it is not. It exits 1 only on a real problem (no engine at all, an
+unwritable state dir, too old a Python); a missing optional piece is a warning.
+It prints paths and versions only, never the contents of your settings or the
+board's token.
+
 ## Run
 
 ```
@@ -957,8 +971,19 @@ The optional hook is now a refinement rather than a requirement: it also
 records *why* a session is waiting, and clears the wait the instant you
 submit a reply rather than on the next poll.
 
-Install it into `~/.claude/settings.json` under both `Notification` and
-`UserPromptSubmit`:
+Install it with:
+
+```bash
+ag hook install
+```
+
+That adds the entries below to `~/.claude/settings.json` (creating it,
+owner-only, if absent). It is safe to run again: an installed hook is left
+alone and the file is not rewritten, and an entry pointing at an old clone is
+repointed rather than duplicated. Every other key, your other hooks, the
+file's indent and mode, and a symlinked settings file all survive; the write
+is atomic. A settings file that is not valid JSON is reported and left
+untouched. By hand, the same thing is:
 
 ```json
 {

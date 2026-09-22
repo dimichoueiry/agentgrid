@@ -12,6 +12,7 @@ import contextlib
 import io
 import re
 import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -77,6 +78,19 @@ class VersionTest(unittest.TestCase):
                                 capture_output=True, text=True, timeout=30)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(result.stdout.startswith(f"ag {agentgrid.__version__}"))
+
+    def test_launcher_runs_its_own_clone_not_the_cwd(self):
+        # `python3 -m` would import ./agentgrid first; running `ag` from inside
+        # another checkout must still run the clone the launcher lives in.
+        with tempfile.TemporaryDirectory() as other:
+            fake = Path(other) / "agentgrid"
+            fake.mkdir()
+            (fake / "__init__.py").write_text("")
+            (fake / "__main__.py").write_text("print('WRONG CHECKOUT')\n")
+            result = subprocess.run([str(REPO / "bin" / "ag"), "--version"], cwd=other,
+                                    capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(result.stdout.startswith(f"ag {agentgrid.__version__}"), result.stdout)
 
     def test_ticket_verbs_are_untouched(self):
         # --version belongs to the grid's parser; `ag ticket` is dispatched

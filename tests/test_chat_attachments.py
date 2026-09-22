@@ -163,8 +163,8 @@ class PromptTests(unittest.TestCase):
         argv = popen.call_args.args[0]
         self.assertEqual([argv[i + 1] for i, a in enumerate(argv) if a == "--add-dir"], ["/u/s1"])
         self.assertEqual(argv[argv.index("--permission-mode") + 1], "plan")
-        self.assertEqual(argv[argv.index("-p") + 1],
-                         "look\n\nAttached files:\n- /u/s1/a.pdf\n- /u/s1/b.txt")
+        self.assertEqual(argv[-2:], ["--",
+                         "look\n\nAttached files:\n- /u/s1/a.pdf\n- /u/s1/b.txt"])
         # a turn without attachments grants nothing extra
         with mock.patch.object(chat.subprocess, "Popen", return_value=proc) as popen:
             room._run_turn("hi", "auto", "", [])

@@ -50,7 +50,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from agentgrid import (areas, chat, credentials, discovery, history, models, notes, openrouter,
-                       orchestrator, orchestrator_run, personas, skills, sync, teams, terminal,
+                       orchestrator, orchestrator_run, personas, skills, state, sync, teams, terminal,
                        tickets, transcript, voice, workflows)
 
 STATIC = Path(__file__).resolve().parent / "static"
@@ -65,6 +65,25 @@ PROJECTS_TTL = 30.0
 UPLOADS_DIR = Path.home() / ".agentgrid" / "uploads"
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 MAX_BODY_BYTES = 16 * 1024 * 1024
+
+
+def body_length(values: list[str] | None) -> int | None:
+    """The request's Content-Length, or None when it cannot be trusted.
+
+    Absent means an empty body. Anything but plain ASCII digits is refused --
+    int() alone would take "-5" (and rfile.read(-5) reads to EOF, hanging
+    the thread), "+5", "1_000" and "١٢" -- and so are repeated headers that
+    disagree, the classic way two parsers end up framing one body two ways.
+    """
+    if not values:
+        return 0
+    distinct = {value.strip() for value in values}
+    if len(distinct) != 1:
+        return None
+    text = distinct.pop()
+    if not text or not text.isascii() or not text.isdigit() or len(text) > 12:
+        return None
+    return int(text)
 # How much of a transcript one read returns. The old code sent `blocks[-600:]`
 # and the rest was simply unreachable; the window is the same size, but now it
 # can be walked backwards (see `Handler._window`).
@@ -1077,7 +1096,7 @@ def spawn_agent(cwd: str, prompt: str, model: str | None,
         # job id to hand back; naming waits on (cwd, time) instead.
         argv = ([chat.codex_binary(), "exec", "--cd", cwd, "-s", "workspace-write",
                  "--skip-git-repo-check"]
-                + (["-m", model] if model else []) + [prompt])
+                + (["-m", model] if model else []) + ["--", prompt])
         # Its output is discarded, except while an unknown model is checked:
         # then stderr goes to an unlinked temp file, which the run keeps
         # writing to and the system frees when it exits.
@@ -1104,7 +1123,11 @@ def spawn_agent(cwd: str, prompt: str, model: str | None,
             return False, f"codex stopped straight away: {refused}", None
         return True, f"Started codex in {Path(cwd).name}{on}.", None
 
-    argv = ["claude", "--bg"] + (["--model", model] if model else []) + [prompt]
+    # Every launch ends `-- <prompt>`: the prompt comes from a user, a voice
+    # command or an orchestrator's model, and one starting with a dash (say
+    # "--dangerously-skip-permissions") must reach the agent as words, not
+    # be parsed as a flag by the CLI. Same for codex above and interactive.
+    argv = ["claude", "--bg"] + (["--model", model] if model else []) + ["--", prompt]
     try:
         # Output is captured rather than discarded because it is the only
         # handle back to the session just created: `claude --bg` prints the
@@ -1326,12 +1349,14 @@ def spawn_interactive(cwd: str, prompt: str, model: str | None,
     `claude <prompt>` and `codex <prompt>`. Every piece of the shell line is
     `shlex.quote`d before it is framed into AppleScript, so a prompt full of
     quotes, `$`, or newlines runs as one argument rather than as shell.
+    The `--` before it does the same one level down: a prompt that starts with
+    a dash is the task, never a flag to the CLI.
     """
     if engine == "codex":
-        argv = [chat.codex_binary()] + (["-m", model] if model else []) + [prompt]
+        argv = [chat.codex_binary()] + (["-m", model] if model else []) + ["--", prompt]
         label = "codex"
     else:
-        argv = ["claude"] + (["--model", model] if model else []) + [prompt]
+        argv = ["claude"] + (["--model", model] if model else []) + ["--", prompt]
         label = "claude"
     # The tab is opened by AppleScript, so the board name rides in as a shell
     # export rather than an env= argument; shlex.quote keeps a name with
@@ -2156,7 +2181,13 @@ class Handler(BaseHTTPRequestHandler):
         if not self._authorized(query):
             self._send_json(403, {"error": "Bad or missing token."})
             return
-        length = int(self.headers.get("Content-Length") or 0)
+        length = body_length(self.headers.get_all("Content-Length"))
+        if length is None:
+            # Unreadable framing: we cannot know where this body ends, so the
+            # connection is not reusable either.
+            self.close_connection = True
+            self._send_json(400, {"error": "Bad Content-Length."})
+            return
         if length > MAX_BODY_BYTES:
             # Refuse an oversized body without draining it; close the connection
             # so its unread tail can't be misread as the next request.
@@ -3719,6 +3750,7 @@ def serve(port: int = 8787, open_browser: bool = True,
     """Start the poller and the HTTP server, print the one URL that gets in."""
     if not (STATIC / "app.html").is_file():
         raise SystemExit("agentgrid/static/app.html is missing; the web UI cannot start.")
+    state.secure_state_dir()
     scanning = configure_roots(roots)
     fleet = Fleet()
     fleet.start()

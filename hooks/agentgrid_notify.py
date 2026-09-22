@@ -66,7 +66,7 @@ def main() -> int:
             continue
 
     try:
-        STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        STATE_PATH.parent.mkdir(mode=0o700, parents=True, exist_ok=True)  # owner-only, as the app makes it
         # Atomic: a concurrent reader must never see a half-written file.
         temp = STATE_PATH.with_suffix(".json.tmp")
         temp.write_text(json.dumps(kept, indent=2, sort_keys=True), encoding="utf-8")

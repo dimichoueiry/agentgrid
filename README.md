@@ -422,6 +422,22 @@ create new ones. Click one to open its window:
 **Chat** (give it a goal, message it mid-run, read its reports), **Plan** (its
 own checklist), **Agents** (what it started, with live status read off the
 board) and **Activity** (every decision, tool call, approval and dollar).
+Click anywhere outside the window (or press Esc) to close it.
+
+When the orchestrators are what you want in front of you, switch to the
+**Orchestrators** view (first in the view switcher, or **Orchestrators ↗** on
+the Work areas page). It is a chat app: every orchestrator listed on the left
+with a dot for the ones waiting on you, the conversation in the middle — your
+messages on the right, its replies on the left, what its agents did as quiet
+lines between — and, on a wide window, its status, activity, plan, agents and
+memory on the right. **Board** is still the view for your agents. Both show the
+same conversation; switching views never loses your place in it.
+
+An approval appears as a card above the message box: one question ("Allow
+Engineering Lead to start “parser-fix”?"), exactly what would run, and
+**Allow**, **Always allow** (which switches it to Auto), **Deny**, or **Edit**
+to change the task or message first, give a reason for denying, or leave a
+note for the activity log.
 
 ### Personas: the managers you own
 
@@ -485,11 +501,12 @@ and it holds still; new lines show a *New below ↓* pill instead.
 One setting decides how much rope it gets, and it can be switched while a run
 is in flight (the header of its window, or the sheet):
 
-- **Ask me** (the default) — every agent it wants to start waits for you. The
-  request appears as a banner in its window with the project, the mode and the
-  full task, **editable before you approve**; the card reads *Approve?*. Your
-  choices are Approve & start, "Approve, stop asking" (which switches it to
-  Auto), or Decline with a reason it reads and re-plans around.
+- **Ask me** (the default) — every agent it wants to start, and every
+  follow-up it wants to send to one of its agents, waits for you. The request
+  appears as a card in its conversation with the project, the mode and the
+  full task or message, **editable before you approve**; its row reads
+  *Approve?*. Your choices are Allow, Always allow (which switches it to
+  Auto), or Deny with a reason it reads and re-plans around.
 - **Auto** — it starts agents on its own, inside its limits. Opening an
   interactive Terminal window on your desktop still asks, in either mode,
   because that one puts a window in front of you.

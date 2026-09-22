@@ -322,7 +322,7 @@ assert.ok(vm.runInContext(`personaSummary({model: 'm', agentDefaults: {mode: 'ei
 vm.runInContext(`personaData.personas[0].name = '<img src=x>'; renderPersonaBank()`, ctx);
 assert.ok(!elements.personaList.innerHTML.includes('<img src=x>'));
 
-// --- a follow-up to an agent is proposed as the next step, message-editable --
+// --- the approval is a card: one question, the facts, one click -------------
 elements.orchApproval = {...element()};
 vm.runInContext(`openOrch = '2'; orchestrators[1].status = 'waiting'; orchestrators[1].phase = '';
   orchestrators[1].pending = {id: 'sp1', tool: 'send_to_agent',
@@ -331,20 +331,26 @@ vm.runInContext(`openOrch = '2'; orchestrators[1].status = 'waiting'; orchestrat
   $('orchApproval')._pending = ''; renderOrchPanel()`, ctx);
 const prop = elements.orchApproval.innerHTML;
 assert.equal(elements.orchApproval.hidden, false);
-assert.ok(prop.includes('Proposed next step'), 'it reads as a Muse-style proposal: ' + prop);
+assert.ok(prop.includes('Allow Tester to message parser-fix?') || prop.includes('to message parser-fix?'),
+          'it asks one plain question: ' + prop);
+assert.ok(prop.includes('class="oa-body"') && prop.includes('Run the tests and fix failures'),
+          'what would be sent is visible without opening anything: ' + prop);
+assert.ok(/id="oaEdit" hidden/.test(prop), 'the editing fields stay out of the way until asked for: ' + prop);
+assert.ok(prop.includes('data-oedit') && prop.includes('aria-controls="oaEdit"'), 'Edit opens them: ' + prop);
 assert.ok(prop.includes('Nothing runs until you approve'), prop);
 assert.ok(prop.includes('parser-fix'), 'it says which agent it targets: ' + prop);
 assert.ok(prop.includes('id="oaMessage"') && prop.includes('Run the tests and fix failures'),
           'the message is editable before approving: ' + prop);
 assert.ok(!prop.includes('id="oaTask"') && !prop.includes('id="oaName"'),
           'a follow-up has no name/task fields, only the message: ' + prop);
-assert.ok(prop.includes('Approve &amp; send'), 'the primary action says what it does: ' + prop);
+assert.ok(/data-oapp[^>]*>Allow</.test(prop) && prop.includes('>Always allow<') && prop.includes('>Deny<'),
+          'the choices read Allow / Always allow / Deny: ' + prop);
 assert.ok(prop.includes('id="oaComment"'), 'an optional note is offered for the audit trail: ' + prop);
 assert.ok(prop.includes('id="oaReason"'), 'declining can carry a reason: ' + prop);
 assert.ok(prop.includes('data-oapp') && prop.includes('data-oapp-auto') &&
           prop.includes('data-odecline'), prop);
 // accessible: real buttons in a labelled group, each naming its own action
-assert.ok(prop.includes('role="group"') && prop.includes('aria-label="Decide on this proposal"'), prop);
+assert.ok(prop.includes('role="group"') && prop.includes('aria-label="Decide on this request"'), prop);
 assert.ok((prop.match(/aria-label="/g) || []).length >= 4, 'every action names itself: ' + prop);
 // the message is escaped like every other dynamic string
 vm.runInContext(`orchestrators[1].pending.id = 'sp2';
@@ -356,8 +362,68 @@ vm.runInContext(`orchestrators[1].pending = {id: 'sp3', tool: 'create_work_area'
   $('orchApproval')._pending = ''; renderOrchPanel()`, ctx);
 assert.ok(elements.orchApproval.innerHTML.includes('create_work_area') &&
           elements.orchApproval.innerHTML.includes('data-oapp'), elements.orchApproval.innerHTML);
-// no pending -> the banner is gone (the empty state)
+// no pending -> the card is gone (the empty state)
 vm.runInContext(`orchestrators[1].pending = null; renderOrchPanel()`, ctx);
 assert.equal(elements.orchApproval.hidden, true);
 
-console.log('Orchestrator UI: scope, menu, badge, panel tabs, approvals, proposals, scroll, status line, personas, memory and escaping checks passed');
+// --- the conversation reads as a chat ---------------------------------------
+vm.runInContext(`openOrch = '1'; orchTab = 'chat'; orchEvents = [
+  {at: 1000, type: 'run_started', goal: 'Ship the parser'},
+  {at: 1010, type: 'user_message', text: 'use the worktree'},
+  {at: 1020, type: 'message', text: 'On it.'},
+  {at: 1030, type: 'agent_update', name: 'parser-fix', to: 'done'},
+  {at: 5000, type: 'approval_resolved', approved: true, tool: 'send_to_agent', comment: 'fine'}];
+  $('orchBody')._markup = ''; renderOrchPanel()`, ctx);
+const talk = elements.orchBody.innerHTML;
+assert.ok(/class="oline you goal"[^]*Ship the parser/.test(talk), 'the goal is your first bubble: ' + talk);
+assert.ok(/class="oline you"[^]*use the worktree/.test(talk), 'what you said sits on your side: ' + talk);
+assert.ok(/class="oline it"[^]*On it\./.test(talk), 'what it said sits on its side: ' + talk);
+assert.ok(/class="oline ev ok"[^]*parser-fix[^]*finished its turn/.test(talk), 'changes are quiet lines: ' + talk);
+assert.ok(talk.includes('Sending it now.') && talk.includes('note: fine'),
+          'an approved follow-up says what happens next and keeps your note: ' + talk);
+assert.equal((talk.match(/class="otime"/g) || []).length, 2, 'a time mark wherever the talk paused: ' + talk);
+// With nothing said yet, it asks what to work on.
+vm.runInContext(`orchEvents = []; renderOrchPanel()`, ctx);
+assert.ok(elements.orchBody.innerHTML.includes('What should Shipper work on?'), elements.orchBody.innerHTML);
+
+// --- the Orchestrators view -------------------------------------------------
+for (const id of ['ovList', 'ovSide', 'ovEmpty', 'orchShell']) elements[id] = element();
+vm.runInContext(`view = 'orch'; orchestrators = ${JSON.stringify(ORCHS)};
+  orchestrators[1].pending = {id: 'v1', tool: 'start_agent', reason: 'starts a new agent', args: {task: 't'}};
+  openOrch = '1'; renderOrchView(); renderOrchPanel()`, ctx);
+const list = elements.ovList.innerHTML;
+assert.ok(list.includes('data-ovorch="1"') && list.includes('data-ovorch="2"') && list.includes('data-ovorch="3"'),
+          'the view lists every orchestrator, not one area’s: ' + list);
+assert.ok(/data-ovorch="1"\s+aria-current="true"/.test(list), 'the open one is marked current: ' + list);
+assert.ok(/class="ov-item needs" data-ovorch="2"/.test(list) && list.includes('Needs your approval'),
+          'one waiting on you says so in the list: ' + list);
+assert.ok(list.indexOf('All work areas') < list.indexOf('Design'), 'the global ones come first: ' + list);
+assert.equal(elements.orchShell.hidden, false);
+assert.equal(elements.ovEmpty.hidden, true);
+// The side panel names it, says what it is doing, and holds the other tabs.
+const side = elements.ovSide.innerHTML;
+assert.ok(side.includes('Shipper') && side.includes('op-avatar lg'), side);
+assert.ok(['activity', 'plan', 'agents', 'memory'].every(k => side.includes(`data-oside="${k}"`)), side);
+// Its activity reads like a diary: plain titles, no markdown marks, names kept whole.
+vm.runInContext(`orchEvents = [{at: Date.now() / 1000, type: 'approval_requested', tool: 'start_agent', reason: 'starts a new agent'},
+  {at: Date.now() / 1000, type: 'message', text: 'It is **done**'}]; orchSideTab = 'activity'; renderOrchPanel()`, ctx);
+const diary = elements.ovSide.innerHTML;
+assert.ok(diary.includes('Asked for your approval') && diary.includes('start_agent'), diary);
+assert.ok(diary.includes('It is done') && !diary.includes('**'), diary);
+assert.ok(diary.includes('Today'), diary);
+vm.runInContext(`orchSideTab = 'plan'; orchestrators[0].plan = [{text: 'write the fix', done: false}];
+  renderOrchPanel()`, ctx);
+assert.ok(elements.ovSide.innerHTML.includes('write the fix'), elements.ovSide.innerHTML);
+// In the view the middle is always the conversation, whatever tab was last used.
+vm.runInContext(`orchTab = 'activity'; renderOrchPanel()`, ctx);
+assert.equal(vm.runInContext('orchTab', ctx), 'chat');
+// Every orchestrator has a face: the persona's initials on its own hue.
+assert.equal(vm.runInContext(`orchInitials('Engineering Lead · AgentGrid')`, ctx), 'EL');
+assert.equal(vm.runInContext(`orchHue('Product Manager') === orchHue('Product Manager')`, ctx), true);
+// With no orchestrators the view offers to make one instead of a blank page.
+vm.runInContext(`orchestrators = []; openOrch = ''; $('ovList')._markup = null; renderOrchView()`, ctx);
+assert.equal(elements.ovEmpty.hidden, false);
+assert.equal(elements.orchShell.hidden, true);
+vm.runInContext(`view = 'board'`, ctx);
+
+console.log('Orchestrator UI: scope, menu, badge, panel tabs, approvals, approval card, chat bubbles, orchestrators view, scroll, status line, personas, memory and escaping checks passed');

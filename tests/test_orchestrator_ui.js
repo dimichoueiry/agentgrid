@@ -12,8 +12,8 @@ new vm.Script(script);
 
 const elements = {};
 const element = () => ({textContent: '', hidden: false, innerHTML: '', value: '', placeholder: '',
-                        dataset: {}, setAttribute() {}, querySelectorAll: () => [],
-                        scrollTop: 0, scrollHeight: 0});
+                        dataset: {}, setAttribute() {}, removeAttribute() {}, getAttribute: () => null,
+                        querySelectorAll: () => [], scrollTop: 0, scrollHeight: 0});
 const ctx = vm.createContext({
   $: id => elements[id] ||= element(),
   esc: s => String(s ?? '').replace(/[&<>"']/g, c =>
@@ -322,4 +322,42 @@ assert.ok(vm.runInContext(`personaSummary({model: 'm', agentDefaults: {mode: 'ei
 vm.runInContext(`personaData.personas[0].name = '<img src=x>'; renderPersonaBank()`, ctx);
 assert.ok(!elements.personaList.innerHTML.includes('<img src=x>'));
 
-console.log('Orchestrator UI: scope, menu, badge, panel tabs, approvals, scroll, status line, personas, memory and escaping checks passed');
+// --- a follow-up to an agent is proposed as the next step, message-editable --
+elements.orchApproval = {...element()};
+vm.runInContext(`openOrch = '2'; orchestrators[1].status = 'waiting'; orchestrators[1].phase = '';
+  orchestrators[1].pending = {id: 'sp1', tool: 'send_to_agent',
+    reason: 'sends a follow-up to parser-fix',
+    args: {agent: 'parser-fix', message: 'Run the tests and fix failures'}};
+  $('orchApproval')._pending = ''; renderOrchPanel()`, ctx);
+const prop = elements.orchApproval.innerHTML;
+assert.equal(elements.orchApproval.hidden, false);
+assert.ok(prop.includes('Proposed next step'), 'it reads as a Muse-style proposal: ' + prop);
+assert.ok(prop.includes('Nothing runs until you approve'), prop);
+assert.ok(prop.includes('parser-fix'), 'it says which agent it targets: ' + prop);
+assert.ok(prop.includes('id="oaMessage"') && prop.includes('Run the tests and fix failures'),
+          'the message is editable before approving: ' + prop);
+assert.ok(!prop.includes('id="oaTask"') && !prop.includes('id="oaName"'),
+          'a follow-up has no name/task fields, only the message: ' + prop);
+assert.ok(prop.includes('Approve &amp; send'), 'the primary action says what it does: ' + prop);
+assert.ok(prop.includes('id="oaComment"'), 'an optional note is offered for the audit trail: ' + prop);
+assert.ok(prop.includes('id="oaReason"'), 'declining can carry a reason: ' + prop);
+assert.ok(prop.includes('data-oapp') && prop.includes('data-oapp-auto') &&
+          prop.includes('data-odecline'), prop);
+// accessible: real buttons in a labelled group, each naming its own action
+assert.ok(prop.includes('role="group"') && prop.includes('aria-label="Decide on this proposal"'), prop);
+assert.ok((prop.match(/aria-label="/g) || []).length >= 4, 'every action names itself: ' + prop);
+// the message is escaped like every other dynamic string
+vm.runInContext(`orchestrators[1].pending.id = 'sp2';
+  orchestrators[1].pending.args.message = '<script>bad()</script>'; renderOrchPanel()`, ctx);
+assert.ok(!elements.orchApproval.innerHTML.includes('<script>bad()'), 'the message is escaped');
+// an unknown future tool still gets a decidable card rather than a blank one
+vm.runInContext(`orchestrators[1].pending = {id: 'sp3', tool: 'create_work_area',
+  reason: 'creates a work area', args: {name: 'Design'}};
+  $('orchApproval')._pending = ''; renderOrchPanel()`, ctx);
+assert.ok(elements.orchApproval.innerHTML.includes('create_work_area') &&
+          elements.orchApproval.innerHTML.includes('data-oapp'), elements.orchApproval.innerHTML);
+// no pending -> the banner is gone (the empty state)
+vm.runInContext(`orchestrators[1].pending = null; renderOrchPanel()`, ctx);
+assert.equal(elements.orchApproval.hidden, true);
+
+console.log('Orchestrator UI: scope, menu, badge, panel tabs, approvals, proposals, scroll, status line, personas, memory and escaping checks passed');

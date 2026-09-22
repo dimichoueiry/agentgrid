@@ -358,8 +358,9 @@ class Run:
         if not blocked:
             self._spin()
 
-    def approve(self, approval_id: str, edits: dict | None = None) -> None:
-        self._answer(approval_id, {"approved": True, "edits": edits or {}})
+    def approve(self, approval_id: str, edits: dict | None = None, comment: str = "") -> None:
+        self._answer(approval_id, {"approved": True, "edits": edits or {},
+                                   "comment": str(comment or "")[:MAX_GOAL_TEXT]})
 
     def decline(self, approval_id: str, reason: str = "") -> None:
         self._answer(approval_id, {"approved": False, "reason": str(reason or "")[:MAX_GOAL_TEXT]})
@@ -377,7 +378,7 @@ class Run:
             self._persist()
         self._emit({"type": "approval_resolved", "id": pending["id"],
                     "tool": pending["call"]["name"], "approved": bool(decision.get("approved")),
-                    "reason": decision.get("reason", "")})
+                    "reason": decision.get("reason", ""), "comment": decision.get("comment", "")})
         self._spin()
 
     def _spin(self) -> None:
@@ -627,6 +628,15 @@ class Run:
                 return terminal
         if name == "create_work_area" and self.definition.mode == "ask":
             return "creates a work area"
+        # A follow-up to an agent is a real action taken in the user's name --
+        # it lands in that agent's chat and steers its next turn. In `ask` it is
+        # proposed as the next step and waits, like starting an agent; in `auto`
+        # it was already authorised and runs. The message is the editable part,
+        # so "approve with edits" changes exactly what the agent is told.
+        if name == "send_to_agent" and self.definition.mode == "ask":
+            args = _parse_args(call) or {}
+            who = str(args.get("agent") or "").strip()
+            return f"sends a follow-up to {who}" if who else "sends a follow-up to an agent"
         return ""
 
     # -- tools ---------------------------------------------------------------

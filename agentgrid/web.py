@@ -2577,7 +2577,7 @@ class Handler(BaseHTTPRequestHandler):
                 run.submit(str(body.get("text") or ""))
             elif action == "approve":
                 edits = body.get("edits") if isinstance(body.get("edits"), dict) else {}
-                run.approve(str(body.get("approvalId") or ""), edits)
+                run.approve(str(body.get("approvalId") or ""), edits, str(body.get("comment") or ""))
             elif action == "decline":
                 run.decline(str(body.get("approvalId") or ""), str(body.get("reason") or ""))
             else:

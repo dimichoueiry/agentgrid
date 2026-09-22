@@ -28,8 +28,10 @@ def main(argv: list[str] | None = None) -> None:
     argv = sys.argv[1:] if argv is None else list(argv)
     # Before any front end touches it: the state folder holds the board's
     # token and every stored prompt, so it is owner-only on every entry point.
+    # The setup verbs (doctor, hook) never store state, so they tighten an
+    # existing folder but do not create one doctor would then report present.
     from agentgrid import state
-    state.secure_state_dir()
+    state.secure_state_dir(create=not (argv and argv[0] in SETUP_VERBS))
     if argv and argv[0] in TICKET_VERBS:
         # Imported here for the same reason web is: the grid must not pay for
         # a front end it is not showing.

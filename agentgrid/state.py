@@ -26,8 +26,11 @@ def state_dir() -> Path:
     return Path.home() / ".agentgrid"
 
 
-def secure_state_dir(path: Path | None = None) -> Path:
+def secure_state_dir(path: Path | None = None, create: bool = True) -> Path:
     """Create the state folder owner-only, or tighten an existing one to 0700.
+
+    `create=False` only tightens: for the setup commands (`ag doctor`, `ag hook`),
+    which store nothing here and must not make a folder doctor then reports.
 
     Never fatal: a folder we cannot fix still works, it is just no safer than
     before. A folder owned by someone else is left alone -- chmod would fail
@@ -35,7 +38,10 @@ def secure_state_dir(path: Path | None = None) -> Path:
     """
     path = path or state_dir()
     try:
-        path.mkdir(mode=OWNER_ONLY, parents=True, exist_ok=True)
+        if create:
+            path.mkdir(mode=OWNER_ONLY, parents=True, exist_ok=True)
+        elif not path.exists():
+            return path
         info = path.stat()
         if (stat.S_ISDIR(info.st_mode) and info.st_uid == os.getuid()
                 and stat.S_IMODE(info.st_mode) & 0o077):

@@ -115,7 +115,24 @@ class StateDirTests(unittest.TestCase):
                     entry.main(argv)
                 except SystemExit:
                     pass
-                secure.assert_called_once_with()
+                secure.assert_called_once_with(create=True)
+
+    def test_setup_verbs_tighten_but_never_create(self):
+        with mock.patch.dict(os.environ, {"HOME": str(self.home)}):
+            state.secure_state_dir(create=False)
+            self.assertFalse(self.path.exists())
+            self.path.mkdir()
+            os.chmod(self.path, 0o755)
+            state.secure_state_dir(create=False)
+        self.assertEqual(_mode(self.path), 0o700)
+        for argv, target in ((["doctor"], "agentgrid.setup_cli.doctor_main"),
+                             (["hook", "install"], "agentgrid.setup_cli.hook_main")):
+            with self.subTest(argv=argv), \
+                    mock.patch.object(state, "secure_state_dir") as secure, \
+                    mock.patch(target, return_value=0):
+                with self.assertRaises(SystemExit):
+                    entry.main(argv)
+                secure.assert_called_once_with(create=False)
 
     def test_the_notify_hook_creates_the_folder_owner_only(self):
         env = {**os.environ, "HOME": str(self.home)}

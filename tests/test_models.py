@@ -186,7 +186,7 @@ class LaunchCheckTests(unittest.TestCase):
         with mock.patch.object(web, 'MODEL_CHECK_SECONDS', 0):
             (ok, message, _), popen = self._codex(None)
         self.assertEqual((ok, message), (True, 'Started codex in repo on gpt-bogus.'))
-        self.assertEqual(popen.call_args.args[0][-3:], ['-m', 'gpt-bogus', 'hi'])
+        self.assertEqual(popen.call_args.args[0][-3:], ['gpt-bogus', '--', 'hi'])
 
     def test_codex_error_falls_back_to_the_last_line(self):
         self.assertEqual(web._codex_error('starting\nnot logged in\n'), 'not logged in')

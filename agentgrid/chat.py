@@ -54,7 +54,21 @@ DEFAULT_POSTURE = "auto"
 
 
 def permission_mode(posture: str) -> str:
-    return POSTURES.get(posture, POSTURES[DEFAULT_POSTURE])
+    """The --permission-mode for a posture. Fails closed.
+
+    No posture at all means the default, as the UI has always sent it. A
+    posture that is present but unknown -- a typo, a stale client, a hand-made
+    request -- is read-only: silently widening it to "run every tool without
+    asking" is the one wrong answer.
+    """
+    if not posture:
+        return POSTURES[DEFAULT_POSTURE]
+    return POSTURES.get(posture, POSTURES["read-only"])
+
+
+def codex_sandbox(posture: str) -> str:
+    """The codex sandbox for a posture, failing closed the same way."""
+    return "workspace-write" if permission_mode(posture) == POSTURES["auto"] else "read-only"
 
 
 def append_system_prompt_flags(text: str) -> list[str]:
@@ -661,8 +675,7 @@ class ChatSession:
         # simply carries nothing extra. See discovery.save_system_prompt.
         standing = discovery.system_prompt_for(self.session_id)
         if self.engine == "codex":
-            argv = [codex_binary(), "exec", "-s",
-                    "read-only" if posture == "read-only" else "workspace-write",
+            argv = [codex_binary(), "exec", "-s", codex_sandbox(posture),
                     "-c", 'approval_policy="never"']
             if self.session_id:
                 argv += ["resume"]
@@ -682,7 +695,7 @@ class ChatSession:
             argv += [frame_system_prompt(turn, standing)]
         else:
             prompt = with_attachments(message, attachments)
-            argv = [CLAUDE_BIN, "-p", prompt,
+            argv = [CLAUDE_BIN, "-p",
                     "--output-format", "stream-json", "--verbose",
                     "--permission-mode", permission_mode(posture)]
             # Uploads live outside the project, and Read-only (plan mode) will
@@ -695,6 +708,11 @@ class ChatSession:
             if self.session_id:
                 argv += ["--resume", self.session_id]
             argv += append_system_prompt_flags(standing)
+            # `-p` is a switch, not an option taking the prompt: the prompt is
+            # the positional argument, so it goes last, after `--`. Otherwise a
+            # message starting with a dash is parsed as a flag, and one right
+            # after the variadic --add-dir is swallowed as another folder.
+            argv += ["--", prompt]
         try:
             proc = subprocess.Popen(
                 argv,

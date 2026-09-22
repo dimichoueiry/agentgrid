@@ -106,9 +106,17 @@ class PostureTests(unittest.TestCase):
     def test_read_only_maps_to_plan(self):
         self.assertEqual(chat.permission_mode("read-only"), "plan")
 
-    def test_unknown_posture_falls_back_to_the_default(self):
-        self.assertEqual(chat.permission_mode("nonsense"),
+    def test_missing_posture_falls_back_to_the_default(self):
+        self.assertEqual(chat.permission_mode(""),
                          chat.permission_mode(chat.DEFAULT_POSTURE))
+
+    def test_unknown_posture_fails_closed_to_read_only(self):
+        # A typo must never widen to "run every tool without asking".
+        for posture in ("nonsense", "Auto", "bypassPermissions", "read_only"):
+            self.assertEqual(chat.permission_mode(posture), "plan", posture)
+            self.assertEqual(chat.codex_sandbox(posture), "read-only", posture)
+        self.assertEqual(chat.codex_sandbox("auto"), "workspace-write")
+        self.assertEqual(chat.codex_sandbox(""), "workspace-write")
 
 
 if __name__ == "__main__":

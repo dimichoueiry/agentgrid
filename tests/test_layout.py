@@ -994,7 +994,7 @@ class InteractiveSpawnTests(unittest.TestCase):
                 engine="codex", interactive=True)
         self.assertTrue(ok)
         self.assertIsNone(job)
-        expected = "cd /tmp/repo && codex " + shlex.quote("do it")
+        expected = "cd /tmp/repo && codex -- " + shlex.quote("do it")
         self.assertEqual(captured["command"], expected)
 
     def test_interactive_command_is_shell_quoted(self):
@@ -1015,7 +1015,7 @@ class InteractiveSpawnTests(unittest.TestCase):
         # The dangerous prompt survives as a single quoted argument to claude,
         # never as shell for the terminal to interpret.
         expected = ("cd " + shlex.quote("/tmp/re po")
-                    + " && claude " + shlex.quote(prompt))
+                    + " && claude -- " + shlex.quote(prompt))
         self.assertEqual(captured["command"], expected)
 
     def test_non_macos_prints_the_command_instead(self):

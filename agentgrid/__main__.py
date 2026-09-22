@@ -23,6 +23,33 @@ TICKET_VERBS = ("ticket", "tickets")
 SETUP_VERBS = ("doctor", "hook")
 
 
+def version_string() -> str:
+    """`ag 0.1.0 (a1b2c3d)` from a clone, plain `ag 0.1.0` anywhere else.
+
+    The commit is looked up only when --version is asked for, so no other
+    command pays for a subprocess. Any failure -- no git, not a checkout, a
+    slow disk -- falls back to the release number alone.
+    """
+    import subprocess
+    from pathlib import Path
+
+    from agentgrid import __version__
+    repo = Path(__file__).resolve().parent.parent
+    commit = ""
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel", "--short", "HEAD"],
+            cwd=repo, capture_output=True, text=True, timeout=2,
+        ).stdout.split()
+        # A copy unpacked inside some other repo must not report that repo's
+        # commit as its own.
+        if len(out) == 2 and Path(out[0]).resolve() == repo:
+            commit = out[1]
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return f"ag {__version__} ({commit})" if commit else f"ag {__version__}"
+
+
 def main(argv: list[str] | None = None) -> None:
     import sys
     argv = sys.argv[1:] if argv is None else list(argv)
@@ -46,6 +73,8 @@ def main(argv: list[str] | None = None) -> None:
         prog="ag",
         description="A local dashboard over every Claude Code session on this machine.",
     )
+    parser.add_argument("--version", "-V", action="store_true",
+                        help="print the version and exit")
     parser.add_argument("--web", action="store_true",
                         help="serve the browser board instead of the terminal grid")
     parser.add_argument("--filter", default="all", metavar="NAME",
@@ -67,6 +96,9 @@ def main(argv: list[str] | None = None) -> None:
                      "Setup: `ag doctor` checks this machine; "
                      "`ag hook install` adds the Claude Code hook.")
     args = parser.parse_args(argv)
+    if args.version:
+        print(version_string())
+        return
 
     # Accept both spellings of the two-word filter; the grid sees one.
     args.filter = args.filter.replace("-", " ").strip().lower()

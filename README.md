@@ -7,6 +7,26 @@ the two things that follow: start a new agent in any repo, and get into a
 session that wants you. Because it is already the place you sit while agents
 run, it also carries a daily notepad whose checkbox lines are the todo list.
 
+## Quick start
+
+Needs Python 3.10+, `git`, and the `claude` CLI signed in. macOS or Linux.
+
+```bash
+git clone https://github.com/dimichoueiry/agentgrid.git ~/agentgrid
+mkdir -p ~/.local/bin && ln -sf ~/agentgrid/bin/ag ~/.local/bin/ag
+ag --version     # "command not found"? ~/.local/bin is not on PATH; see docs/OPERATING.md
+ag doctor        # checks Python, claude/codex, ~/.agentgrid and the hook
+ag --web         # opens the board; Ctrl-C stops it
+```
+
+- Stop: Ctrl-C. Restart: run `ag --web` again and use the new URL it prints.
+- Upgrade: `git -C ~/agentgrid pull`, then restart.
+- Your data lives in `~/.agentgrid/`; back up that directory.
+- Keeping it running, backups, platforms, troubleshooting:
+  [docs/OPERATING.md](docs/OPERATING.md).
+- Commenting on localhost pages from Chrome:
+  [extension/README.md](extension/README.md).
+
 Two front ends, one data model:
 
 **The board** — `ag --web`, a browser page with a column per state. Cards
@@ -52,11 +72,14 @@ and nothing to click. agentgrid is the missing list.
 
 ## Requirements
 
-- macOS or Linux (the Terminal.app integration is macOS-specific and degrades
-  to a printed instruction elsewhere)
+- macOS or Linux. Windows is not supported. Interactive sessions and tab
+  focusing need macOS Terminal.app; elsewhere they degrade to background
+  sessions and a printed instruction.
 - Python 3.10 or newer
-- the `claude` CLI on `PATH`
-- optionally, Terminal.app as your interactive terminal, for tab focusing
+- the `claude` CLI on `PATH`, signed in
+- optionally: the `codex` CLI, an OpenRouter key for orchestrators, Chrome for
+  the [review extension](extension/README.md), and Node.js only to run the
+  browser-side tests
 
 There are **no other dependencies**. No pip packages, no virtualenv, no build
 step, no npm. Standard library only, in both front ends.
@@ -70,14 +93,12 @@ only means a clone is a working install, everywhere, forever.
 ## Install
 
 ```bash
-git clone <this repo>
-cd agentgrid
-chmod +x bin/ag
-ln -s "$PWD/bin/ag" ~/.local/bin/ag     # or anywhere on your PATH
+git clone https://github.com/dimichoueiry/agentgrid.git ~/agentgrid
+mkdir -p ~/.local/bin && ln -sf ~/agentgrid/bin/ag ~/.local/bin/ag
 ```
 
-`bin/ag` resolves its own symlink chain, so it can be linked from anywhere.
-No symlink at all also works:
+`bin/ag` resolves its own symlink chain, so it can be linked from anywhere on
+your `PATH`. No symlink at all also works:
 
 ```bash
 python3 -m agentgrid          # from the repo root
@@ -97,11 +118,15 @@ unwritable state dir, too old a Python); a missing optional piece is a warning.
 It prints paths and versions only, never the contents of your settings or the
 board's token.
 
+Upgrading, backups, keeping it running and uninstalling are in
+[docs/OPERATING.md](docs/OPERATING.md).
+
 ## Run
 
 ```
 ag                      # terminal grid
 ag --web                # browser board, opens automatically
+ag --version            # release and commit, e.g. "ag 0.1.0 (49981b0)"
 ag --filter active      # all | active | needs you | recent
 ag --cwd ~/myrepo       # only sessions under a directory
 ag --no-mouse           # keep the terminal's own text selection
@@ -1043,10 +1068,23 @@ Everything agentgrid itself writes lives under `~/.agentgrid/`:
 ├── overrides.json      # manual card moves, with the reality they were made against
 ├── tags.json           # tags per session
 ├── read.json           # how far you had read each session
+├── dismissed.json      # cards hidden from the board with x
+├── system_prompts.json # system prompt per session
+├── agents.json         # the New agent library
+├── prompts.json        # saved prompts
+├── models.json         # models sessions have answered with
+├── projects.json       # added, favourite and hidden projects
+├── areas.json          # work areas
 ├── note-meta.json      # page arrangement and pins
+├── web.json            # the running server's port and token (owner-only; removed on clean stop)
+├── chat-queue/         # queued chat messages, kept across restarts
+├── uploads/            # files attached in chat, per session
+├── reviews/            # web-review batches waiting for a new agent
+├── trash/              # conversations deleted from History, until purged
 ├── tickets/            # one JSON file per ticket, plus the key counters
 ├── orchestrators/      # one directory per posting: definition, run state, journal, memory
 ├── personas/           # one JSON per persona: guidelines, defaults, toolkit, lessons
+├── teams/              # team definitions
 ├── sync.json           # notes-sync remote, branch and last-sync time (no secrets)
 └── notes/              # the daily pads, plain markdown (a git repo once you sync)
 ```
@@ -1076,7 +1114,10 @@ test rather than waiting to be clicked.
 
 ## Further reading
 
+- [docs/OPERATING.md](docs/OPERATING.md) — install, upgrade, backup and
+  keeping it running
 - [docs/USAGE.md](docs/USAGE.md) — a task-oriented walkthrough
+- [extension/README.md](extension/README.md) — the Chrome review extension
 - [docs/orchestration-design.md](docs/orchestration-design.md) — the provider
   and coordinator architecture behind orchestrators and workflows
 

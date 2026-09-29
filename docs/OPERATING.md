@@ -13,7 +13,7 @@ the features do, see the [README](../README.md); for a day with it, see
 | Seeing and starting Claude sessions | the Claude Code CLI (`claude`) on `PATH`, already signed in |
 | Codex sessions (optional) | the `codex` CLI on `PATH` |
 | Interactive sessions and tab focusing (optional) | macOS Terminal.app |
-| Orchestrators (optional) | an OpenRouter API key |
+| Orchestrators (optional) | an OpenRouter API key, or none for a persona that thinks on Claude Code (local CLI) |
 | The web review overlay (optional) | Chrome, with the [extension](../extension/README.md) |
 | Running the browser-side tests (contributors only) | Node.js |
 

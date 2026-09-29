@@ -77,7 +77,8 @@ and nothing to click. agentgrid is the missing list.
   sessions and a printed instruction.
 - Python 3.10 or newer
 - the `claude` CLI on `PATH`, signed in
-- optionally: the `codex` CLI, an OpenRouter key for orchestrators, Chrome for
+- optionally: the `codex` CLI, an OpenRouter key for orchestrators (or none,
+  with a persona that thinks on Claude Code), Chrome for
   the [review extension](extension/README.md), and Node.js only to run the
   browser-side tests
 
@@ -484,7 +485,9 @@ An orchestrator is a **persona** posted to a **team**. The persona is who it
 is, kept in a bank (**Orchestrators ▾ → Personas…**) and edited in one place:
 
 - **Guidelines** — its role, how it works, what good looks like.
-- **Thinks with** — the OpenRouter model it reasons on.
+- **Thinks on / Thinks with** — its brain: an OpenRouter model (the default),
+  or **Claude Code (local CLI)** with an exact model the `claude` CLI accepts
+  (`claude-opus-5-5`, `opus`, …). See *A Claude Code brain* below.
 - **Agents it starts** — default engine, model and session (a new persona
   starts at Claude · Opus 5 · interactive), plus an **allowed models** list.
   Defaults fill whatever the model leaves out; anything outside the allowed
@@ -575,9 +578,36 @@ half-completed tool call must never be blindly repeated) and the model is told
 to call `list_agents` and `list_tickets` before starting anything, because an
 agent may have been started a moment before the interruption.
 
+### A Claude Code brain
+
+Set a persona's **Thinks on** to **Claude Code (local CLI)** and every step of
+every orchestrator posted from it runs through your installed `claude` CLI on
+your own Claude Code login — no OpenRouter key needed. Pick the model exactly
+as `claude --model` takes it: `claude-opus-5-5`, `claude-sonnet-5-5`, or an
+alias like `opus`.
+
+Each step is one `claude -p --output-format json --json-schema …` call, run
+with all of the CLI's own tools off (`--tools ""`), no MCP servers, no
+settings files (so no hooks or plugins) and no session saved (so it never
+shows up on the board). It can only answer with some prose and a list of
+calls from Agent Grid's tool menu, checked against a schema whose tool names
+are an enum; Agent Grid validates and runs those calls exactly as it does for
+OpenRouter. The conversation goes in on stdin as JSON, the system prompt in a
+private temporary file. **Stop** kills the CLI's process group; a step that
+takes longer than 5 minutes is killed and the run fails with that reason; a
+login or model error from the CLI (e.g. an unknown model) is shown as the
+run's error. The spend limit counts the CLI's own `total_cost_usd` estimate,
+which on a subscription login is not a bill — the step limit is the ceiling
+that always holds.
+
+Check it works first: `claude -p --model claude-opus-5-5 "say ok"` in a
+terminal. Your `~/.claude/CLAUDE.md` still loads, as it does for any `claude`
+run.
+
 ### Running with the laptop shut
 
-The orchestrator's *thinking* is an API call, so it does not need your CLIs —
+The orchestrator's *thinking* is an API call (or, on a Claude Code brain, a
+`claude -p` process on the same machine), so an OpenRouter brain does not need your CLIs —
 but the agents it starts are processes on the machine running Agent Grid, and
 that machine has to be awake. Two shapes:
 

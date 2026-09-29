@@ -13,7 +13,8 @@ once. Edit the persona and every posting has the change on its next step.
 What belongs to the persona, and so travels with it:
 
 - **Guidelines** -- its role, how it thinks, what good looks like.
-- **Its OpenRouter model** -- the brain it thinks with.
+- **Its brain** -- where it thinks (OpenRouter, or the local Claude Code
+  CLI) and the exact model it thinks with there.
 - **Agent defaults and allowed models** -- how the agents it starts are
   shaped. Defaults fill whatever the model leaves out; the allowed list is a
   fence the harness enforces, so "stop starting Opus 4.5 background agents"
@@ -57,6 +58,10 @@ MAX_LIST = 40
 MAX_MEMORY_TEXT = 500
 MEMORY_LIMIT = 100
 ENGINES = ("claude", "codex")
+# Where a persona thinks. "openrouter" is the default and what every persona
+# written before this setting existed keeps; "claude" runs each orchestrator
+# step through the local `claude -p` CLI on the user's own login.
+PROVIDERS = ("openrouter", "claude")
 # The session is a rule, not a hint. "interactive" and "background" are what
 # every agent the persona starts runs as, whatever the model asks for;
 # "either" lets the model choose and falls back to background when it does not
@@ -88,7 +93,7 @@ class AgentDefaults:
 class Persona:
     id: str
     name: str
-    model: str                    # the OpenRouter model it thinks with
+    model: str                    # the model it thinks with, on its provider
     description: str = ""
     guidelines: str = ""
     agent_defaults: AgentDefaults = field(default_factory=AgentDefaults)
@@ -97,9 +102,10 @@ class Persona:
     skills: list[str] = field(default_factory=list)
     prompts: list[str] = field(default_factory=list)
     memory: list[dict] = field(default_factory=list)          # [{id, text, at}]
+    provider: str = "openrouter"                              # openrouter | claude
 
     def to_dict(self) -> dict:
-        return {"id": self.id, "name": self.name, "model": self.model,
+        return {"id": self.id, "name": self.name, "provider": self.provider, "model": self.model,
                 "description": self.description, "guidelines": self.guidelines,
                 "agentDefaults": self.agent_defaults.to_dict(),
                 "allowedModels": list(self.allowed_models), "team": list(self.team),
@@ -154,11 +160,20 @@ def load(raw: object, *, existing_id: str = "") -> Persona:
     name = str(raw.get("name") or "").strip()
     if not name or len(name) > MAX_NAME:
         raise ValueError(f"Give the persona a name between 1 and {MAX_NAME} characters.")
+    provider = raw.get("provider") or "openrouter"      # absent: a persona from before the choice
+    if provider not in PROVIDERS:
+        raise ValueError("Choose where the persona thinks: OpenRouter or local Claude Code.")
     model = str(raw.get("model") or "").strip()
-    if not model:
-        raise ValueError("Choose the OpenRouter model this persona thinks with.")
-    if len(model) > 200 or any(c.isspace() for c in model):
-        raise ValueError("That is not an OpenRouter model ID.")
+    if provider == "claude":
+        if not model:
+            raise ValueError("Choose the Claude model this persona thinks with, e.g. claude-opus-5-5 or opus.")
+        if not models.valid(model):
+            raise ValueError(f"\"{model[:60]}\" is not a Claude model ID.")
+    else:
+        if not model:
+            raise ValueError("Choose the OpenRouter model this persona thinks with.")
+        if len(model) > 200 or any(c.isspace() for c in model):
+            raise ValueError("That is not an OpenRouter model ID.")
     description = str(raw.get("description") or "").strip()
     if len(description) > MAX_DESCRIPTION:
         raise ValueError(f"Keep the description under {MAX_DESCRIPTION} characters.")
@@ -174,7 +189,7 @@ def load(raw: object, *, existing_id: str = "") -> Persona:
     memory = raw.get("memory") if isinstance(raw.get("memory"), list) else []
     return Persona(
         id=str(raw.get("id") or existing_id or uuid.uuid4().hex),
-        name=name, model=model, description=description, guidelines=guidelines,
+        name=name, provider=provider, model=model, description=description, guidelines=guidelines,
         agent_defaults=defaults, allowed_models=allowed,
         team=_names(raw.get("team"), "Team"), skills=_names(raw.get("skills"), "Skills"),
         prompts=_names(raw.get("prompts"), "Prompts"),

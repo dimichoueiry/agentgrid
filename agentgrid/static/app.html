@@ -1627,7 +1627,7 @@ body.area-overview .viewnav,body.area-overview #searchBox,body.area-overview #ne
   <h2 id="orchDialogTitle">New orchestrator</h2>
   <p>Post a persona from your bank to this team. Who it is — its guidelines, model and how it
      starts agents — comes from the persona; what this team is about goes in the brief.</p>
-  <p class="err" id="orchConnHint" hidden>Connect OpenRouter under Providers first.</p>
+  <p class="err" id="orchConnHint" hidden>This persona thinks on OpenRouter: connect it under Providers first.</p>
   <label>Persona
     <span class="orow2"><select id="orchPersona" required></select>
       <button class="btn sm" type="button" id="orchNewPersona">New persona…</button></span>
@@ -1654,7 +1654,7 @@ body.area-overview .viewnav,body.area-overview #searchBox,body.area-overview #ne
       <label>Steps per run<input id="orchSteps" type="number" min="1" max="1000" step="1"></label>
       <label>Spend limit, $<input id="orchSpend" type="number" min="0" max="1000" step="0.5"></label>
     </div>
-    <p>Enforced by AgentGrid, not asked of the model. Spend covers the orchestrator's own thinking;
+    <p>Enforced by AgentGrid, not asked of the model. Spend covers the orchestrator's own thinking (on Claude Code, the CLI's cost estimate);
        the agents it starts run on your Claude Code and Codex logins.</p>
   </details>
   <p class="err" id="orchFormError" role="alert"></p>
@@ -1682,7 +1682,11 @@ body.area-overview .viewnav,body.area-overview #searchBox,body.area-overview #ne
   <label>Name<input id="pName" maxlength="60" required autocomplete="off" placeholder="e.g. Product Manager"></label>
   <label>One-line description<input id="pDescription" maxlength="200" autocomplete="off"
     placeholder="What it is for, as the bank lists it"></label>
-  <label>Thinks with <span class="hint">an OpenRouter model</span>
+  <label>Thinks on<select id="pProvider">
+      <option value="openrouter">OpenRouter</option>
+      <option value="claude">Claude Code (local CLI)</option></select>
+    <span class="hint" id="pProviderHint"></span></label>
+  <label>Thinks with <span class="hint" id="pModelHint">an OpenRouter model</span>
     <input id="pModel" list="pModels" required autocomplete="off" spellcheck="false" placeholder="e.g. openai/gpt-5">
     <datalist id="pModels"></datalist></label>
   <label>Guidelines <span class="hint">its role, how it works, what good looks like</span>
@@ -2178,7 +2182,7 @@ Every command takes --as NAME and --json. Without --as, the name is $AGENTGRID_A
 <div class="modal" id="providersModal" hidden>
   <div class="sheet">
     <div class="stitle">Model providers</div>
-    <p>Claude Code and Codex use their existing CLI logins. Connect OpenRouter to run orchestrators (on the board, above the columns) and to use extra models in workflows.</p>
+    <p>Claude Code and Codex use their existing CLI logins. Connect OpenRouter to run orchestrators (on the board, above the columns) and to use extra models in workflows — or set a persona to think on Claude Code, which needs no key.</p>
     <label>OpenRouter API key<input type="password" id="orKey" autocomplete="off" spellcheck="false" placeholder="Paste your key"></label>
     <p class="hint">Stored in macOS Keychain. Never included in workflows or exports. OpenRouter usage is billed separately.</p>
     <p id="orStatus" class="hint" role="status"></p>
@@ -6038,7 +6042,8 @@ async function poll() {
 }
 
 /* ----------------------------------------------------------- orchestrators */
-/* An orchestrator is a standing agent on an OpenRouter model whose only power
+/* An orchestrator is a standing agent on a model (OpenRouter, or the local
+   Claude Code CLI) whose only power
    is starting real agents. It is not a session, so it is not a card in the
    status columns -- those describe what a session is doing, and an
    orchestrator is the thing that made the session. It lives in the breadcrumb
@@ -6104,7 +6109,7 @@ function renderOrchestrators() {
   const mine = visibleOrchestrators();
   const markup = mine.map(o => {
     const state = orchFor(o);
-    const bits = [o.persona && o.persona.name !== o.name ? o.persona.name : o.model];
+    const bits = [o.persona && o.persona.name !== o.name ? o.persona.name : brainLabel(o.provider, o.model)];
     if (!o.scope && activeArea) bits.push("all areas");
     if (o.spawns) bits.push(`${o.spawns} agent${o.spawns === 1 ? "" : "s"}`);
     if (o.costUsd) bits.push(orchMoney(o.costUsd));
@@ -6175,9 +6180,9 @@ async function editOrchestrator(id = "", presetPersona = "") {
       `<option value="${esc(p.path)}"${p.path === chosen ? " selected" : ""}>${esc(p.label || p.name)}</option>`).join("");
   // Asked here rather than on every board poll: the answer only matters while
   // this dialog is open, and it is a Keychain read.
-  try {
-    $("orchConnHint").hidden = !!(await api("/api/providers/openrouter")).connected;
-  } catch (e) { $("orchConnHint").hidden = true; }
+  try { orchKeyConnected = !!(await api("/api/providers/openrouter")).connected; }
+  catch (e) { orchKeyConnected = null; }
+  fillPersonaSelect($("orchPersona").value);
 }
 
 async function saveOrchestrator() {
@@ -6208,6 +6213,7 @@ async function saveOrchestrator() {
   if (!orchEditing) openOrchestrator(saved.id);
 }
 
+let orchKeyConnected = null;     // null: not asked yet, so no warning
 function fillPersonaSelect(selected) {
   $("orchPersona").innerHTML = personaData.personas.length
     ? personaData.personas.map(p => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join("")
@@ -6216,6 +6222,13 @@ function fillPersonaSelect(selected) {
     ? selected : (personaData.personas[0]?.id || "");
   const persona = personaData.personas.find(p => p.id === $("orchPersona").value);
   $("orchPersonaHint").textContent = persona ? personaSummary(persona) : "";
+  // Only an OpenRouter brain needs the key; a Claude Code one uses the CLI login.
+  $("orchConnHint").hidden = orchKeyConnected !== false || persona?.provider === "claude";
+}
+
+// The brain in a few words: the model, marked when it runs on the local CLI.
+function brainLabel(provider, model) {
+  return provider === "claude" ? `Claude Code · ${model || "default"}` : (model || "");
 }
 
 // What a persona is, in one line: the brain it thinks with and the shape of
@@ -6224,7 +6237,7 @@ function fillPersonaSelect(selected) {
 function personaSummary(persona) {
   const d = persona.agentDefaults || {};
   const session = d.mode === "interactive" || d.mode === "background" ? `always ${d.mode}` : "session its choice";
-  return `${persona.description ? persona.description + " · " : ""}thinks with ${persona.model} · ` +
+  return `${persona.description ? persona.description + " · " : ""}thinks with ${brainLabel(persona.provider, persona.model)} · ` +
     `starts agents as ${d.engine || "claude"} · ${d.model || "CLI default"} · ${session}`;
 }
 
@@ -6292,7 +6305,7 @@ async function openPersonaEditor(id = "", then = null) {
   personaEditing = id; personaThen = then;
   await loadPersonas();
   const persona = personaData.personas.find(p => p.id === id);
-  const used = personaData.personas.map(p => p.model);
+  const provider = persona?.provider || personaData.personas[0]?.provider || "openrouter";
   // A new persona starts where the user's own defaults are: the brain they
   // already use, and Opus 5 interactive for the agents it starts.
   const defaults = persona?.agentDefaults || {engine: "claude", model: "claude-opus-5", mode: "interactive"};
@@ -6300,7 +6313,8 @@ async function openPersonaEditor(id = "", then = null) {
   $("personaFormError").textContent = "";
   $("pName").value = persona?.name || "";
   $("pDescription").value = persona?.description || "";
-  $("pModel").value = persona?.model || used[0] || "";
+  $("pProvider").value = provider;
+  $("pModel").value = persona?.model || lastModelOn(provider);
   $("pGuidelines").value = persona?.guidelines || "";
   updateGuidelinesCount();
   $("pEngine").value = defaults.engine || "claude";
@@ -6322,9 +6336,28 @@ async function openPersonaEditor(id = "", then = null) {
   $("personaDelete").hidden = !persona;
   if (!$("personaDialog").open) $("personaDialog").showModal();
   $("pName").focus();
-  await loadOpenRouterModels();
-  $("pModels").innerHTML = workflowModelOptions("openrouter");
+  await applyPersonaProvider();
   $("pAgentModels").innerHTML = workflowModelOptions($("pEngine").value);
+}
+
+// The brain the user already uses on this provider: a good first guess.
+function lastModelOn(provider) {
+  return personaData.personas.find(p => (p.provider || "openrouter") === provider)?.model || "";
+}
+
+// The model field follows the provider: its hint, its placeholder and the
+// suggestions it offers. Claude Code takes the exact IDs and aliases its own
+// `--model` accepts, e.g. claude-opus-5-5 or opus.
+async function applyPersonaProvider() {
+  const local = $("pProvider").value === "claude";
+  $("pModelHint").textContent = local ? "a Claude model the claude CLI accepts" : "an OpenRouter model";
+  $("pModel").placeholder = local ? "e.g. claude-opus-5-5 or opus" : "e.g. openai/gpt-5";
+  $("pProviderHint").textContent = local
+    ? "Runs each step through `claude -p` on your Claude Code login, with its own tools off."
+    : "Needs an OpenRouter key under Providers.";
+  if (local) { $("pModels").innerHTML = workflowModelOptions("claude"); return; }
+  await loadOpenRouterModels();
+  if ($("pProvider").value === "openrouter") $("pModels").innerHTML = workflowModelOptions("openrouter");
 }
 
 // Guidelines have no character cap — the count is feedback, not a fence, so it
@@ -6339,6 +6372,7 @@ async function savePersona() {
     id: personaEditing || undefined,
     name: $("pName").value,
     description: $("pDescription").value,
+    provider: $("pProvider").value,
     model: $("pModel").value.trim(),
     guidelines: $("pGuidelines").value,
     agentDefaults: {engine: $("pEngine").value, model: $("pAgentModel").value.trim(), mode: $("pMode").value},
@@ -6555,7 +6589,7 @@ function renderOrchPanel() {
   const who = o.persona?.name || o.name;
   avatar.textContent = orchInitials(who);
   avatar.style?.setProperty?.("--h", String(orchHue(who)));
-  const facts = [o.persona?.name !== o.name ? o.persona?.name : "", o.model, orchScopeName(o), state.label].filter(Boolean);
+  const facts = [o.persona?.name !== o.name ? o.persona?.name : "", brainLabel(o.provider, o.model), orchScopeName(o), state.label].filter(Boolean);
   if (o.spawns) facts.push(`${o.spawns} agent${o.spawns === 1 ? "" : "s"} started`);
   if (o.steps) facts.push(`${o.steps} step${o.steps === 1 ? "" : "s"}`);
   if (o.costUsd) facts.push(orchMoney(o.costUsd));
@@ -6948,6 +6982,11 @@ function bindOrchestrators() {
     try { await savePersona(); } finally { $("personaSave").disabled = false; }
   };
   $("personaCancel").onclick = () => { personaThen = null; $("personaDialog").close(); };
+  $("pProvider").onchange = () => {
+    // A model from the other provider would only be refused on save.
+    $("pModel").value = lastModelOn($("pProvider").value);
+    applyPersonaProvider();
+  };
   $("pEngine").onchange = () => { $("pAgentModels").innerHTML = workflowModelOptions($("pEngine").value); };
   $("personaDelete").onclick = async () => {
     const persona = personaData.personas.find(p => p.id === personaEditing);

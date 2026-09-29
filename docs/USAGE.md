@@ -304,7 +304,10 @@ do not want to sit and start five agents yourself.
 
 First, once: **Providers** → paste your OpenRouter key → **Connect**. That key
 is what an orchestrator thinks with; the agents it starts still run on your
-Claude Code and Codex logins.
+Claude Code and Codex logins. No key? Edit the persona and set **Thinks on**
+to **Claude Code (local CLI)** with a model such as `claude-opus-5-5`: each
+step then runs through `claude -p` on your own login, with the CLI's own
+tools switched off.
 
 Now open a work area, click **Orchestrators** in the breadcrumb (next to Area
 settings) and pick **+ New orchestrator**:

@@ -1,4 +1,8 @@
-"""Running an orchestrator: a bounded tool-calling loop over an OpenRouter model.
+"""Running an orchestrator: a bounded tool-calling loop over a model.
+
+The model is the persona's brain: an OpenRouter model, or the local Claude
+Code CLI (`claude_brain`). Both answer one step in the same shape, so nothing
+below the call in `_step` knows which one it was.
 
 The loop is four lines long in principle -- ask the model what to do, do the
 parts it is allowed to do, write down what happened, ask again -- and the rest
@@ -56,7 +60,7 @@ import secrets
 import threading
 import time
 
-from agentgrid import areas, openrouter, orchestrator, personas, tickets
+from agentgrid import areas, claude_brain, openrouter, orchestrator, personas, tickets
 from agentgrid.orchestrator_brief import MAX_WAIT_SECONDS, Context, system_prompt, tool_specs
 
 # A tool result is context for the next decision, not an archive: a 200k-line
@@ -273,6 +277,7 @@ class Run:
             "phase": self.phase, "busyAgents": self._busy_agents,
             "lastChangeAt": self._last_change,
             "model": persona.model if persona else "",
+            "provider": persona.provider if persona else "",
             "persona": ({"id": persona.id, "name": persona.name,
                          "agentDefaults": persona.agent_defaults.to_dict(),
                          "allowedModels": list(persona.allowed_models)} if persona else None),
@@ -311,6 +316,7 @@ class Run:
             self._decision = None
             self._persist()
         self._emit({"type": "run_started", "goal": goal, "model": persona.model,
+                    "provider": persona.provider,
                     "persona": persona.name, "mode": self.definition.mode})
         self._spin()
 
@@ -438,15 +444,28 @@ class Run:
         with self._lock:
             self.state["messages"][0] = {"role": "system", "content": system_prompt(context)}
         self._set_phase("thinking")
+        local = context.persona.provider == "claude"
         try:
-            turn = openrouter.tool_turn(trim_messages(self.state["messages"]),
-                                        context.persona.model, tool_specs(context))
+            if local:
+                turn = claude_brain.tool_turn(trim_messages(self.state["messages"]),
+                                              context.persona.model, tool_specs(context),
+                                              cancel=self._cancel)
+            else:
+                turn = openrouter.tool_turn(trim_messages(self.state["messages"]),
+                                            context.persona.model, tool_specs(context))
         except ValueError as error:
-            self._fail(str(error))
+            # A Stop that lands mid-step already recorded the run as stopped;
+            # the step's own failure (a killed CLI, a dropped request) is not
+            # news and must not overwrite that with "failed".
+            if not self._cancel.is_set():
+                self._fail(str(error))
             return False
         except OSError:
-            self._fail("Could not reach OpenRouter. The run stopped; start it again when the "
-                       "connection is back.")
+            if not self._cancel.is_set():
+                self._fail("Could not run Claude Code. The run stopped; start it again once "
+                           "`claude` works in a terminal." if local else
+                           "Could not reach OpenRouter. The run stopped; start it again when the "
+                           "connection is back.")
             return False
         finally:
             self._set_phase("")
@@ -593,9 +612,11 @@ class Run:
         limits = self.definition.limits
         if self.state["steps"] >= limits.max_steps:
             return f"Step limit reached ({limits.max_steps} steps). Raise it or start a new run."
-        # Cost is what OpenRouter reported for the steps so far. A provider
-        # that reports none leaves this at zero, and the step limit is then
-        # the only ceiling -- which is why there is a step limit.
+        # Cost is what the brain reported for the steps so far: OpenRouter's
+        # charge, or Claude Code's own estimate (`total_cost_usd`, which on a
+        # subscription login is not a bill). A provider that reports none
+        # leaves this at zero, and the step limit is then the only ceiling --
+        # which is why there is a step limit.
         spent = float(self.state.get("costUsd") or 0)
         if spent >= limits.max_spend_usd:
             return (f"Spend limit reached (${spent:.2f} of ${limits.max_spend_usd:.2f}). "

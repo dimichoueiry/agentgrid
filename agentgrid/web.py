@@ -2599,7 +2599,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
             run = self._orchestrator_run(body)
             if action == "start":
-                if not credentials.get_key():
+                # Only an OpenRouter brain needs the key; a local Claude Code
+                # brain runs on the CLI's own login.
+                if personas.get(run.definition.persona_id).provider == "openrouter" and not credentials.get_key():
                     raise ValueError("Connect OpenRouter in Providers before starting an orchestrator.")
                 run.start(str(body.get("goal") or ""))
             elif action == "stop":
